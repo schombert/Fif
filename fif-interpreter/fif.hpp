@@ -76,6 +76,43 @@ enum class stack_type {
 	llvm_compiler = 2
 };
 
+struct indirect_string_hash {
+	using is_avalanching = void;
+	using is_transparent = void;
+
+	indirect_string_hash() {
+	}
+	auto operator()(std::string_view sv) const noexcept -> uint64_t {
+		return ankerl::unordered_dense::detail::wyhash::hash(sv.data(), sv.size());
+	}
+	auto operator()(std::unique_ptr<char[]> const& str) const noexcept -> uint64_t {
+		return ankerl::unordered_dense::detail::wyhash::hash(str.get(), std::string_view{ str.get() }.size());
+	}
+};
+struct indirect_string_eq {
+	using is_transparent = void;
+
+
+	indirect_string_eq() {
+	}
+
+	bool operator()(std::unique_ptr<char[]> const& l, std::unique_ptr<char[]> const& r) const noexcept {
+		return std::string_view{ l.get() } == std::string_view{ r.get() };
+	}
+	bool operator()(std::unique_ptr<char[]> const& l, std::string_view r) const noexcept {
+		return std::string_view{ l.get() } == r;
+	}
+	bool operator()(std::string_view r, std::unique_ptr<char[]> const& l) const noexcept {
+		return std::string_view{ l.get() } == r;
+	}
+	bool operator()(std::unique_ptr<char[]> const& l, std::string const& r) const noexcept {
+		return std::string_view{ l.get() } == r;
+	}
+	bool operator()(std::string const& r, std::unique_ptr<char[]> const& l) const noexcept {
+		return std::string_view{ l.get() } == r;
+	}
+};
+
 class state_stack {
 protected:
 	std::vector<int32_t> main_types;
@@ -564,7 +601,7 @@ public:
 
 
 enum class control_structure : uint8_t {
-	none, function, str_if, str_while_loop, str_do_loop, mode_switch
+	none, function, str_if, str_while_loop, str_do_loop, mode_switch, globals
 };
 
 class compiler_state;
@@ -576,6 +613,17 @@ struct typecheck_3_record {
 	int32_t rstack_consumed = 0;
 };
 
+struct var_data {
+	int64_t data; // only in interpreter mode -- first so that we can treat the address as the data addres
+	LLVMValueRef alloc; // only in llvm mode
+	int32_t type;
+};
+struct let_data {
+	int64_t data; // only in interpreter mode
+	LLVMValueRef expression; // only in llvm mode
+	int32_t type;
+};
+
 class opaque_compiler_data {
 protected:
 	opaque_compiler_data* parent = nullptr;
@@ -584,7 +632,7 @@ public:
 
 	virtual ~opaque_compiler_data() = default;
 	virtual control_structure get_type() {
-		return parent ? parent->get_type() : control_structure::none;
+		return control_structure::none;
 	}
 	virtual LLVMValueRef llvm_function() {
 		return parent ? parent->llvm_function() : nullptr;
@@ -614,7 +662,20 @@ public:
 	virtual bool finish(environment& env) {
 		return true;
 	}
+	virtual var_data* get_var(std::string const& name) {
+		return parent ? parent->get_var(name) : nullptr;
+	}
+	virtual let_data* get_let(std::string const& name) {
+		return parent ? parent->get_let(name) : nullptr;
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		return parent ? parent->create_var(name, type) : nullptr;
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		return parent ? parent->create_let(name, type, data, expression) : nullptr;
+	}
 };
+
 
 class compiler_state {
 public:
@@ -659,9 +720,9 @@ inline fif_mode fail_typechecking(fif_mode m) {
 		return fif_mode::typechecking_lvl3_failed;
 	return m;
 }
-
 class environment {
 public:
+	ankerl::unordered_dense::set<std::unique_ptr<char[]>, indirect_string_hash, indirect_string_eq> string_constants;
 	std::vector<LLVMValueRef> exported_functions;
 	LLVMOrcThreadSafeContextRef llvm_ts_context = nullptr;
 	LLVMContextRef llvm_context = nullptr;
@@ -683,29 +744,7 @@ public:
 	fif_mode mode = fif_mode::interpreting;
 	std::function<void(std::string_view)> report_error = [](std::string_view) { std::abort(); };
 
-	environment() {
-		llvm_ts_context = LLVMOrcCreateNewThreadSafeContext();
-		llvm_context = LLVMOrcThreadSafeContextGetContext(llvm_ts_context);
-		llvm_module = LLVMModuleCreateWithNameInContext("module_main", llvm_context);
-		llvm_builder = LLVMCreateBuilderInContext(llvm_context);
-
-		LLVMInitializeNativeTarget();
-		LLVMInitializeNativeAsmPrinter();
-
-		llvm_target = LLVMGetFirstTarget();
-		llvm_target_triple = LLVMGetDefaultTargetTriple();
-		llvm_target_cpu = LLVMGetHostCPUName();
-		llvm_target_cpu_features = LLVMGetHostCPUFeatures();
-
-		llvm_target_machine = LLVMCreateTargetMachine(llvm_target, llvm_target_triple, llvm_target_cpu, llvm_target_cpu_features, LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelJITDefault);
-
-		LLVMSetTarget(llvm_module, llvm_target_triple);
-		llvm_target_data = LLVMCreateTargetDataLayout(llvm_target_machine);
-		LLVMSetModuleDataLayout(llvm_module, llvm_target_data);
-
-		dict.ready_llvm_types(llvm_context);
-	}
-
+	environment();
 	~environment() {
 		LLVMDisposeMessage(llvm_target_triple);
 		LLVMDisposeMessage(llvm_target_cpu);
@@ -724,8 +763,97 @@ public:
 		if(llvm_ts_context)
 			LLVMOrcDisposeThreadSafeContext(llvm_ts_context);
 	}
+
+	std::string_view get_string_constant(std::string_view data) {
+		if(auto it = string_constants.find(data); it != string_constants.end()) {
+			return std::string_view{ it->get() };
+		}
+		std::unique_ptr<char[]> temp = std::unique_ptr<char[]>(new char[data.length() + 1 ]);
+		memcpy(temp.get(), data.data(), data.length());
+		temp.get()[data.length()] = 0;
+		auto data_ptr = temp.get();
+		string_constants.insert(std::move(temp));
+		return std::string_view{ data_ptr };
+	}
 };
 
+class compiler_globals_layer : public opaque_compiler_data {
+public:
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> global_vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> global_lets;
+	environment& env;
+	compiler_globals_layer(opaque_compiler_data* parent, environment& env) : opaque_compiler_data(parent), env(env) {
+	}
+
+	virtual control_structure get_type() {
+		return control_structure::globals;
+	}
+
+	var_data* get_global_var(std::string const& name) {
+		if(auto it = global_vars.find(name); it != global_vars.end()) {
+			return it->second.get();
+		}
+		return nullptr;
+	}
+	var_data* create_global_var(std::string const& name, int32_t type) {
+		if(auto it = global_vars.find(name); it != global_vars.end()) {
+			if(it->second->type == type)
+				return it->second.get();
+			else
+				return nullptr;
+		}
+		auto added = global_vars.insert_or_assign(name, std::make_unique<var_data>());
+		added.first->second->type = type;
+		added.first->second->data = 0;
+		added.first->second->alloc = LLVMAddGlobal(env.llvm_module, env.dict.type_array[type].llvm_type, name.c_str());
+		LLVMSetInitializer(added.first->second->alloc, env.dict.type_array[type].zero_constant(env.llvm_context));
+		return added.first->second.get();
+	}
+	let_data* get_global_let(std::string const& name) {
+		if(auto it = global_lets.find(name); it != global_lets.end()) {
+			return it->second.get();
+		}
+		return nullptr;
+	}
+	let_data* create_global_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		if(auto it = global_lets.find(name); it != global_lets.end()) {
+			return nullptr;
+		}
+		auto added = global_lets.insert_or_assign(name, std::make_unique<let_data>());
+		added.first->second->type = type;
+		added.first->second->data = data;
+		added.first->second->expression = expression;
+		if(auto it = global_lets.find(name); it != global_lets.end()) {
+			return it->second.get();
+		}
+		return nullptr;
+	}
+};
+
+inline environment::environment() {
+	llvm_ts_context = LLVMOrcCreateNewThreadSafeContext();
+	llvm_context = LLVMOrcThreadSafeContextGetContext(llvm_ts_context);
+	llvm_module = LLVMModuleCreateWithNameInContext("module_main", llvm_context);
+	llvm_builder = LLVMCreateBuilderInContext(llvm_context);
+
+	LLVMInitializeNativeTarget();
+	LLVMInitializeNativeAsmPrinter();
+
+	llvm_target = LLVMGetFirstTarget();
+	llvm_target_triple = LLVMGetDefaultTargetTriple();
+	llvm_target_cpu = LLVMGetHostCPUName();
+	llvm_target_cpu_features = LLVMGetHostCPUFeatures();
+
+	llvm_target_machine = LLVMCreateTargetMachine(llvm_target, llvm_target_triple, llvm_target_cpu, llvm_target_cpu_features, LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive, LLVMRelocMode::LLVMRelocDefault, LLVMCodeModel::LLVMCodeModelJITDefault);
+
+	LLVMSetTarget(llvm_module, llvm_target_triple);
+	llvm_target_data = LLVMCreateTargetDataLayout(llvm_target_machine);
+	LLVMSetModuleDataLayout(llvm_module, llvm_target_data);
+
+	dict.ready_llvm_types(llvm_context);
+
+	compiler_stack.push_back(std::make_unique<compiler_globals_layer>(nullptr, *this));
+}
 
 class interpreter_stack : public state_stack {
 public:
@@ -1595,6 +1723,31 @@ inline void do_immediate_i32(state_stack& s, int32_t value, environment* e) {
 	}
 	s.push_back_main(fif_i32, value, val);
 }
+inline int32_t* immediate_type(state_stack& s, int32_t* p, environment*) {
+	int32_t data = 0;
+	memcpy(&data, p + 2, 4);
+	s.push_back_main(fif_type, data, nullptr);
+	return p + 3;
+}
+inline void do_immediate_type(state_stack& s, int32_t value, environment* e) {
+	if(typechecking_failed(e->mode))
+		return;
+
+	auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+	if(compile_bytes && e->mode == fif_mode::compiling_bytecode) {
+		fif_call imm = immediate_type;
+		uint64_t imm_bytes = 0;
+		memcpy(&imm_bytes, &imm, 8);
+		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+		compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+		compile_bytes->push_back(value);
+	}
+	LLVMValueRef val = nullptr;
+	if(e->mode == fif_mode::compiling_llvm) {
+		val = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint32_t(value), true);
+	}
+	s.push_back_main(fif_type, value, val);
+}
 inline void do_immediate_bool(state_stack& s, bool value, environment* e) {
 	if(typechecking_failed(e->mode))
 		return;
@@ -1637,16 +1790,6 @@ inline void do_immediate_f32(state_stack& s, float value, environment* e) {
 		val = LLVMConstReal(LLVMFloatTypeInContext(e->llvm_context), value);
 	}
 	s.push_back_main(fif_i32, v8, val);
-}
-inline int32_t* call_function(state_stack& s, int32_t* p, environment* env) {
-	auto ptr = env->dict.all_compiled.data() + *(p + 2);
-	execute_fif_word(s, ptr, *env);
-	return p + 3;
-}
-inline int32_t* call_function_indirect(state_stack& s, int32_t* p, environment* env) {
-	auto instance = *(p + 2);
-	execute_fif_word(std::get<interpreted_word_instance>(env->dict.all_instances[instance]), s, *env);
-	return p + 3;
 }
 inline int32_t* function_return(state_stack& s, int32_t* p, environment*) {
 	return nullptr;
@@ -1998,7 +2141,54 @@ public:
 	int32_t for_word = -1;
 	int32_t for_instance = -1;
 
-	function_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance) : opaque_compiler_data(parent), for_word(for_word), for_instance(for_instance) {
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
+	environment& env;
+
+	virtual var_data* get_var(std::string const& name) {
+		if(auto it = vars.find(name); it != vars.end()) {
+			return it->second.get();
+		}
+		return parent->get_var(name);
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+
+		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
+		added.first->second->type = type;
+		added.first->second->data = 0;
+		added.first->second->alloc = current_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
+		return added.first->second.get();
+	}
+	virtual let_data* get_let(std::string const& name) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return it->second.get();
+		}
+		return parent->get_let(name);
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
+		added.first->second->type = type;
+		added.first->second->data = data;
+		added.first->second->expression = expression;
+		if(auto it = lets.find(name); it != lets.end()) {
+			return  it->second.get();
+		}
+		return nullptr;
+	}
+
+	function_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance) : opaque_compiler_data(parent), for_word(for_word), for_instance(for_instance), env(env) {
 		
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
@@ -2175,6 +2365,24 @@ public:
 				return true;
 			}
 
+
+			auto* ws = env.compiler_stack.back()->working_state();
+			for(auto& l : vars) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+					ws->push_back_main(l.second->type, l.second->data, iresult);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			for(auto& l : lets) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
 			llvm_make_function_return(env, existing_description);
@@ -2198,6 +2406,103 @@ public:
 		return true;
 	}
 };
+
+class runtime_function_scope : public opaque_compiler_data {
+public:
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
+	environment& env;
+
+	virtual var_data* get_var(std::string const& name) {
+		if(auto it = vars.find(name); it != vars.end()) {
+			return it->second.get();
+		}
+		return parent->get_var(name);
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
+		added.first->second->type = type;
+		added.first->second->data = 0;
+		added.first->second->alloc = nullptr;
+		return added.first->second.get();
+	}
+	virtual let_data* get_let(std::string const& name) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return it->second.get();
+		}
+		return parent->get_let(name);
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
+		added.first->second->type = type;
+		added.first->second->data = data;
+		added.first->second->expression = expression;
+		if(auto it = lets.find(name); it != lets.end()) {
+			return  it->second.get();
+		}
+		return nullptr;
+	}
+
+	runtime_function_scope(opaque_compiler_data* parent, environment& env) : opaque_compiler_data(parent), env(env) {
+	}
+	virtual bool finish(environment& env) {
+		auto* ws = env.compiler_stack.back()->working_state();
+		for(auto& l : vars) {
+			if(env.dict.type_array[l.second->type].do_destructor) {
+				ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
+				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+				ws->pop_main();
+			}
+		}
+		for(auto& l : lets) {
+			if(env.dict.type_array[l.second->type].do_destructor) {
+				ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+				ws->pop_main();
+			}
+		}
+		return true;
+	}
+	virtual control_structure get_type() {
+		return control_structure::function;
+	}
+};
+inline int32_t* call_function(state_stack& s, int32_t* p, environment* env) {
+	auto ptr = env->dict.all_compiled.data() + *(p + 2);
+	env->compiler_stack.push_back(std::make_unique<runtime_function_scope>(env->compiler_stack.back().get(), *env));
+	execute_fif_word(s, ptr, *env);
+	env->compiler_stack.back()->finish(*env);
+	env->compiler_stack.pop_back();
+	return p + 3;
+}
+inline int32_t* call_function_indirect(state_stack& s, int32_t* p, environment* env) {
+	auto instance = *(p + 2);
+	env->compiler_stack.push_back(std::make_unique<runtime_function_scope>(env->compiler_stack.back().get(), *env));
+	execute_fif_word(std::get<interpreted_word_instance>(env->dict.all_instances[instance]), s, *env);
+	env->compiler_stack.back()->finish(*env);
+	env->compiler_stack.pop_back();
+	return p + 3;
+}
+inline int32_t* enter_scope(state_stack& s, int32_t* p, environment* env) {
+	env->compiler_stack.push_back(std::make_unique<runtime_function_scope>(env->compiler_stack.back().get(), *env));
+	return p + 2;
+}
+inline int32_t* leave_scope(state_stack& s, int32_t* p, environment* env) {
+	env->compiler_stack.pop_back();
+	return p + 2;
+}
 
 class mode_switch_scope : public opaque_compiler_data {
 public:
@@ -2237,6 +2542,18 @@ public:
 	virtual state_stack* working_state() {
 		return interpreted_link ? interpreted_link->working_state() : nullptr;
 	}
+	virtual var_data* get_var(std::string const& name) {
+		return interpreted_link ? interpreted_link->get_var(name) : nullptr;
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		return interpreted_link ? interpreted_link->create_var(name, type) : nullptr;
+	}
+	virtual let_data* get_let(std::string const& name) {
+		return interpreted_link ? interpreted_link->get_let(name) : nullptr;
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		return interpreted_link ? interpreted_link->create_let(name, type, data, expression) : nullptr;
+	}
 	virtual void set_working_state(std::unique_ptr<state_stack> p) {
 		if(interpreted_link)
 			interpreted_link->set_working_state(std::move(p));
@@ -2264,6 +2581,51 @@ inline void restore_compiler_stack_mode(environment& env) {
 class outer_interpreter : public opaque_compiler_data {
 public:
 	std::unique_ptr<state_stack> interpreter_state;
+
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> global_vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> global_lets;
+
+	virtual var_data* get_var(std::string const& name) {
+		if(auto it = global_vars.find(name); it != global_vars.end()) {
+			return it->second.get();
+		}
+		return nullptr;
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		if(auto it = global_lets.find(name); it != global_lets.end()) {
+			return nullptr;
+		}
+		if(auto it = global_vars.find(name); it != global_vars.end()) {
+			return nullptr;
+		}
+		auto added = global_vars.insert_or_assign(name, std::make_unique<var_data>());
+		added.first->second->type = type;
+		added.first->second->data = 0;
+		added.first->second->alloc = nullptr;
+		return added.first->second.get();
+	}
+	virtual let_data* get_let(std::string const& name) {
+		if(auto it = global_lets.find(name); it != global_lets.end()) {
+			return it->second.get();
+		}
+		return nullptr;
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		if(auto it = global_lets.find(name); it != global_lets.end()) {
+			return nullptr;
+		}
+		if(auto it = global_vars.find(name); it != global_vars.end()) {
+			return nullptr;
+		}
+		auto added = global_lets.insert_or_assign(name, std::make_unique<let_data>());
+		added.first->second->type = type;
+		added.first->second->data = data;
+		added.first->second->expression = expression;
+		if(auto it = global_lets.find(name); it != global_lets.end()) {
+			return it->second.get();
+		}
+		return nullptr;
+	}
 
 	outer_interpreter(environment& env) : opaque_compiler_data(nullptr), interpreter_state(std::make_unique<interpreter_stack>(env)) {
 	}
@@ -2439,7 +2801,53 @@ public:
 	size_t bytecode_first_branch_point = 0;
 	size_t bytecode_second_branch_point = 0;
 
-	conditional_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent) {	
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
+	environment& env;
+
+	virtual var_data* get_var(std::string const& name) {
+		if(auto it = vars.find(name); it != vars.end()) {
+			return it->second.get();
+		}
+		return parent->get_var(name);
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
+		added.first->second->type = type;
+		added.first->second->data = 0;
+		added.first->second->alloc = parent_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
+		return added.first->second.get();
+	}
+	virtual let_data* get_let(std::string const& name) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return it->second.get();
+		}
+		return parent->get_let(name);
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
+		added.first->second->type = type;
+		added.first->second->data = data;
+		added.first->second->expression = expression;
+		if(auto it = lets.find(name); it != lets.end()) {
+			return  it->second.get();
+		}
+		return nullptr;
+	}
+
+	conditional_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent), env(env) {	
 		if(entry_state.main_size() == 0 || entry_state.main_type_back(0) != fif_bool) {
 			env.report_error("attempted to start an if without a boolean value on the stack");
 			env.mode = fif_mode::error;
@@ -2472,6 +2880,12 @@ public:
 			bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 			bytecode_first_branch_point = bcode->size();
 			bcode->push_back(0);
+
+			fif_call imm2 = enter_scope;
+			uint64_t imm2_bytes = 0;
+			memcpy(&imm2_bytes, &imm2, 8);
+			bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
 		}
 		initial_typechecking_failed = typechecking_failed(env.mode);
 		if(!typechecking_failed(env.mode))
@@ -2499,6 +2913,23 @@ public:
 			iworking_state = initial_state->copy();
 
 			if(env.mode == fif_mode::compiling_llvm) {
+				auto* ws = env.compiler_stack.back()->working_state();
+				for(auto& l : vars) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+						ws->push_back_main(l.second->type, l.second->data, iresult);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
+				for(auto& l : lets) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
+
 				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
 					true_block = *pb;
 					*pb = LLVMCreateBasicBlockInContext(env.llvm_context, "if-else-branch");
@@ -2508,7 +2939,13 @@ public:
 			}
 			if(env.mode == fif_mode::compiling_bytecode) {
 				auto bcode = parent->bytecode_compilation_progress();
-
+				{
+					fif_call imm2 = leave_scope;
+					uint64_t imm2_bytes = 0;
+					memcpy(&imm2_bytes, &imm2, 8);
+					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				}
 				fif_call imm = unconditional_jump;
 				uint64_t imm_bytes = 0;
 				memcpy(&imm_bytes, &imm, 8);
@@ -2517,11 +2954,21 @@ public:
 				bytecode_second_branch_point = bcode->size();
 				bcode->push_back(0);
 				(*bcode)[bytecode_first_branch_point] = int32_t(bcode->size() - (bytecode_first_branch_point - 2));
+				{
+					fif_call imm2 = enter_scope;
+					uint64_t imm2_bytes = 0;
+					memcpy(&imm2_bytes, &imm2, 8);
+					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				}
 			}
 			if(typechecking_failed(env.mode)) {
 				typechecking_failed_on_first_branch = true;
 				env.mode = reset_typechecking(env.mode);
 			}
+
+			vars.clear();
+			lets.clear();
 		}
 	}
 	virtual control_structure get_type() {
@@ -2538,6 +2985,22 @@ public:
 			env.mode = fif_mode::interpreting;
 		}
 		if(env.mode == fif_mode::interpreting) {
+			auto* ws = env.compiler_stack.back()->working_state();
+			for(auto& l : vars) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			for(auto& l : lets) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+
 			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
@@ -2574,6 +3037,15 @@ public:
 
 		if(env.mode == fif_mode::compiling_bytecode) {
 			auto bcode = parent->bytecode_compilation_progress();
+
+			{
+				fif_call imm2 = leave_scope;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+			}
+
 			if(!first_branch_state)
 				(*bcode)[bytecode_first_branch_point] = int32_t(bcode->size() - (bytecode_first_branch_point - 2));
 			else
@@ -2627,7 +3099,41 @@ public:
 						// leave working state as is
 					}
 				}
+
+				auto* ws = env.compiler_stack.back()->working_state();
+				for(auto& l : vars) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+						ws->push_back_main(l.second->type, l.second->data, iresult);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
+				for(auto& l : lets) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
 			} else {
+				auto* ws = env.compiler_stack.back()->working_state();
+				for(auto& l : vars) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+						ws->push_back_main(l.second->type, l.second->data, iresult);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
+				for(auto& l : lets) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
+
 				auto in_fn = env.compiler_stack.back()->llvm_function();
 				auto post_if = LLVMCreateBasicBlockInContext(env.llvm_context, "then-branch");
 				*pb = post_if;
@@ -2736,7 +3242,54 @@ public:
 	LLVMBasicBlockRef body_block = nullptr;
 	std::vector<LLVMValueRef> phinodes;
 
-	while_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent) {
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
+	environment& env;
+
+	virtual var_data* get_var(std::string const& name) {
+		if(auto it = vars.find(name); it != vars.end()) {
+			return it->second.get();
+		}
+		return parent->get_var(name);
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+
+		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
+		added.first->second->type = type;
+		added.first->second->data = 0;
+		added.first->second->alloc = pre_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
+		return added.first->second.get();
+	}
+	virtual let_data* get_let(std::string const& name) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return it->second.get();
+		}
+		return parent->get_let(name);
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
+		added.first->second->type = type;
+		added.first->second->data = data;
+		added.first->second->expression = expression;
+		if(auto it = lets.find(name); it != lets.end()) {
+			return  it->second.get();
+		}
+		return nullptr;
+	}
+
+	while_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent), env(env) {
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
 		initial_state->min_main_depth = entry_state.min_main_depth;
@@ -2749,6 +3302,14 @@ public:
 		if(env.mode == fif_mode::compiling_bytecode) {
 			auto bcode = parent->bytecode_compilation_progress();
 			loop_entry_point = bcode->size();
+
+			{
+				fif_call imm2 = enter_scope;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+			}
 		}
 		if(env.mode == fif_mode::compiling_llvm) {
 			phi_pass = true;
@@ -2788,6 +3349,24 @@ public:
 				}
 			}
 
+			auto* ws = env.compiler_stack.back()->working_state();
+			for(auto& l : vars) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			for(auto& l : lets) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			lets.clear();
+			vars.clear();
+
 			if(env.mode == fif_mode::interpreting) {
 				if(iworking_state->main_data_back(0) == 0) {
 					intepreter_skip_body = true;
@@ -2796,6 +3375,15 @@ public:
 				iworking_state->pop_main();
 			} else if(env.mode == fif_mode::compiling_bytecode) {
 				auto bcode = parent->bytecode_compilation_progress();
+
+				{
+					fif_call imm2 = leave_scope;
+					uint64_t imm2_bytes = 0;
+					memcpy(&imm2_bytes, &imm2, 8);
+					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				}
+
 				fif_call imm = conditional_jump;
 				uint64_t imm_bytes = 0;
 				memcpy(&imm_bytes, &imm, 8);
@@ -2804,6 +3392,14 @@ public:
 				end_of_loop_branch = bcode->size();
 				bcode->push_back(0);
 				iworking_state->pop_main();
+
+				{
+					fif_call imm2 = enter_scope;
+					uint64_t imm2_bytes = 0;
+					memcpy(&imm2_bytes, &imm2, 8);
+					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				}
 			} else if(env.mode == fif_mode::compiling_llvm) {
 				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
 					conditional_expr = iworking_state->main_ex_back(0);
@@ -2826,16 +3422,49 @@ public:
 		if(env.mode == fif_mode::typechecking_lvl1_failed && intepreter_skip_body) {
 			env.mode = fif_mode::interpreting;
 			
+			auto* ws = env.compiler_stack.back()->working_state();
+			for(auto& l : vars) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			for(auto& l : lets) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+
 			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
 
 		if(env.mode == fif_mode::interpreting) {
+			auto* ws = env.compiler_stack.back()->working_state();
+			for(auto& l : vars) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			for(auto& l : lets) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			lets.clear();
+			vars.clear();
+
 			if(!saw_conditional && iworking_state->main_type_back(0) == fif_bool) {
 				if(iworking_state->main_data_back(0) == 0) {
 					iworking_state->pop_main();
 					parent->set_working_state(std::move(iworking_state));
-
 					return true;
 				}
 				iworking_state->pop_main();
@@ -2857,6 +3486,15 @@ public:
 				}
 
 				auto bcode = parent->bytecode_compilation_progress();
+
+				{
+					fif_call imm2 = leave_scope;
+					uint64_t imm2_bytes = 0;
+					memcpy(&imm2_bytes, &imm2, 8);
+					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				}
+
 				fif_call imm = reverse_conditional_jump;
 				uint64_t imm_bytes = 0;
 				memcpy(&imm_bytes, &imm, 8);
@@ -2875,6 +3513,15 @@ public:
 
 			if(saw_conditional) {
 				auto bcode = parent->bytecode_compilation_progress();
+
+				{
+					fif_call imm2 = leave_scope;
+					uint64_t imm2_bytes = 0;
+					memcpy(&imm2_bytes, &imm2, 8);
+					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				}
+
 				fif_call imm = unconditional_jump;
 				uint64_t imm_bytes = 0;
 				memcpy(&imm_bytes, &imm, 8);
@@ -2890,6 +3537,23 @@ public:
 
 			return true;
 		} else if(env.mode == fif_mode::compiling_llvm) {
+			auto* ws = env.compiler_stack.back()->working_state();
+			for(auto& l : vars) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+					ws->push_back_main(l.second->type, l.second->data, iresult);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			for(auto& l : lets) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+
 			if(!saw_conditional) {
 				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
 					conditional_expr = iworking_state->main_ex_back(0);
@@ -3037,7 +3701,53 @@ public:
 	LLVMBasicBlockRef body_block = nullptr;
 	std::vector<LLVMValueRef> phinodes;
 
-	do_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent) {
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
+	environment& env;
+
+	virtual var_data* get_var(std::string const& name) {
+		if(auto it = vars.find(name); it != vars.end()) {
+			return it->second.get();
+		}
+		return parent->get_var(name);
+	}
+	virtual var_data* create_var(std::string const& name, int32_t type) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
+		added.first->second->type = type;
+		added.first->second->data = 0;
+		added.first->second->alloc = pre_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
+		return added.first->second.get();
+	}
+	virtual let_data* get_let(std::string const& name) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return it->second.get();
+		}
+		return parent->get_let(name);
+	}
+	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		if(auto it = lets.find(name); it != lets.end()) {
+			return nullptr;
+		}
+		if(auto it = vars.find(name); it != vars.end()) {
+			return nullptr;
+		}
+		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
+		added.first->second->type = type;
+		added.first->second->data = data;
+		added.first->second->expression = expression;
+		if(auto it = lets.find(name); it != lets.end()) {
+			return  it->second.get();
+		}
+		return nullptr;
+	}
+
+	do_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent), env(env) {
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
 		initial_state->min_main_depth = entry_state.min_main_depth;
@@ -3050,6 +3760,14 @@ public:
 		if(env.mode == fif_mode::compiling_bytecode) {
 			auto bcode = parent->bytecode_compilation_progress();
 			loop_entry_point = bcode->size();
+
+			{
+				fif_call imm2 = enter_scope;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+			}
 		}
 		if(env.mode == fif_mode::compiling_llvm) {
 			phi_pass = true;
@@ -3074,11 +3792,29 @@ public:
 	}
 	virtual bool finish(environment& env) {
 		if(env.mode == fif_mode::interpreting) {
+			auto* ws = env.compiler_stack.back()->working_state();
+			for(auto& l : vars) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			for(auto& l : lets) {
+				if(env.dict.type_array[l.second->type].do_destructor) {
+					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+					ws->pop_main();
+				}
+			}
+			lets.clear();
+			vars.clear();
+
 			if(iworking_state->main_type_back(0) == fif_bool) {
 				if(iworking_state->main_data_back(0) != 0) {
 					iworking_state->pop_main();
-					parent->set_working_state(std::move(iworking_state));
 
+					parent->set_working_state(std::move(iworking_state));
 					return true;
 				}
 				iworking_state->pop_main();
@@ -3093,12 +3829,20 @@ public:
 			if(iworking_state->main_type_back(0) == fif_bool) {
 				iworking_state->pop_main();
 			} else {
-				env.report_error("while loop terminated with an appropriate conditional");
+				env.report_error("do loop not terminated with an appropriate conditional");
 				env.mode = fif_mode::error;
 				return true;
 			}
 
 			auto bcode = parent->bytecode_compilation_progress();
+			{
+				fif_call imm2 = leave_scope;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+			}
+
 			fif_call imm = conditional_jump;
 			uint64_t imm_bytes = 0;
 			memcpy(&imm_bytes, &imm, 8);
@@ -3127,7 +3871,7 @@ public:
 
 			bool final_types_match = stack_types_match(*initial_state, *iworking_state);
 			if(!final_types_match) {
-				env.report_error("while loop had a net stack effect");
+				env.report_error("do loop had a net stack effect");
 				env.mode = fif_mode::error;
 				return true;
 			}
@@ -3138,6 +3882,24 @@ public:
 				LLVMAppendExistingBasicBlock(parent->llvm_function(), *pb);
 
 				LLVMPositionBuilderAtEnd(env.llvm_builder, in_block);
+
+				auto* ws = env.compiler_stack.back()->working_state();
+				for(auto& l : vars) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+						ws->push_back_main(l.second->type, l.second->data, iresult);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
+				for(auto& l : lets) {
+					if(env.dict.type_array[l.second->type].do_destructor) {
+						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+						ws->pop_main();
+					}
+				}
+
 				LLVMBuildCondBr(env.llvm_builder, conditional_expr, *pb, body_block);
 
 				LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
@@ -3542,16 +4304,16 @@ bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word_instan
 			r.rstack_consumed = std::max(c.rstack, erb->second.rstack_consumed);
 
 			record_holder->tr.insert_or_assign((uint64_t(w) << 32) | uint64_t(word_index), r);
-		} else {
-			typecheck_3_record r;
-			r.stack_height_added_at = int32_t(current_type_state.main_size());
-			r.rstack_height_added_at = int32_t(current_type_state.return_size());
+			} else {
+				typecheck_3_record r;
+				r.stack_height_added_at = int32_t(current_type_state.main_size());
+				r.rstack_height_added_at = int32_t(current_type_state.return_size());
 
-			auto c = get_stack_consumption(w, word_index, env);
-			r.stack_consumed = c.stack;
-			r.rstack_consumed = c.rstack;
+				auto c = get_stack_consumption(w, word_index, env);
+				r.stack_consumed = c.stack;
+				r.rstack_consumed = c.rstack;
 
-			record_holder->tr.insert_or_assign((uint64_t(w) << 32) | uint64_t(word_index), r);
+				record_holder->tr.insert_or_assign((uint64_t(w) << 32) | uint64_t(word_index), r);
 		}
 
 		/*
@@ -3622,6 +4384,64 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 	return true;
 }
 
+inline let_data* get_global_let(environment& env, std::string const& name) {
+	for(auto& p : env.compiler_stack) {
+		if(p->get_type() == control_structure::globals)
+			return static_cast<compiler_globals_layer*>(p.get())->get_global_let(name);
+	}
+	return nullptr;
+}
+inline var_data* get_global_var(environment& env, std::string const& name) {
+	for(auto& p : env.compiler_stack) {
+		if(p->get_type() == control_structure::globals)
+			return static_cast<compiler_globals_layer*>(p.get())->get_global_var(name);
+	}
+	return nullptr;
+}
+
+inline int32_t* immediate_local(state_stack& s, int32_t* p, environment* e) {
+	char* name = 0;
+	memcpy(&name, p + 2, 8);
+
+	var_data* l = e->compiler_stack.back()->get_var(std::string(name));
+	if(!l) {
+		e->report_error("unable to find local var");
+		return nullptr;
+	}
+	int32_t type = 0;
+	memcpy(&type, p + 4, 4);
+	s.push_back_main(type, (int64_t)l, nullptr);
+	return p + 5;
+}
+
+inline int32_t* immediate_let(state_stack& s, int32_t* p, environment* e) {
+	char* name = 0;
+	memcpy(&name, p + 2, 8);
+	let_data* l = e->compiler_stack.back()->get_let(std::string(name));
+	if(!l) {
+		e->report_error("unable to find local let");
+		return nullptr;
+	}
+	int32_t type = 0;
+	memcpy(&type, p + 4, 4);
+	s.push_back_main(type, l->data, nullptr);
+	return p + 5;
+}
+
+inline int32_t* immediate_global(state_stack& s, int32_t* p, environment* e) {
+	char* name = 0;
+	memcpy(&name, p + 2, 8);
+	var_data* v = get_global_var(*e, std::string(name));
+	if(!v) {
+		e->report_error("unable to find local let");
+		return nullptr;
+	}
+	int32_t type = 0;
+	memcpy(&type, p + 4, 4);
+	s.push_back_main(type, (int64_t)v, nullptr);
+	return p + 5;
+}
+
 inline void execute_fif_word(parse_result word, environment& env) {
 	auto ws = env.compiler_stack.back()->working_state();
 	if(!ws) {
@@ -3635,6 +4455,7 @@ inline void execute_fif_word(parse_result word, environment& env) {
 	//if(word.content.length() > 0 && word.content[0] == '@') {
 	//	do_construct_type(*ws, resolve_type(word.content.substr(1), env), &env);
 	//} else 
+	auto content_string = std::string{ word.content };
 	if(is_integer(word.content.data(), word.content.data() + word.content.length())) {
 		do_immediate_i32(*ws, parse_int(word.content), &env);
 	} else if(is_fp(word.content.data(), word.content.data() + word.content.length())) {
@@ -3806,7 +4627,10 @@ inline void execute_fif_word(parse_result word, environment& env) {
 
 			if(std::holds_alternative<interpreted_word_instance>(wi)) {
 				if(env.mode == fif_mode::interpreting) {
+					env.compiler_stack.push_back(std::make_unique<runtime_function_scope>(env.compiler_stack.back().get(), env));
 					execute_fif_word(std::get<interpreted_word_instance>(wi), *ws, env);
+					env.compiler_stack.back()->finish(env);
+					env.compiler_stack.pop_back();
 				} else if(env.mode == fif_mode::compiling_llvm) {
 					std::span<int32_t const> desc{ env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count) };
 					llvm_make_function_call(env, std::get<interpreted_word_instance>(wi).llvm_function, desc);
@@ -3822,8 +4646,6 @@ inline void execute_fif_word(parse_result word, environment& env) {
 							cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 							cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 							cbytes->push_back(match.word_index);
-						} else if(cbytes->size() < inlining_cells_limit) {
-							cbytes->insert(cbytes->end(), env.dict.all_compiled.data() + precompiled, env.dict.all_compiled.data() + precompiled + precompiled_sz);
 						} else {
 							fif_call imm = call_function;
 							uint64_t imm_bytes = 0;
@@ -3852,6 +4674,103 @@ inline void execute_fif_word(parse_result word, environment& env) {
 				}
 			}
 		}
+	} else if(auto let = env.compiler_stack.back()->get_let(content_string); word.is_string == false && let) {
+		if(typechecking_mode(env.mode)) {
+			ws->push_back_main(let->type, let->data, let->expression);
+		} else if(env.mode == fif_mode::compiling_llvm) {
+			ws->push_back_main(let->type, let->data, let->expression);
+		} else if(env.mode == fif_mode::interpreting) {
+			ws->push_back_main(let->type, let->data, let->expression);
+		} else if(env.mode == fif_mode::compiling_bytecode) {
+			// implement let
+			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			if(cbytes) {
+				fif_call imm = immediate_let;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+
+				auto string_constant = env.get_string_constant(word.content);
+				char const* cptr = string_constant.data();
+
+				uint64_t let_addr = 0;
+				memcpy(&let_addr, &cptr, 8);
+				cbytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
+				cbytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+
+				cbytes->push_back(let->type);
+			}
+			ws->push_back_main(let->type, 0, 0);
+		}
+	} else if(auto var = env.compiler_stack.back()->get_var(content_string); word.is_string == false && var) {
+		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), var->type, -1 };
+		std::vector<int32_t> subs;
+		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
+
+		if(typechecking_mode(env.mode)) {
+			ws->push_back_main(mem_type.type, 0, 0);
+		} else if(env.mode == fif_mode::compiling_llvm) {
+			ws->push_back_main(mem_type.type, 0, var->alloc);
+		} else if(env.mode == fif_mode::interpreting) {
+			ws->push_back_main(mem_type.type, (int64_t)(var), 0);
+		} else if(env.mode == fif_mode::compiling_bytecode) {
+			// implement let
+			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			if(cbytes) {
+				fif_call imm = immediate_local;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+
+				auto string_constant = env.get_string_constant(word.content);
+				char const* cptr = string_constant.data();
+				uint64_t let_addr = 0;
+				memcpy(&let_addr, &cptr, 8);
+				cbytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
+				cbytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+
+				cbytes->push_back(mem_type.type);
+			}
+			ws->push_back_main(mem_type.type, 0, 0);
+		}
+	} else if(auto letb = get_global_let(env, content_string); word.is_string == false && letb) {
+
+	} else if(auto varb = get_global_var(env, content_string); word.is_string == false && varb) {
+		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), varb->type, -1 };
+		std::vector<int32_t> subs;
+		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
+
+		if(typechecking_mode(env.mode)) {
+			ws->push_back_main(mem_type.type, 0, 0);
+		} else if(env.mode == fif_mode::compiling_llvm) {
+			ws->push_back_main(mem_type.type, 0, varb->alloc);
+		} else if(env.mode == fif_mode::interpreting) {
+			ws->push_back_main(mem_type.type, (int64_t)(varb), 0);
+		} else if(env.mode == fif_mode::compiling_bytecode) {
+			// implement let
+			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			if(cbytes) {
+				fif_call imm = immediate_global;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+
+				auto string_constant = env.get_string_constant(word.content);
+				char const* cptr = string_constant.data();
+				uint64_t let_addr = 0;
+				memcpy(&let_addr, &cptr, 8);
+				cbytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
+				cbytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+
+				cbytes->push_back(mem_type.type);
+			}
+			ws->push_back_main(mem_type.type, 0, 0);
+		}
+	} else if(auto rtype = resolve_type(word.content, env); rtype != -1) {
+		do_immediate_type(*ws, rtype, &env);
 	} else {
 		env.report_error(std::string("attempted to execute an unknown word: ") + std::string(word.content));
 		env.mode = fif_mode::error;
@@ -4678,6 +5597,36 @@ inline int32_t* impl_store(fif::state_stack& s, int32_t* p, fif::environment* e)
 	return p + 2;
 }
 
+inline int32_t* impl_uninit_store(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(fif::typechecking_failed(e->mode))
+		return p + 2;
+
+	auto ptr_type = s.main_type_back(0);
+	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
+	auto pointer_contents = e->dict.all_stack_types[decomp + 1];
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildStore(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0));
+		s.pop_main();
+		s.pop_main();
+	} else if(e->mode == fif::fif_mode::interpreting) {
+
+		auto v = s.main_data_back(0);
+		int64_t* ptr_val = (int64_t*)v;
+
+		auto to_write = s.main_data_back(1);
+
+		memcpy(ptr_val, &to_write, 8);
+
+		s.pop_main();
+		s.pop_main();
+	} else if(fif::typechecking_mode(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+	}
+	return p + 2;
+}
+
 inline int32_t* pointer_cast(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->source_stack.empty()) {
 		e->report_error("pointer cast was unable to read the word describing the pointer type");
@@ -4807,6 +5756,176 @@ inline int32_t* free_buffer(fif::state_stack& s, int32_t* p, fif::environment* e
 	return p + 2;
 }
 
+inline int32_t* do_let_creation(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	char* string_ptr = nullptr;
+	memcpy(&string_ptr, p + 2, 8);
+
+	auto l = e->compiler_stack.back()->create_let(std::string{ string_ptr }, s.main_type_back(0), s.main_data_back(0), nullptr);
+	if(!l) {
+		e->report_error("could not create a let with that name");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+	s.pop_main();
+	return p + 4;
+}
+
+inline int32_t* create_let(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->source_stack.empty()) {
+		e->report_error("let was unable to read the declaration name");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+	auto name = read_token(e->source_stack.back(), *e);
+
+	if(e->mode == fif_mode::interpreting || (typechecking_mode(e->mode) && !typechecking_failed(e->mode))) {
+		auto l = e->compiler_stack.back()->create_let(std::string{ name.content }, s.main_type_back(0), s.main_data_back(0), nullptr);
+		if(!l) {
+			e->report_error("could not create a let with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
+	} else if(e->mode == fif_mode::compiling_llvm) {
+		auto l = e->compiler_stack.back()->create_let(std::string{ name.content }, s.main_type_back(0), 0, s.main_ex_back(0));
+		if(!l) {
+			e->report_error("could not create a let with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto l = e->compiler_stack.back()->create_let(std::string{ name.content }, s.main_type_back(0), 0, 0);
+		if(!l) {
+			e->report_error("could not create a let with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			fif_call imm = do_let_creation;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+
+			auto string_constant = e->get_string_constant(name.content);
+			char const* cptr = string_constant.data();
+			uint64_t let_addr = 0;
+			memcpy(&let_addr, &cptr, 8);
+			compile_bytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+		}
+	}
+
+	if(!typechecking_failed(e->mode)) {
+		s.pop_main();
+	}
+	return p + 2;
+}
+
+inline int32_t* do_var_creation(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	char* string_ptr = nullptr;
+	memcpy(&string_ptr, p + 2, 8);
+
+	auto l = e->compiler_stack.back()->create_var(std::string{ string_ptr }, s.main_type_back(0));
+	if(!l) {
+		e->report_error("could not create a var with that name");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+	l->data = s.main_data_back(0);
+	s.pop_main();
+	return p + 4;
+}
+
+inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->source_stack.empty()) {
+		e->report_error("war was unable to read the declaration name");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+	auto name = read_token(e->source_stack.back(), *e);
+
+	if(e->mode == fif_mode::interpreting || (typechecking_mode(e->mode) && !typechecking_failed(e->mode))) {
+		auto l = e->compiler_stack.back()->create_var(std::string{ name.content }, s.main_type_back(0));
+		if(!l) {
+			e->report_error("could not create a var with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
+		l->data = s.main_data_back(0);
+	} else if(e->mode == fif_mode::compiling_llvm) {
+		auto l = e->compiler_stack.back()->create_var(std::string{ name.content }, s.main_type_back(0));
+		if(!l) {
+			e->report_error("could not create a var with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
+		LLVMBuildStore(e->llvm_builder, s.main_ex_back(0), l->alloc);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto l = e->compiler_stack.back()->create_var(std::string{ name.content }, s.main_type_back(0));
+		if(!l) {
+			e->report_error("could not create a var with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			fif_call imm = do_var_creation;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+
+			auto string_constant = e->get_string_constant(name.content);
+			char const* cptr = string_constant.data();
+			uint64_t let_addr = 0;
+			memcpy(&let_addr, &cptr, 8);
+			compile_bytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+		}
+	}
+
+	if(!typechecking_failed(e->mode)) {
+		s.pop_main();
+	}
+	return p + 2;
+}
+
+inline int32_t* create_global_impl(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->source_stack.empty()) {
+		e->report_error("global was unable to read the declaration name");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+	auto name = read_token(e->source_stack.back(), *e);
+	auto type = s.main_data_back(0);
+
+	if(typechecking_mode(e->mode)) {
+		if(!typechecking_failed(e->mode))
+			s.pop_main();
+		return p + 2;
+	}
+
+	s.pop_main();
+	for(auto& ptr : e->compiler_stack) {
+		if(ptr->get_type() == control_structure::globals) {
+			auto existing = static_cast<compiler_globals_layer*>(ptr.get())->get_global_var(std::string{ name.content });
+
+			if(existing) {
+				e->report_error("duplicate global definition");
+				e->mode = fif_mode::error;
+				return nullptr;
+			}
+
+			static_cast<compiler_globals_layer*>(ptr.get())->create_global_var(std::string{ name.content }, int32_t(type));
+			return p + 2;
+		}
+	}
+
+	e->report_error("could not find the globals layer");
+	e->mode = fif_mode::error;
+	return nullptr;
+}
 
 void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ":", colon_definition, { });
@@ -4843,6 +5962,7 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "heap-free", impl_heap_free, { fif_ptr, std::numeric_limits<int32_t>::max(), -2, -1, -1, -2 });
 	add_precompiled(fif_env, "@", impl_load, { fif_ptr, std::numeric_limits<int32_t>::max(), -2, -1, -1, -2 });
 	add_precompiled(fif_env, "!", impl_store, { fif_ptr, std::numeric_limits<int32_t>::max(), -2, -1, -2 });
+	add_precompiled(fif_env, "!!", impl_uninit_store, { fif_ptr, std::numeric_limits<int32_t>::max(), -2, -1, -2 });
 	add_precompiled(fif_env, "sizeof", impl_sizeof, { -1, fif_i32 }, true);
 	add_precompiled(fif_env, "buf-free", free_buffer, { fif_opaque_ptr });
 	add_precompiled(fif_env, "buf-alloc", allocate_buffer, { fif_i32, -1, fif_opaque_ptr });
@@ -4853,6 +5973,9 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "buf-add", impl_index, { fif_opaque_ptr, fif_i64, -1, fif_opaque_ptr });
 	add_precompiled(fif_env, "buf-add", impl_index, { fif_opaque_ptr, fif_i16, -1, fif_opaque_ptr });
 	add_precompiled(fif_env, "buf-add", impl_index, { fif_opaque_ptr, fif_i8, -1, fif_opaque_ptr });
+	add_precompiled(fif_env, "let", create_let, { -2 }, true);
+	add_precompiled(fif_env, "var", create_var, { -2 }, true);
+	add_precompiled(fif_env, "global", create_global_impl, { fif_type });
 
 	auto preinterpreted =
 		": r@ r> dup >r ; "

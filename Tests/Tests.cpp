@@ -921,3 +921,164 @@ TEST_CASE("pointers tests", "fif combined tests") {
 		}
 	}
 }
+
+
+TEST_CASE("variables test", "fif combined tests") {
+	SECTION("let bytecode") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			": t let a let b a b ; "
+			"1 2 t drop",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 2);
+	}
+	SECTION("let llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			": t let a let b a b ; "
+			": r 1 2 t drop ; "
+			, values);
+
+		auto export_fn = fif::make_exportable_function("test_jit_fn", "r", { }, { }, fif_env);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+
+		CHECK(!(error));
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+			std::cout << msg << std::endl;
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			REQUIRE(bare_address != 0);
+			using ftype = int32_t(*)();
+			ftype fn = (ftype)bare_address;
+			CHECK(fn() == 2);
+		}
+	}
+
+	SECTION("locals bytecode") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			"i32 global start "
+			": t " // I
+			"	0 var sum "
+			"	dup start !! " // I 
+			"	while "
+			"		dup 4 < " // I bool
+			"	loop " // I
+			"		dup sum @ + sum ! " // I 
+			"		1 + " // I
+			"	end-while "
+			"	drop " // -
+			"	start @ sum @ + ; "
+			"2 t", // 2 + (2 + 3) = 7
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 7);
+	}
+	SECTION("locals llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			"i32 global start "
+			": t "
+			"	0 var sum "
+			"	dup start !! "
+			"	while "
+			"		dup 4 < "
+			"	loop "
+			"		dup sum @ + sum ! "
+			"		1 + "
+			"	end-while "
+			"	drop "
+			"	start @ sum @ + ; "
+			"", // 2 + (2 + 3) = 7
+			values);
+
+		auto export_fn = fif::make_exportable_function("test_jit_fn", "t", { fif::fif_i32 }, { }, fif_env);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+
+		CHECK(!(error));
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+			std::cout << msg << std::endl;
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			REQUIRE(bare_address != 0);
+			using ftype = int32_t(*)(int32_t);
+			ftype fn = (ftype)bare_address;
+			CHECK(fn(2) == 7);
+			CHECK(fn(1) == 7);
+			CHECK(fn(0) == 6);
+		}
+	}
+}
