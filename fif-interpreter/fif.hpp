@@ -450,6 +450,10 @@ using word_types = std::variant<interpreted_word_instance, compiled_word_instanc
 struct word {
 	std::vector<int32_t> instances;
 	std::string source;
+	int32_t specialization_of = -1;
+	int32_t stack_types_start = 0;
+	int32_t stack_types_count = 0;
+	bool treat_as_base = false;
 	bool immediate =  false;
 	bool being_compiled = false;
 	bool being_typechecked = false;
@@ -510,6 +514,10 @@ public:
 	void ready_llvm_types(LLVMContextRef llvm_context) {
 		type_array[fif_i32].llvm_type = LLVMInt32TypeInContext(llvm_context);
 		type_array[fif_i32].zero_constant = +[](LLVMContextRef c) {
+			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, true);
+		};
+		type_array[fif_type].llvm_type = LLVMInt32TypeInContext(llvm_context);
+		type_array[fif_type].zero_constant = +[](LLVMContextRef c) {
 			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, true);
 		};
 		type_array[fif_f32].llvm_type = LLVMFloatTypeInContext(llvm_context);
@@ -673,6 +681,9 @@ public:
 	}
 	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
 		return parent ? parent->create_let(name, type, data, expression) : nullptr;
+	}
+	virtual std::vector<int32_t>* type_substitutions() {
+		return parent ? parent->type_substitutions() : nullptr;
 	}
 };
 
@@ -1092,7 +1103,134 @@ struct type_match {
 	uint32_t end_match_pos = 0;
 };
 
-inline type_match internal_resolve_type(std::string_view text, environment& env) {
+
+inline bool is_positive_integer(char const* start, char const* end) {
+	if(start == end)
+		return false;
+	while(start < end) {
+		if(!isdigit(*start))
+			return false;
+		++start;
+	}
+	return true;
+}
+
+inline bool is_integer(char const* start, char const* end) {
+	if(start == end)
+		return false;
+	if(*start == '-')
+		return is_positive_integer(start + 1, end);
+	else
+		return is_positive_integer(start, end);
+}
+
+inline bool is_positive_fp(char const* start, char const* end) {
+	auto const decimal = std::find(start, end, '.');
+	if(decimal == end) {
+		return is_positive_integer(start, end);
+	} else if(decimal == start) {
+		return is_positive_integer(decimal + 1, end);
+	} else {
+		return is_positive_integer(start, decimal) && (decimal + 1 == end || is_positive_integer(decimal + 1, end));
+	}
+}
+
+inline bool is_fp(char const* start, char const* end) {
+	if(start == end)
+		return false;
+	if(*start == '-')
+		return is_positive_fp(start + 1, end);
+	else
+		return is_positive_fp(start, end);
+}
+
+inline double pow_10(int n) {
+	static double const e[] = {// 1e-0...1e308: 309 * 8 bytes = 2472 bytes
+		1e+0, 1e+1, 1e+2, 1e+3, 1e+4, 1e+5, 1e+6, 1e+7, 1e+8, 1e+9, 1e+10, 1e+11, 1e+12, 1e+13, 1e+14, 1e+15, 1e+16, 1e+17, 1e+18,
+		1e+19, 1e+20, 1e+21, 1e+22, 1e+23, 1e+24, 1e+25, 1e+26, 1e+27, 1e+28, 1e+29, 1e+30, 1e+31, 1e+32, 1e+33, 1e+34, 1e+35,
+		1e+36, 1e+37, 1e+38, 1e+39, 1e+40, 1e+41, 1e+42, 1e+43, 1e+44, 1e+45, 1e+46, 1e+47, 1e+48, 1e+49, 1e+50, 1e+51, 1e+52,
+		1e+53, 1e+54, 1e+55, 1e+56, 1e+57, 1e+58, 1e+59, 1e+60, 1e+61, 1e+62, 1e+63, 1e+64, 1e+65, 1e+66, 1e+67, 1e+68, 1e+69,
+		1e+70, 1e+71, 1e+72, 1e+73, 1e+74, 1e+75, 1e+76, 1e+77, 1e+78, 1e+79, 1e+80, 1e+81, 1e+82, 1e+83, 1e+84, 1e+85, 1e+86,
+		1e+87, 1e+88, 1e+89, 1e+90, 1e+91, 1e+92, 1e+93, 1e+94, 1e+95, 1e+96, 1e+97, 1e+98, 1e+99, 1e+100, 1e+101, 1e+102, 1e+103,
+		1e+104, 1e+105, 1e+106, 1e+107, 1e+108, 1e+109, 1e+110, 1e+111, 1e+112, 1e+113, 1e+114, 1e+115, 1e+116, 1e+117, 1e+118,
+		1e+119, 1e+120, 1e+121, 1e+122, 1e+123, 1e+124, 1e+125, 1e+126, 1e+127, 1e+128, 1e+129, 1e+130, 1e+131, 1e+132, 1e+133,
+		1e+134, 1e+135, 1e+136, 1e+137, 1e+138, 1e+139, 1e+140, 1e+141, 1e+142, 1e+143, 1e+144, 1e+145, 1e+146, 1e+147, 1e+148,
+		1e+149, 1e+150, 1e+151, 1e+152, 1e+153, 1e+154, 1e+155, 1e+156, 1e+157, 1e+158, 1e+159, 1e+160, 1e+161, 1e+162, 1e+163,
+		1e+164, 1e+165, 1e+166, 1e+167, 1e+168, 1e+169, 1e+170, 1e+171, 1e+172, 1e+173, 1e+174, 1e+175, 1e+176, 1e+177, 1e+178,
+		1e+179, 1e+180, 1e+181, 1e+182, 1e+183, 1e+184, 1e+185, 1e+186, 1e+187, 1e+188, 1e+189, 1e+190, 1e+191, 1e+192, 1e+193,
+		1e+194, 1e+195, 1e+196, 1e+197, 1e+198, 1e+199, 1e+200, 1e+201, 1e+202, 1e+203, 1e+204, 1e+205, 1e+206, 1e+207, 1e+208,
+		1e+209, 1e+210, 1e+211, 1e+212, 1e+213, 1e+214, 1e+215, 1e+216, 1e+217, 1e+218, 1e+219, 1e+220, 1e+221, 1e+222, 1e+223,
+		1e+224, 1e+225, 1e+226, 1e+227, 1e+228, 1e+229, 1e+230, 1e+231, 1e+232, 1e+233, 1e+234, 1e+235, 1e+236, 1e+237, 1e+238,
+		1e+239, 1e+240, 1e+241, 1e+242, 1e+243, 1e+244, 1e+245, 1e+246, 1e+247, 1e+248, 1e+249, 1e+250, 1e+251, 1e+252, 1e+253,
+		1e+254, 1e+255, 1e+256, 1e+257, 1e+258, 1e+259, 1e+260, 1e+261, 1e+262, 1e+263, 1e+264, 1e+265, 1e+266, 1e+267, 1e+268,
+		1e+269, 1e+270, 1e+271, 1e+272, 1e+273, 1e+274, 1e+275, 1e+276, 1e+277, 1e+278, 1e+279, 1e+280, 1e+281, 1e+282, 1e+283,
+		1e+284, 1e+285, 1e+286, 1e+287, 1e+288, 1e+289, 1e+290, 1e+291, 1e+292, 1e+293, 1e+294, 1e+295, 1e+296, 1e+297, 1e+298,
+		1e+299, 1e+300, 1e+301, 1e+302, 1e+303, 1e+304, 1e+305, 1e+306, 1e+307, 1e+308 };
+	return e[n];
+}
+
+bool float_from_chars(char const* start, char const* end, float& float_out) { // returns true on success
+	// first read the chars into an int, keeping track of the magnitude
+	// multiply by a pow of 10
+
+	int32_t magnitude = 0;
+	int64_t accumulated = 0;
+	bool after_decimal = false;
+
+	if(start == end) {
+		float_out = 0.0f;
+		return true;
+	}
+
+	bool is_negative = false;
+	if(*start == '-') {
+		is_negative = true;
+		++start;
+	} else if(*start == '+') {
+		++start;
+	}
+
+	for(; start < end; ++start) {
+		if(*start >= '0' && *start <= '9') {
+			accumulated = accumulated * 10 + (*start - '0');
+			magnitude += int32_t(after_decimal);
+		} else if(*start == '.') {
+			after_decimal = true;
+		} else {
+			// maybe check for non space and throw an error?
+		}
+	}
+	if(!is_negative) {
+		if(magnitude > 0)
+			float_out = float(double(accumulated) / pow_10(magnitude));
+		else
+			float_out = float(accumulated);
+	} else {
+		if(magnitude > 0)
+			float_out = -float(double(accumulated) / pow_10(magnitude));
+		else
+			float_out = -float(accumulated);
+	}
+	return true;
+}
+
+inline int32_t parse_int(std::string_view content) {
+	int32_t rvalue = 0;
+	auto result = std::from_chars(content.data(), content.data() + content.length(), rvalue);
+	if(result.ec == std::errc::invalid_argument) {
+		return 0;
+	}
+	return rvalue;
+}
+inline float parse_float(std::string_view content) {
+	float rvalue = 0.0f;
+	if(!float_from_chars(content.data(), content.data() + content.length(), rvalue)) {
+		return 0.0f;
+	}
+	return rvalue;
+}
+
+inline type_match internal_resolve_type(std::string_view text, environment& env, std::vector<int32_t>* type_subs) {
 	uint32_t mt_end = 0;
 	if(text == "ptr(nil)") {
 		return type_match{ fif_opaque_ptr, 8 };
@@ -1100,6 +1238,16 @@ inline type_match internal_resolve_type(std::string_view text, environment& env)
 	for(; mt_end < text.size(); ++mt_end) {
 		if(text[mt_end] == '(' || text[mt_end] == ')' || text[mt_end] == ',')
 			break;
+	}
+
+	if(text.size() > 0 && text[0] == '$') {
+		if(is_integer(text.data() + 1, text.data() + text.size())) {
+			auto v = parse_int(text.substr(1));
+			if(type_subs && v >= 0 && size_t(v) < type_subs->size()) {
+				return type_match{ (*type_subs)[v], mt_end };
+			}
+			return type_match{ fif_nil, mt_end };
+		}
 	}
 	if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
 		if(mt_end >= text.size() || text[mt_end] == ',' ||  text[mt_end] == ')') {	// case: plain type
@@ -1109,7 +1257,7 @@ inline type_match internal_resolve_type(std::string_view text, environment& env)
 		++mt_end;
 		std::vector<int32_t> subtypes;
 		while(mt_end < text.size() && text[mt_end] != ')') {
-			auto sub_match = internal_resolve_type(text.substr(mt_end), env);
+			auto sub_match = internal_resolve_type(text.substr(mt_end), env, type_subs);
 			subtypes.push_back(sub_match.type);
 			mt_end += sub_match.end_match_pos;
 			if(mt_end < text.size() && text[mt_end] == ',')
@@ -1168,8 +1316,59 @@ inline type_match internal_resolve_type(std::string_view text, environment& env)
 	return type_match{ -1, mt_end };
 }
 
-inline int32_t resolve_type(std::string_view text, environment& env) {
-	return internal_resolve_type(text, env).type;
+inline int32_t resolve_type(std::string_view text, environment& env, std::vector<int32_t>* type_subs) {
+	return internal_resolve_type(text, env, type_subs).type;
+}
+
+struct type_span_gen_result {
+	std::vector<int32_t> type_array;
+	uint32_t end_match_pos = 0;
+};
+
+inline type_span_gen_result internal_generate_type(std::string_view text, environment& env) {
+	uint32_t mt_end = 0;
+	type_span_gen_result r;
+	if(text == "ptr(nil)") {
+		r.type_array.push_back(fif_opaque_ptr);
+		r.end_match_pos = 8;
+		return r;
+	}
+	for(; mt_end < text.size(); ++mt_end) {
+		if(text[mt_end] == '(' || text[mt_end] == ')' || text[mt_end] == ',')
+			break;
+	}
+
+	if(text.size() > 0 && text[0] == '$') {
+		if(is_integer(text.data() + 1, text.data() + text.size())) {
+			auto v = parse_int(text.substr(1));
+
+			r.type_array.push_back( -(v + 2) );
+			r.end_match_pos = mt_end;
+			return r;
+		}
+	}
+	if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
+		r.type_array.push_back(it->second);
+		if(mt_end >= text.size() || text[mt_end] == ',' || text[mt_end] == ')') {	// case: plain type
+			r.end_match_pos = mt_end;
+			return r;
+		}
+		//followed by type list
+		++mt_end;
+		r.type_array.push_back(std::numeric_limits<int32_t>::max());
+		while(mt_end < text.size() && text[mt_end] != ')') {
+			auto sub_match = internal_generate_type(text.substr(mt_end), env);
+			r.type_array.insert(r.type_array.end(), sub_match.type_array.begin(), sub_match.type_array.end());
+			mt_end += sub_match.end_match_pos;
+			if(mt_end < text.size() && text[mt_end] == ',')
+				++mt_end;
+		}
+		r.type_array.push_back(-1);
+		if(mt_end < text.size() && text[mt_end] == ')')
+			++mt_end;
+	}
+
+	return r;
 }
 
 inline type_match resolve_span_type(std::span<int32_t const> tlist, std::vector<int32_t> const& type_subs, environment& env) {
@@ -1328,11 +1527,9 @@ inline uint32_t next_encoded_stack_type(std::span<int32_t const> desc) {
 	return i;
 }
 
-inline type_match_result match_stack_description(std::span<int32_t const> desc, state_stack& ts, environment& env) { // ret: true if function matched
+inline type_match_result match_stack_description(std::span<int32_t const> desc, state_stack& ts, environment& env, std::vector<int32_t>& type_subs) { // ret: true if function matched
 	int32_t match_position = 0;
 	// stack matching
-
-	std::vector<int32_t> type_subs;
 
 	auto const ssize = ts.main_size();
 	int32_t consumed_stack_cells = 0;
@@ -1506,25 +1703,29 @@ struct word_match_result {
 	int32_t stack_consumed = 0;
 	int32_t ret_stack_consumed = 0;
 	int32_t word_index = 0;
+	int32_t substitution_version = 0;
 };
 
 inline word_match_result match_word(word const& w, state_stack& ts, std::vector<word_types> const& all_instances, std::vector<int32_t> const& all_stack_types, environment& env) {
+	std::vector<int32_t> type_subs;
 	for(uint32_t i = 0; i < w.instances.size(); ++i) {
 		if(std::holds_alternative<interpreted_word_instance>(all_instances[w.instances[i]])) {
 			interpreted_word_instance const& s = std::get<interpreted_word_instance>(all_instances[w.instances[i]]);
-			auto mr = match_stack_description(std::span<int32_t const>(all_stack_types.data() + s.stack_types_start, size_t(s.stack_types_count)), ts, env);
+			auto mr = match_stack_description(std::span<int32_t const>(all_stack_types.data() + s.stack_types_start, size_t(s.stack_types_count)), ts, env, type_subs);
 			if(mr.matched) {
-				return word_match_result{ mr.matched, mr.stack_consumed, mr.ret_stack_consumed, w.instances[i] };
+				return word_match_result{ mr.matched, mr.stack_consumed, mr.ret_stack_consumed, w.instances[i], 0 };
 			}
+			type_subs.clear();
 		} else if(std::holds_alternative<compiled_word_instance>(all_instances[w.instances[i]])) {
 			compiled_word_instance const& s = std::get<compiled_word_instance>(all_instances[w.instances[i]]);
-			auto mr = match_stack_description(std::span<int32_t const>(all_stack_types.data() + s.stack_types_start, size_t(s.stack_types_count)), ts, env);
+			auto mr = match_stack_description(std::span<int32_t const>(all_stack_types.data() + s.stack_types_start, size_t(s.stack_types_count)), ts, env, type_subs);
 			if(mr.matched) {
-				return word_match_result{ mr.matched, mr.stack_consumed, mr.ret_stack_consumed, w.instances[i] };
+				return word_match_result{ mr.matched, mr.stack_consumed, mr.ret_stack_consumed, w.instances[i], 0 };
 			}
+			type_subs.clear();
 		}
 	}
-	return word_match_result{ false, 0, 0, 0 };
+	return word_match_result{ false, 0, 0, 0, 0 };
 }
 
 inline std::string_view read_word(std::string_view source, uint32_t& read_position) {
@@ -1558,132 +1759,6 @@ inline void execute_fif_word(state_stack& ss, int32_t* ptr, environment& env) {
 		memcpy(&fn, ptr, 8);
 		ptr = fn(ss, ptr, &env);
 	}
-}
-
-inline bool is_positive_integer(char const* start, char const* end) {
-	if(start == end)
-		return false;
-	while(start < end) {
-		if(!isdigit(*start))
-			return false;
-		++start;
-	}
-	return true;
-}
-
-inline bool is_integer(char const* start, char const* end) {
-	if(start == end)
-		return false;
-	if(*start == '-')
-		return is_positive_integer(start + 1, end);
-	else
-		return is_positive_integer(start, end);
-}
-
-inline bool is_positive_fp(char const* start, char const* end) {
-	auto const decimal = std::find(start, end, '.');
-	if(decimal == end) {
-		return is_positive_integer(start, end);
-	} else if(decimal == start) {
-		return is_positive_integer(decimal + 1, end);
-	} else {
-		return is_positive_integer(start, decimal) && (decimal + 1 == end || is_positive_integer(decimal + 1, end));
-	}
-}
-
-inline bool is_fp(char const* start, char const* end) {
-	if(start == end)
-		return false;
-	if(*start == '-')
-		return is_positive_fp(start + 1, end);
-	else
-		return is_positive_fp(start, end);
-}
-
-inline double pow_10(int n) {
-	static double const e[] = {// 1e-0...1e308: 309 * 8 bytes = 2472 bytes
-		1e+0, 1e+1, 1e+2, 1e+3, 1e+4, 1e+5, 1e+6, 1e+7, 1e+8, 1e+9, 1e+10, 1e+11, 1e+12, 1e+13, 1e+14, 1e+15, 1e+16, 1e+17, 1e+18,
-		1e+19, 1e+20, 1e+21, 1e+22, 1e+23, 1e+24, 1e+25, 1e+26, 1e+27, 1e+28, 1e+29, 1e+30, 1e+31, 1e+32, 1e+33, 1e+34, 1e+35,
-		1e+36, 1e+37, 1e+38, 1e+39, 1e+40, 1e+41, 1e+42, 1e+43, 1e+44, 1e+45, 1e+46, 1e+47, 1e+48, 1e+49, 1e+50, 1e+51, 1e+52,
-		1e+53, 1e+54, 1e+55, 1e+56, 1e+57, 1e+58, 1e+59, 1e+60, 1e+61, 1e+62, 1e+63, 1e+64, 1e+65, 1e+66, 1e+67, 1e+68, 1e+69,
-		1e+70, 1e+71, 1e+72, 1e+73, 1e+74, 1e+75, 1e+76, 1e+77, 1e+78, 1e+79, 1e+80, 1e+81, 1e+82, 1e+83, 1e+84, 1e+85, 1e+86,
-		1e+87, 1e+88, 1e+89, 1e+90, 1e+91, 1e+92, 1e+93, 1e+94, 1e+95, 1e+96, 1e+97, 1e+98, 1e+99, 1e+100, 1e+101, 1e+102, 1e+103,
-		1e+104, 1e+105, 1e+106, 1e+107, 1e+108, 1e+109, 1e+110, 1e+111, 1e+112, 1e+113, 1e+114, 1e+115, 1e+116, 1e+117, 1e+118,
-		1e+119, 1e+120, 1e+121, 1e+122, 1e+123, 1e+124, 1e+125, 1e+126, 1e+127, 1e+128, 1e+129, 1e+130, 1e+131, 1e+132, 1e+133,
-		1e+134, 1e+135, 1e+136, 1e+137, 1e+138, 1e+139, 1e+140, 1e+141, 1e+142, 1e+143, 1e+144, 1e+145, 1e+146, 1e+147, 1e+148,
-		1e+149, 1e+150, 1e+151, 1e+152, 1e+153, 1e+154, 1e+155, 1e+156, 1e+157, 1e+158, 1e+159, 1e+160, 1e+161, 1e+162, 1e+163,
-		1e+164, 1e+165, 1e+166, 1e+167, 1e+168, 1e+169, 1e+170, 1e+171, 1e+172, 1e+173, 1e+174, 1e+175, 1e+176, 1e+177, 1e+178,
-		1e+179, 1e+180, 1e+181, 1e+182, 1e+183, 1e+184, 1e+185, 1e+186, 1e+187, 1e+188, 1e+189, 1e+190, 1e+191, 1e+192, 1e+193,
-		1e+194, 1e+195, 1e+196, 1e+197, 1e+198, 1e+199, 1e+200, 1e+201, 1e+202, 1e+203, 1e+204, 1e+205, 1e+206, 1e+207, 1e+208,
-		1e+209, 1e+210, 1e+211, 1e+212, 1e+213, 1e+214, 1e+215, 1e+216, 1e+217, 1e+218, 1e+219, 1e+220, 1e+221, 1e+222, 1e+223,
-		1e+224, 1e+225, 1e+226, 1e+227, 1e+228, 1e+229, 1e+230, 1e+231, 1e+232, 1e+233, 1e+234, 1e+235, 1e+236, 1e+237, 1e+238,
-		1e+239, 1e+240, 1e+241, 1e+242, 1e+243, 1e+244, 1e+245, 1e+246, 1e+247, 1e+248, 1e+249, 1e+250, 1e+251, 1e+252, 1e+253,
-		1e+254, 1e+255, 1e+256, 1e+257, 1e+258, 1e+259, 1e+260, 1e+261, 1e+262, 1e+263, 1e+264, 1e+265, 1e+266, 1e+267, 1e+268,
-		1e+269, 1e+270, 1e+271, 1e+272, 1e+273, 1e+274, 1e+275, 1e+276, 1e+277, 1e+278, 1e+279, 1e+280, 1e+281, 1e+282, 1e+283,
-		1e+284, 1e+285, 1e+286, 1e+287, 1e+288, 1e+289, 1e+290, 1e+291, 1e+292, 1e+293, 1e+294, 1e+295, 1e+296, 1e+297, 1e+298,
-		1e+299, 1e+300, 1e+301, 1e+302, 1e+303, 1e+304, 1e+305, 1e+306, 1e+307, 1e+308 };
-	return e[n];
-}
-
-bool float_from_chars(char const* start, char const* end, float& float_out) { // returns true on success
-	// first read the chars into an int, keeping track of the magnitude
-	// multiply by a pow of 10
-
-	int32_t magnitude = 0;
-	int64_t accumulated = 0;
-	bool after_decimal = false;
-
-	if(start == end) {
-		float_out = 0.0f;
-		return true;
-	}
-
-	bool is_negative = false;
-	if(*start == '-') {
-		is_negative = true;
-		++start;
-	} else if(*start == '+') {
-		++start;
-	}
-
-	for(; start < end; ++start) {
-		if(*start >= '0' && *start <= '9') {
-			accumulated = accumulated * 10 + (*start - '0');
-			magnitude += int32_t(after_decimal);
-		} else if(*start == '.') {
-			after_decimal = true;
-		} else {
-			// maybe check for non space and throw an error?
-		}
-	}
-	if(!is_negative) {
-		if(magnitude > 0)
-			float_out = float(double(accumulated) / pow_10(magnitude));
-		else
-			float_out = float(accumulated);
-	} else {
-		if(magnitude > 0)
-			float_out = -float(double(accumulated) / pow_10(magnitude));
-		else
-			float_out = -float(accumulated);
-	}
-	return true;
-}
-
-inline int32_t parse_int(std::string_view content) {
-	int32_t rvalue = 0;
-	auto result = std::from_chars(content.data(), content.data() + content.length(), rvalue);
-	if(result.ec == std::errc::invalid_argument) {
-		return 0;
-	}
-	return rvalue;
-}
-inline float parse_float(std::string_view content) {
-	float rvalue = 0.0f;
-	if(!float_from_chars(content.data(), content.data() + content.length(), rvalue)) {
-		return 0.0f;
-	}
-	return rvalue;
 }
 
 inline int32_t* immediate_i32(state_stack& s, int32_t* p, environment*) {
@@ -1879,7 +1954,7 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 
 	LLVMTypeRef ret_type = nullptr;
 	if(returns_group.size() == 0) {
-		// leave as nullptr
+		ret_type = LLVMVoidTypeInContext(env.llvm_context);
 	} else if(returns_group.size() == 1) {
 		ret_type = returns_group[0];
 	} else {
@@ -2131,19 +2206,15 @@ inline void llvm_make_function_call(environment& env, LLVMValueRef fn, std::span
 inline std::vector<int32_t> expand_stack_description(state_stack& initial_stack_state, std::span<const int32_t> desc, int32_t stack_consumed, int32_t rstack_consumed);
 inline bool compare_stack_description(std::span<const int32_t> a, std::span<const int32_t> b);
 
-class function_scope : public opaque_compiler_data {
+class locals_holder : public opaque_compiler_data {
 public:
-	std::unique_ptr<state_stack> initial_state;
-	std::unique_ptr<state_stack> iworking_state;
-	std::vector<int32_t> compiled_bytes;
-	LLVMValueRef llvm_fn = nullptr;
-	LLVMBasicBlockRef current_block = nullptr;
-	int32_t for_word = -1;
-	int32_t for_instance = -1;
-
 	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
 	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
 	environment& env;
+	const bool llvm_mode;
+
+	locals_holder(opaque_compiler_data* parent, environment& env) : opaque_compiler_data(parent), env(env), llvm_mode(env.mode == fif_mode::compiling_llvm) {
+	}
 
 	virtual var_data* get_var(std::string const& name) {
 		if(auto it = vars.find(name); it != vars.end()) {
@@ -2162,7 +2233,7 @@ public:
 		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
 		added.first->second->type = type;
 		added.first->second->data = 0;
-		added.first->second->alloc = current_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
+		added.first->second->alloc = llvm_mode ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
 		return added.first->second.get();
 	}
 	virtual let_data* get_let(std::string const& name) {
@@ -2188,7 +2259,41 @@ public:
 		return nullptr;
 	}
 
-	function_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance) : opaque_compiler_data(parent), for_word(for_word), for_instance(for_instance), env(env) {
+	void release_locals() {
+		auto* ws = env.compiler_stack.back()->working_state();
+		for(auto& l : vars) {
+			if(env.dict.type_array[l.second->type].do_destructor) {
+				auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+				ws->push_back_main(l.second->type, l.second->data, iresult);
+				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+				ws->pop_main();
+			}
+		}
+		for(auto& l : lets) {
+			if(env.dict.type_array[l.second->type].do_destructor) {
+				ws->push_back_main(l.second->type, l.second->data, l.second->expression);
+				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
+				ws->pop_main();
+			}
+		}
+		vars.clear();
+		lets.clear();
+	}
+};
+
+class function_scope : public locals_holder {
+public:
+	std::unique_ptr<state_stack> initial_state;
+	std::unique_ptr<state_stack> iworking_state;
+	std::vector<int32_t> compiled_bytes;
+	std::vector<int32_t> type_subs;
+	LLVMValueRef llvm_fn = nullptr;
+	LLVMBasicBlockRef current_block = nullptr;
+	int32_t for_word = -1;
+	int32_t for_instance = -1;
+
+
+	function_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance) : locals_holder(parent, env), for_word(for_word), for_instance(for_instance) {
 		
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
@@ -2229,7 +2334,9 @@ public:
 			}
 		
 	}
-
+	virtual std::vector<int32_t>* type_substitutions() {
+		return &type_subs;
+	}
 	virtual control_structure get_type() {
 		return control_structure::function;
 	}
@@ -2365,23 +2472,7 @@ public:
 				return true;
 			}
 
-
-			auto* ws = env.compiler_stack.back()->working_state();
-			for(auto& l : vars) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
-					ws->push_back_main(l.second->type, l.second->data, iresult);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			for(auto& l : lets) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
+			release_locals(); 
 
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
@@ -2407,72 +2498,12 @@ public:
 	}
 };
 
-class runtime_function_scope : public opaque_compiler_data {
+class runtime_function_scope : public locals_holder {
 public:
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
-	environment& env;
-
-	virtual var_data* get_var(std::string const& name) {
-		if(auto it = vars.find(name); it != vars.end()) {
-			return it->second.get();
-		}
-		return parent->get_var(name);
-	}
-	virtual var_data* create_var(std::string const& name, int32_t type) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
-		added.first->second->type = type;
-		added.first->second->data = 0;
-		added.first->second->alloc = nullptr;
-		return added.first->second.get();
-	}
-	virtual let_data* get_let(std::string const& name) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return it->second.get();
-		}
-		return parent->get_let(name);
-	}
-	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
-		added.first->second->type = type;
-		added.first->second->data = data;
-		added.first->second->expression = expression;
-		if(auto it = lets.find(name); it != lets.end()) {
-			return  it->second.get();
-		}
-		return nullptr;
-	}
-
-	runtime_function_scope(opaque_compiler_data* parent, environment& env) : opaque_compiler_data(parent), env(env) {
+	runtime_function_scope(opaque_compiler_data* parent, environment& env) : locals_holder(parent, env) {
 	}
 	virtual bool finish(environment& env) {
-		auto* ws = env.compiler_stack.back()->working_state();
-		for(auto& l : vars) {
-			if(env.dict.type_array[l.second->type].do_destructor) {
-				ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
-				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-				ws->pop_main();
-			}
-		}
-		for(auto& l : lets) {
-			if(env.dict.type_array[l.second->type].do_destructor) {
-				ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-				ws->pop_main();
-			}
-		}
+		release_locals();
 		return true;
 	}
 	virtual control_structure get_type() {
@@ -2500,6 +2531,7 @@ inline int32_t* enter_scope(state_stack& s, int32_t* p, environment* env) {
 	return p + 2;
 }
 inline int32_t* leave_scope(state_stack& s, int32_t* p, environment* env) {
+	env->compiler_stack.back()->finish(*env);
 	env->compiler_stack.pop_back();
 	return p + 2;
 }
@@ -2786,7 +2818,7 @@ inline int32_t* unconditional_jump(state_stack& s, int32_t* p, environment* env)
 	return p + *(p + 2);
 }
 
-class conditional_scope : public opaque_compiler_data {
+class conditional_scope : public locals_holder {
 public:
 	std::unique_ptr<state_stack> initial_state;
 	std::unique_ptr<state_stack> iworking_state;
@@ -2801,53 +2833,7 @@ public:
 	size_t bytecode_first_branch_point = 0;
 	size_t bytecode_second_branch_point = 0;
 
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
-	environment& env;
-
-	virtual var_data* get_var(std::string const& name) {
-		if(auto it = vars.find(name); it != vars.end()) {
-			return it->second.get();
-		}
-		return parent->get_var(name);
-	}
-	virtual var_data* create_var(std::string const& name, int32_t type) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
-		added.first->second->type = type;
-		added.first->second->data = 0;
-		added.first->second->alloc = parent_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
-		return added.first->second.get();
-	}
-	virtual let_data* get_let(std::string const& name) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return it->second.get();
-		}
-		return parent->get_let(name);
-	}
-	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
-		added.first->second->type = type;
-		added.first->second->data = data;
-		added.first->second->expression = expression;
-		if(auto it = lets.find(name); it != lets.end()) {
-			return  it->second.get();
-		}
-		return nullptr;
-	}
-
-	conditional_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent), env(env) {	
+	conditional_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : locals_holder(parent, env) {	
 		if(entry_state.main_size() == 0 || entry_state.main_type_back(0) != fif_bool) {
 			env.report_error("attempted to start an if without a boolean value on the stack");
 			env.mode = fif_mode::error;
@@ -2911,25 +2897,9 @@ public:
 		} else { // not interpreted mode
 			first_branch_state = std::move(iworking_state);
 			iworking_state = initial_state->copy();
+			release_locals();
 
 			if(env.mode == fif_mode::compiling_llvm) {
-				auto* ws = env.compiler_stack.back()->working_state();
-				for(auto& l : vars) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
-						ws->push_back_main(l.second->type, l.second->data, iresult);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
-				for(auto& l : lets) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
-
 				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
 					true_block = *pb;
 					*pb = LLVMCreateBasicBlockInContext(env.llvm_context, "if-else-branch");
@@ -2966,9 +2936,6 @@ public:
 				typechecking_failed_on_first_branch = true;
 				env.mode = reset_typechecking(env.mode);
 			}
-
-			vars.clear();
-			lets.clear();
 		}
 	}
 	virtual control_structure get_type() {
@@ -2985,22 +2952,7 @@ public:
 			env.mode = fif_mode::interpreting;
 		}
 		if(env.mode == fif_mode::interpreting) {
-			auto* ws = env.compiler_stack.back()->working_state();
-			for(auto& l : vars) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			for(auto& l : lets) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-
+			release_locals();
 			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
@@ -3035,6 +2987,8 @@ public:
 			}
 		}
 
+		release_locals();
+
 		if(env.mode == fif_mode::compiling_bytecode) {
 			auto bcode = parent->bytecode_compilation_progress();
 
@@ -3057,6 +3011,7 @@ public:
 			auto current_block = *pb;
 
 			if(first_branch_state) {
+
 				LLVMPositionBuilderAtEnd(env.llvm_builder, parent_block);
 				LLVMBuildCondBr(env.llvm_builder, branch_condition, true_block, current_block);
 				auto in_fn = env.compiler_stack.back()->llvm_function();
@@ -3099,41 +3054,7 @@ public:
 						// leave working state as is
 					}
 				}
-
-				auto* ws = env.compiler_stack.back()->working_state();
-				for(auto& l : vars) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
-						ws->push_back_main(l.second->type, l.second->data, iresult);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
-				for(auto& l : lets) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
 			} else {
-				auto* ws = env.compiler_stack.back()->working_state();
-				for(auto& l : vars) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
-						ws->push_back_main(l.second->type, l.second->data, iresult);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
-				for(auto& l : lets) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
-
 				auto in_fn = env.compiler_stack.back()->llvm_function();
 				auto post_if = LLVMCreateBasicBlockInContext(env.llvm_context, "then-branch");
 				*pb = post_if;
@@ -3223,7 +3144,7 @@ public:
 	}
 };
 
-class while_loop_scope : public opaque_compiler_data {
+class while_loop_scope : public locals_holder {
 public:
 	std::unique_ptr<state_stack> initial_state;
 	std::unique_ptr<state_stack> iworking_state;
@@ -3242,54 +3163,7 @@ public:
 	LLVMBasicBlockRef body_block = nullptr;
 	std::vector<LLVMValueRef> phinodes;
 
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
-	environment& env;
-
-	virtual var_data* get_var(std::string const& name) {
-		if(auto it = vars.find(name); it != vars.end()) {
-			return it->second.get();
-		}
-		return parent->get_var(name);
-	}
-	virtual var_data* create_var(std::string const& name, int32_t type) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-
-		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
-		added.first->second->type = type;
-		added.first->second->data = 0;
-		added.first->second->alloc = pre_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
-		return added.first->second.get();
-	}
-	virtual let_data* get_let(std::string const& name) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return it->second.get();
-		}
-		return parent->get_let(name);
-	}
-	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
-		added.first->second->type = type;
-		added.first->second->data = data;
-		added.first->second->expression = expression;
-		if(auto it = lets.find(name); it != lets.end()) {
-			return  it->second.get();
-		}
-		return nullptr;
-	}
-
-	while_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent), env(env) {
+	while_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : locals_holder(parent, env) {
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
 		initial_state->min_main_depth = entry_state.min_main_depth;
@@ -3349,23 +3223,7 @@ public:
 				}
 			}
 
-			auto* ws = env.compiler_stack.back()->working_state();
-			for(auto& l : vars) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			for(auto& l : lets) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			lets.clear();
-			vars.clear();
+			release_locals();
 
 			if(env.mode == fif_mode::interpreting) {
 				if(iworking_state->main_data_back(0) == 0) {
@@ -3422,45 +3280,15 @@ public:
 		if(env.mode == fif_mode::typechecking_lvl1_failed && intepreter_skip_body) {
 			env.mode = fif_mode::interpreting;
 			
-			auto* ws = env.compiler_stack.back()->working_state();
-			for(auto& l : vars) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			for(auto& l : lets) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
+			release_locals();
 
 			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
 
-		if(env.mode == fif_mode::interpreting) {
-			auto* ws = env.compiler_stack.back()->working_state();
-			for(auto& l : vars) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			for(auto& l : lets) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			lets.clear();
-			vars.clear();
+		release_locals();
 
+		if(env.mode == fif_mode::interpreting) {
 			if(!saw_conditional && iworking_state->main_type_back(0) == fif_bool) {
 				if(iworking_state->main_data_back(0) == 0) {
 					iworking_state->pop_main();
@@ -3537,23 +3365,6 @@ public:
 
 			return true;
 		} else if(env.mode == fif_mode::compiling_llvm) {
-			auto* ws = env.compiler_stack.back()->working_state();
-			for(auto& l : vars) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
-					ws->push_back_main(l.second->type, l.second->data, iresult);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			for(auto& l : lets) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-
 			if(!saw_conditional) {
 				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
 					conditional_expr = iworking_state->main_ex_back(0);
@@ -3686,7 +3497,7 @@ public:
 	}
 };
 
-class do_loop_scope : public opaque_compiler_data {
+class do_loop_scope : public locals_holder {
 public:
 	std::unique_ptr<state_stack> initial_state;
 	std::unique_ptr<state_stack> iworking_state;
@@ -3701,53 +3512,7 @@ public:
 	LLVMBasicBlockRef body_block = nullptr;
 	std::vector<LLVMValueRef> phinodes;
 
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
-	environment& env;
-
-	virtual var_data* get_var(std::string const& name) {
-		if(auto it = vars.find(name); it != vars.end()) {
-			return it->second.get();
-		}
-		return parent->get_var(name);
-	}
-	virtual var_data* create_var(std::string const& name, int32_t type) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
-		added.first->second->type = type;
-		added.first->second->data = 0;
-		added.first->second->alloc = pre_block ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
-		return added.first->second.get();
-	}
-	virtual let_data* get_let(std::string const& name) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return it->second.get();
-		}
-		return parent->get_let(name);
-	}
-	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
-		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
-		added.first->second->type = type;
-		added.first->second->data = data;
-		added.first->second->expression = expression;
-		if(auto it = lets.find(name); it != lets.end()) {
-			return  it->second.get();
-		}
-		return nullptr;
-	}
-
-	do_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : opaque_compiler_data(parent), env(env) {
+	do_loop_scope(opaque_compiler_data* parent, environment& env, state_stack& entry_state) : locals_holder(parent, env) {
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
 		initial_state->min_main_depth = entry_state.min_main_depth;
@@ -3791,25 +3556,9 @@ public:
 		// don't actually need to do anything here ...
 	}
 	virtual bool finish(environment& env) {
-		if(env.mode == fif_mode::interpreting) {
-			auto* ws = env.compiler_stack.back()->working_state();
-			for(auto& l : vars) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->alloc);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			for(auto& l : lets) {
-				if(env.dict.type_array[l.second->type].do_destructor) {
-					ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-					env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-					ws->pop_main();
-				}
-			}
-			lets.clear();
-			vars.clear();
+		release_locals();
 
+		if(env.mode == fif_mode::interpreting) {
 			if(iworking_state->main_type_back(0) == fif_bool) {
 				if(iworking_state->main_data_back(0) != 0) {
 					iworking_state->pop_main();
@@ -3882,24 +3631,6 @@ public:
 				LLVMAppendExistingBasicBlock(parent->llvm_function(), *pb);
 
 				LLVMPositionBuilderAtEnd(env.llvm_builder, in_block);
-
-				auto* ws = env.compiler_stack.back()->working_state();
-				for(auto& l : vars) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
-						ws->push_back_main(l.second->type, l.second->data, iresult);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
-				for(auto& l : lets) {
-					if(env.dict.type_array[l.second->type].do_destructor) {
-						ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-						env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-						ws->pop_main();
-					}
-				}
-
 				LLVMBuildCondBr(env.llvm_builder, conditional_expr, *pb, body_block);
 
 				LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
@@ -4138,7 +3869,7 @@ parse_result read_token(std::string_view& source, environment& env) {
 
 }
 
-inline void execute_fif_word(parse_result word, environment& env);
+inline void execute_fif_word(parse_result word, environment& env, bool ignore_specialization);
 
 
 inline void run_to_scope_end(environment& env) { // execute/compile source code until current function is completed
@@ -4153,7 +3884,7 @@ inline void run_to_scope_end(environment& env) { // execute/compile source code 
 				word.content = std::string_view{ };
 
 			if(word.content.length() > 0 && env.mode != fif_mode::error) {
-				execute_fif_word(word, env);
+				execute_fif_word(word, env, false);
 			}
 		} while(word.content.length() > 0 && !env.compiler_stack.empty() && env.mode != fif_mode::error);
 
@@ -4176,72 +3907,91 @@ inline void run_to_function_end(environment& env) { // execute/compile source co
 	}
 }
 
+inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations) {
+	while(word_index != -1) {
+		specialize_t_subs.clear();
+		bool specialization_matches = [&]() { 
+			if(env.dict.word_array[word_index].stack_types_count == 0)
+				return true;
+			return match_stack_description(std::span<int32_t const>{env.dict.all_stack_types.data() + env.dict.word_array[word_index].stack_types_start, size_t(env.dict.word_array[word_index].stack_types_count)}, current_type_state, env, specialize_t_subs).matched;
+		}();
+		if(specialization_matches && (ignore_specializations == false || env.dict.word_array[word_index].treat_as_base || env.dict.word_array[word_index].specialization_of == -1)) {
+			word_match_result match = match_word(env.dict.word_array[word_index], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
+			int32_t w = word_index;
+			match.substitution_version = word_index;
 
+			if(!match.matched) {
+				if(typechecking_failed(env.mode)) {
+					// ignore match failure and pass on through
+					return word_match_result{ false, 0, 0, 0, 0 };
+				} else if(env.mode == fif_mode::typechecking_lvl_1 || env.mode == fif_mode::typechecking_lvl_2) {
+					if(env.dict.word_array[w].being_typechecked) { // already being typechecked -- mark as un checkable recursive branch
+						env.mode = fail_typechecking(env.mode);
+					} else if(env.dict.word_array[w].source.length() > 0) { // try to typecheck word as level 1
+						env.dict.word_array[w].being_typechecked = true;
 
-inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env) {
-	int32_t w = word_index;
+						switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_1);
 
-	auto match = match_word(env.dict.word_array[w], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
+						env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
+						auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, -1);
+						fnscope->type_subs = specialize_t_subs;
+						env.compiler_stack.emplace_back(std::move(fnscope));
 
-	if(!match.matched) {
-		if(typechecking_failed(env.mode)) {
-			// ignore match failure and pass on through
-			return word_match_result{ false, 0, 0, 0 };
-		} else if(env.mode == fif_mode::typechecking_lvl_1 || env.mode == fif_mode::typechecking_lvl_2) {
-			if(env.dict.word_array[w].being_typechecked) { // already being typechecked -- mark as un checkable recursive branch
-				env.mode = fail_typechecking(env.mode);
-			} else if(env.dict.word_array[w].source.length() > 0) { // try to typecheck word as level 1
-				env.dict.word_array[w].being_typechecked = true;
+						run_to_function_end(env);
+						env.source_stack.pop_back();
 
-				switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_1);
+						env.dict.word_array[w].being_typechecked = false;
+						match = match_word(env.dict.word_array[w], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
+						match.substitution_version = word_index;
 
-				env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-				auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, -1);
-				env.compiler_stack.emplace_back(std::move(fnscope));
+						restore_compiler_stack_mode(env);
 
-				run_to_function_end(env);
-				env.source_stack.pop_back();
+						if(match.matched) {
+							std::get<interpreted_word_instance>(env.dict.all_instances[match.word_index]).typechecking_level = 1;
+							return match;
+						} else {
+							env.mode = fail_typechecking(env.mode);
+							return word_match_result{ false, 0, 0, 0, 0 };
+						}
+					}
+				} else if(env.dict.word_array[w].source.length() > 0) { // either compiling or interpreting or level 3 typecheck-- switch to typechecking to get a type definition
+					switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_1);
+					env.dict.word_array[w].being_typechecked = true;
 
-				env.dict.word_array[w].being_typechecked = false;
-				match = match_word(env.dict.word_array[w], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
+					env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
+					auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, -1);
+					fnscope->type_subs = specialize_t_subs;
+					env.compiler_stack.emplace_back(std::move(fnscope));
 
-				restore_compiler_stack_mode(env);
+					run_to_function_end(env);
+					env.source_stack.pop_back();
 
-				if(match.matched) {
-					std::get<interpreted_word_instance>(env.dict.all_instances[match.word_index]).typechecking_level = 1;
-				} else {
-					env.mode = fail_typechecking(env.mode);
-					return word_match_result{ false, 0, 0, 0 };
+					env.dict.word_array[w].being_typechecked = false;
+
+					restore_compiler_stack_mode(env);
+
+					match = match_word(env.dict.word_array[w], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
+					match.substitution_version = word_index;
+
+					if(!match.matched) {
+						env.report_error("typechecking failure for " + word_name_from_id(w, env));
+						env.mode = fif_mode::error;
+						return word_match_result{ false, 0, 0, 0, 0 };
+					}
+					return match;
 				}
 			}
-		} else if(env.dict.word_array[w].source.length() > 0) { // either compiling or interpreting or level 3 typecheck-- switch to typechecking to get a type definition
-			switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_1);
-			env.dict.word_array[w].being_typechecked = true;
 
-			env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-			auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, -1);
-			env.compiler_stack.emplace_back(std::move(fnscope));
-
-			run_to_function_end(env);
-			env.source_stack.pop_back();
-
-			env.dict.word_array[w].being_typechecked = false;
-
-			restore_compiler_stack_mode(env);
-
-			match = match_word(env.dict.word_array[w], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
-			if(!match.matched) {
-				env.report_error("typechecking failure for " + word_name_from_id(w, env));
-				env.mode = fif_mode::error;
-				return word_match_result{ false, 0, 0, 0 };
-			}
+			return match;
+		} else {
+			word_index = env.dict.word_array[word_index].specialization_of;
 		}
 	}
-
-	return match;
+	
+	return word_match_result{ false, 0, 0, 0, 0 };
 }
 
-bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word_instance& wi, state_stack& current_type_state, environment& env) {
+bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word_instance& wi, state_stack& current_type_state, environment& env, std::vector<int32_t>& tsubs) {
 	if(wi.typechecking_level == 1) {
 		// perform level 2 typechecking
 
@@ -4249,6 +3999,7 @@ bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word_instan
 
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, word_index);
+		fnscope->type_subs = tsubs;
 		env.compiler_stack.emplace_back(std::move(fnscope));
 
 		run_to_function_end(env);
@@ -4276,7 +4027,7 @@ bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word_instan
 		switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_3);
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, word_index);
-
+		fnscope->type_subs = tsubs;
 		env.compiler_stack.emplace_back(std::move(fnscope));
 
 		run_to_function_end(env);
@@ -4341,12 +4092,12 @@ bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word_instan
 	return true;
 }
 
-inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_mode compile_mode, environment& env) {
+inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_mode compile_mode, environment& env, std::vector<int32_t>& tsubs) {
 	if(!std::holds_alternative<interpreted_word_instance>(env.dict.all_instances[word_index]))
 		return true;
 
 	interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[word_index]);
-	if(!fully_typecheck_word(w, word_index, wi, state, env)) {
+	if(!fully_typecheck_word(w, word_index, wi, state, env, tsubs)) {
 		return false;
 	}
 
@@ -4357,6 +4108,7 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 		if(!env.dict.word_array[w].being_compiled) {
 			env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 			auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, state, w, word_index);
+			fnscope->type_subs = tsubs;
 			env.compiler_stack.emplace_back(std::move(fnscope));
 			run_to_function_end(env);
 			env.source_stack.pop_back();
@@ -4369,6 +4121,7 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 		if(!env.dict.word_array[w].being_compiled) {
 			env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 			auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, state, w, word_index);
+			fnscope->type_subs = tsubs;
 			env.compiler_stack.emplace_back(std::move(fnscope));
 			run_to_function_end(env);
 			env.source_stack.pop_back();
@@ -4442,7 +4195,7 @@ inline int32_t* immediate_global(state_stack& s, int32_t* p, environment* e) {
 	return p + 5;
 }
 
-inline void execute_fif_word(parse_result word, environment& env) {
+inline void execute_fif_word(parse_result word, environment& env, bool ignore_specializations) {
 	auto ws = env.compiler_stack.back()->working_state();
 	if(!ws) {
 		env.report_error("tried to execute in a scope with no working state");
@@ -4481,7 +4234,9 @@ inline void execute_fif_word(parse_result word, environment& env) {
 			}
 		}
 
-		auto match = get_basic_type_match(w, *ws, env);
+		std::vector<int32_t> called_tsub_types;
+		auto match = get_basic_type_match(w, *ws, env, called_tsub_types, ignore_specializations);
+		w = match.substitution_version;
 
 		if(!match.matched) {
 			if(typechecking_failed(env.mode)) {
@@ -4564,6 +4319,7 @@ inline void execute_fif_word(parse_result word, environment& env) {
 
 								env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 								auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, *ws, w, match.word_index);
+								fnscope->type_subs = called_tsub_types;
 								env.compiler_stack.emplace_back(std::move(fnscope));
 
 								run_to_function_end(env);
@@ -4619,7 +4375,7 @@ inline void execute_fif_word(parse_result word, environment& env) {
 		}
 
 		if(env.mode == fif_mode::interpreting || env.mode == fif_mode::compiling_llvm || env.mode == fif_mode::compiling_bytecode) {
-			if(!compile_word(w, match.word_index, *ws, env.mode != fif_mode::compiling_llvm ? fif_mode::compiling_bytecode : fif_mode::compiling_llvm, env)) {
+			if(!compile_word(w, match.word_index, *ws, env.mode != fif_mode::compiling_llvm ? fif_mode::compiling_bytecode : fif_mode::compiling_llvm, env, called_tsub_types)) {
 				env.report_error("failed to compile word");
 				env.mode = fif_mode::error;
 				return;
@@ -4769,7 +4525,7 @@ inline void execute_fif_word(parse_result word, environment& env) {
 			}
 			ws->push_back_main(mem_type.type, 0, 0);
 		}
-	} else if(auto rtype = resolve_type(word.content, env); rtype != -1) {
+	} else if(auto rtype = resolve_type(word.content, env, env.compiler_stack.back()->type_substitutions()); rtype != -1) {
 		do_immediate_type(*ws, rtype, &env);
 	} else {
 		env.report_error(std::string("attempted to execute an unknown word: ") + std::string(word.content));
@@ -4814,13 +4570,15 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	ts.min_main_depth = param_stack.size();
 	ts.min_return_depth = param_stack.size();
 
-	auto match = get_basic_type_match(w, ts, env);
+	std::vector<int32_t> typevars;
+	auto match = get_basic_type_match(w, ts, env, typevars, false);
+	w = match.substitution_version;
 	if(!match.matched) {
 		env.report_error("failed to export function (typematch failed)");
 		return nullptr;
 	}
 
-	if(!compile_word(w, match.word_index, ts, fif_mode::compiling_llvm, env)) {
+	if(!compile_word(w, match.word_index, ts, fif_mode::compiling_llvm, env, typevars)) {
 		env.report_error("failed to export function (compilation failed)");
 		return nullptr;
 	}
@@ -5055,6 +4813,73 @@ inline int32_t* colon_definition(fif::state_stack&, int32_t* p, fif::environment
 	e->mode = fif::fif_mode::error;
 	return p + 2;
 }
+
+inline int32_t* colon_specialization(fif::state_stack&, int32_t* p, fif::environment* e) {
+	if(fif::typechecking_mode(e->mode))
+		return p + 2;
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to compile a definition inside a definition");
+		e->mode = fif::fif_mode::error;
+		return p + 2;
+	}
+
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to compile a definition without a source");
+		e->mode = fif::fif_mode::error;
+		return p + 2;
+	}
+
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	std::vector<std::string_view> stack_types;
+	while(true) {
+		auto next_token = fif::read_token(e->source_stack.back(), *e);
+		if(next_token.content.length() == 0 || next_token.content == "s:") {
+			break;
+		}
+		stack_types.push_back(next_token.content);
+	}
+	int32_t start_types = int32_t(e->dict.all_stack_types.size());
+	while(!stack_types.empty()) {
+		auto result = internal_generate_type(stack_types.back(), *e);
+		if(result.type_array.empty()) {
+			e->mode = fif_mode::error;
+			e->report_error("unable to resolve type from text");
+			return nullptr;
+		}
+		e->dict.all_stack_types.insert(e->dict.all_stack_types.end(), result.type_array.begin(), result.type_array.end());
+		stack_types.pop_back();
+	}
+	int32_t count_types = int32_t(e->dict.all_stack_types.size()) - start_types;
+
+	auto string_start = e->source_stack.back().data();
+	while(e->source_stack.back().length() > 0) {
+		auto t = fif::read_token(e->source_stack.back(), *e);
+		if(t.is_string == false && t.content == ";") { // end of definition
+			auto string_end = t.content.data();
+
+			auto nstr = std::string(name_token.content);
+			int32_t old_word = -1;
+			if(auto it = e->dict.words.find(nstr); it != e->dict.words.end()) {
+				old_word = it->second;
+			}
+
+			e->dict.words.insert_or_assign(nstr, int32_t(e->dict.word_array.size()));
+			e->dict.word_array.emplace_back();
+			e->dict.word_array.back().source = std::string(string_start, string_end);
+			e->dict.word_array.back().specialization_of = old_word;
+			e->dict.word_array.back().stack_types_start = start_types;
+			e->dict.word_array.back().stack_types_count = count_types;
+
+			return p + 2;
+		}
+	}
+
+	e->report_error("reached the end of a definition source without a ; terminator");
+	e->mode = fif::fif_mode::error;
+	return p + 2;
+}
+
 inline int32_t* i32_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto add_result = LLVMBuildAdd(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
@@ -5446,8 +5271,15 @@ inline int32_t* make_immediate(fif::state_stack& s, int32_t* p, fif::environment
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		e->report_error("cannot turn a word immediate in compiled code");
 		e->mode = fif_mode::error;
+		return nullptr;
 	} else if(e->mode == fif::fif_mode::interpreting) {
-		e->dict.word_array.back().immediate = true;
+		if(e->dict.word_array.back().specialization_of == -1) {
+			e->dict.word_array.back().immediate = true;
+		} else {
+			e->report_error("cannot mark a specialized word as immediate");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		
 	}
@@ -5635,7 +5467,7 @@ inline int32_t* pointer_cast(fif::state_stack& s, int32_t* p, fif::environment* 
 	}
 	auto ptype = read_token(e->source_stack.back(), *e);
 	bool bad_type = ptype.is_string;
-	auto resolved_type = resolve_type(ptype.content, *e);
+	auto resolved_type = resolve_type(ptype.content, *e, e->compiler_stack.back()->type_substitutions());
 	if(resolved_type == -1) {
 		bad_type = true;
 	} else if(resolved_type != fif_opaque_ptr) {
@@ -5667,7 +5499,7 @@ inline int32_t* impl_sizeof(fif::state_stack& s, int32_t* p, fif::environment* e
 	}
 	auto ptype = read_token(e->source_stack.back(), *e);
 	bool bad_type = ptype.is_string;
-	auto resolved_type = resolve_type(ptype.content, *e);
+	auto resolved_type = resolve_type(ptype.content, *e, e->compiler_stack.back()->type_substitutions());
 	if(resolved_type == -1) {
 		e->report_error("sizeof given an invalid type");
 		e->mode = fif_mode::error;
@@ -5929,6 +5761,7 @@ inline int32_t* create_global_impl(fif::state_stack& s, int32_t* p, fif::environ
 
 void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ":", colon_definition, { });
+	add_precompiled(fif_env, ":s", colon_specialization, { });
 	add_precompiled(fif_env, "+", i32_add, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
 	add_precompiled(fif_env, "+", f32_add, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
 	add_precompiled(fif_env, "<", i32_lt, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
