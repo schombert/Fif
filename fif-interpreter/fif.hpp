@@ -2143,6 +2143,7 @@ inline void llvm_make_function_call(environment& env, LLVMValueRef fn, std::span
 		}
 	}
 	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc), fn, params.data(), uint32_t(params.size()), "");
+	LLVMSetFunctionCallConv(retvalue, 2);
 	auto rsummary = llvm_function_return_type_from_desc(env, desc);
 
 	if(rsummary.composite_type == nullptr) {
@@ -2323,7 +2324,7 @@ public:
 				llvm_fn = compiled_fn;
 
 				// for unknown reasons, this calling convention breaks things
-				//LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMFastCallConv);
+				LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMFastCallConv);
 
 				LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMPrivateLinkage);
 				auto entry_block = LLVMAppendBasicBlockInContext(env.llvm_context, compiled_fn, "fn_entry_point");
@@ -4595,8 +4596,8 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	auto compiled_fn = LLVMAddFunction(env.llvm_module, export_name.c_str(), fn_type);
 
 	LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMWin64CallConv);
-	LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMLinkOnceAnyLinkage);
-	LLVMSetVisibility(compiled_fn, LLVMVisibility::LLVMDefaultVisibility);
+	//LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMLinkOnceAnyLinkage);
+	//LLVMSetVisibility(compiled_fn, LLVMVisibility::LLVMDefaultVisibility);
 
 	auto entry_block = LLVMAppendBasicBlockInContext(env.llvm_context, compiled_fn, "fn_entry_point");
 	LLVMPositionBuilderAtEnd(env.llvm_builder, entry_block);
@@ -4636,6 +4637,7 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	}
 
 	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc), wi.llvm_function, params.data(), uint32_t(params.size()), "");
+	LLVMSetFunctionCallConv(retvalue, 2);
 	auto rsummary = llvm_function_return_type_from_desc(env, desc);
 
 	// make return
@@ -4714,7 +4716,7 @@ inline LLVMErrorRef perform_transform(void* Ctx, LLVMOrcThreadSafeModuleRef* the
 }
 
 void perform_jit(environment& e) {
-	add_exportable_functions_to_globals(e);
+	//add_exportable_functions_to_globals(e);
 
 	char* out_message = nullptr;
 	auto result = LLVMVerifyModule(e.llvm_module, LLVMVerifierFailureAction::LLVMPrintMessageAction, &out_message);

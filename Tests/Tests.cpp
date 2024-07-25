@@ -10,6 +10,49 @@
 
 #pragma comment(lib, "LLVM-C.lib")
 
+TEST_CASE("trivial test cases", "fif jit tests") {
+	SECTION("trivial") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+		fif::run_fif_interpreter(fif_env, ": t 42 ;", values);
+
+		auto export_fn = fif::make_exportable_function("test_jit_fn", "t", { fif::fif_i32, fif::fif_i32 }, { }, fif_env);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		// std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+
+		CHECK(!(error));
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+			std::cout << msg << std::endl;
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			REQUIRE(bare_address != 0);
+			using ftype = int32_t(*)();
+			ftype fn = (ftype)bare_address;
+			auto value = fn();
+			CHECK(value == 42);
+		}
+	}
+}
 TEST_CASE("fundamental calls", "fif interpreter tests") {
 	SECTION("int add") {
 		fif::environment fif_env;
