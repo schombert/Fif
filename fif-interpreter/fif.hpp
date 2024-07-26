@@ -463,24 +463,46 @@ inline LLVMValueRef empty_type_fn(LLVMValueRef r, int32_t type, environment*) {
 	return r;
 }
 
-using llvm_zero_expr = LLVMValueRef (*)(LLVMContextRef);
+using llvm_zero_expr = LLVMValueRef (*)(LLVMContextRef, int32_t t, environment*);
+using interpreter_zero_expr = int64_t(*)(int32_t t, environment*);
 using interpreted_new = int64_t(*)();
 
 struct type {
-	fif_call do_constructor = nullptr;
-	fif_call do_destructor = nullptr;
-	fif_call do_dup = nullptr;
-	fif_call do_copy = nullptr;
+	static constexpr uint32_t FLAG_REFCOUNTED = 0x00000001;
+	static constexpr uint32_t FLAG_COPY = 0x00000002;
+	static constexpr uint32_t FLAG_DUP = 0x00000003;
+	static constexpr uint32_t FLAG_DROP = 0x00000004;
+	static constexpr uint32_t FLAG_INIT = 0x00000005;
+	static constexpr uint32_t FLAG_TEMPLATE = 0x00000006;
 
 	LLVMTypeRef llvm_type = nullptr;
 	llvm_zero_expr zero_constant = nullptr;
-	interpreted_new stack_value = nullptr;
+	interpreter_zero_expr interpreter_zero = nullptr;
 
 	int32_t type_slots = 0;
 	int32_t decomposed_types_start = 0;
 	int32_t decomposed_types_count = 0;
 
-	bool refcounted_type = false;
+	uint32_t flags = 0;
+
+	bool refcounted_type() const {
+		return (flags & FLAG_REFCOUNTED) != 0;
+	}
+	bool non_trivial_copy() const {
+		return (flags & FLAG_COPY) != 0;
+	}
+	bool non_trivial_dup() const {
+		return (flags & FLAG_DUP) != 0;
+	}
+	bool non_trivial_drop() const {
+		return (flags & FLAG_DROP) != 0;
+	}
+	bool non_trivial_init() const {
+		return (flags & FLAG_INIT) != 0;
+	}
+	bool is_struct_template() const {
+		return (flags & FLAG_TEMPLATE) != 0;
+	}
 };
 
 constexpr inline int32_t fif_i32 = 0;
@@ -498,6 +520,7 @@ constexpr inline int32_t fif_ui8 = 11;
 constexpr inline int32_t fif_nil = 12;
 constexpr inline int32_t fif_ptr = 13;
 constexpr inline int32_t fif_opaque_ptr = 14;
+constexpr inline int32_t fif_struct = 15;
 
 class environment;
 
@@ -513,97 +536,103 @@ public:
 
 	void ready_llvm_types(LLVMContextRef llvm_context) {
 		type_array[fif_i32].llvm_type = LLVMInt32TypeInContext(llvm_context);
-		type_array[fif_i32].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_i32].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, true);
 		};
 		type_array[fif_type].llvm_type = LLVMInt32TypeInContext(llvm_context);
-		type_array[fif_type].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_type].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, true);
 		};
 		type_array[fif_f32].llvm_type = LLVMFloatTypeInContext(llvm_context);
-		type_array[fif_f32].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_f32].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstReal(LLVMFloatTypeInContext(c), 0.0);
 		};
 		type_array[fif_i64].llvm_type = LLVMInt64TypeInContext(llvm_context);
-		type_array[fif_i64].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_i64].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt64TypeInContext(c), 0, true);
 		};
 		type_array[fif_f64].llvm_type = LLVMDoubleTypeInContext(llvm_context);
-		type_array[fif_f64].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_f64].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstReal(LLVMDoubleTypeInContext(c), 0.0);
 		};
 		type_array[fif_bool].llvm_type =  LLVMInt1TypeInContext(llvm_context);
-		type_array[fif_bool].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_bool].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt1TypeInContext(c), 0, true);
 		};
 		type_array[fif_ui32].llvm_type = LLVMInt32TypeInContext(llvm_context);
-		type_array[fif_ui32].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_ui32].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, false);
 		};
 		type_array[fif_ui64].llvm_type = LLVMInt64TypeInContext(llvm_context);
-		type_array[fif_ui64].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_ui64].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt64TypeInContext(c), 0, false);
 		};
 		type_array[fif_ui16].llvm_type = LLVMInt16TypeInContext(llvm_context);
-		type_array[fif_ui16].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_ui16].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt16TypeInContext(c), 0, false);
 		};
 		type_array[fif_ui8].llvm_type = LLVMInt8TypeInContext(llvm_context);
-		type_array[fif_ui8].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_ui8].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt8TypeInContext(c), 0, false);
 		};
 		type_array[fif_i16].llvm_type = LLVMInt16TypeInContext(llvm_context);
-		type_array[fif_i16].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_i16].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt16TypeInContext(c), 0, true);
 		};
 		type_array[fif_i8].llvm_type = LLVMInt8TypeInContext(llvm_context);
-		type_array[fif_i8].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_i8].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt8TypeInContext(c), 0, true);
 		};
 		type_array[fif_nil].llvm_type = LLVMVoidTypeInContext(llvm_context);
-		type_array[fif_nil].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_nil].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMGetUndef(LLVMVoidTypeInContext(c));
 		};
 		type_array[fif_ptr].llvm_type = LLVMPointerTypeInContext(llvm_context, 0);
-		type_array[fif_ptr].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_ptr].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMGetUndef(LLVMPointerTypeInContext(c, 0));
 		};
 		type_array[fif_opaque_ptr].llvm_type = LLVMPointerTypeInContext(llvm_context, 0);
-		type_array[fif_opaque_ptr].zero_constant = +[](LLVMContextRef c) {
+		type_array[fif_opaque_ptr].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMGetUndef(LLVMPointerTypeInContext(c, 0));
+		};
+		type_array[fif_struct].llvm_type = LLVMVoidTypeInContext(llvm_context);
+		type_array[fif_struct].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
+			return LLVMGetUndef(LLVMVoidTypeInContext(c));
 		};
 	}
 	dictionary() {
 		types.insert_or_assign(std::string("i32"), fif_i32);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("f32"), fif_f32);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("bool"), fif_bool);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("type"), fif_type);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("i64"), fif_i64);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("f64"), fif_f64);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("ui32"), fif_ui32);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("ui64"), fif_ui64);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("i16"), fif_i16);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("ui16"), fif_i16);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("i8"), fif_i8);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("ui8"), fif_ui8);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("nil"), fif_nil);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 		types.insert_or_assign(std::string("ptr"), fif_ptr);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 1, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 1, 0, 0, 0 });
 		types.insert_or_assign(std::string("opaque_ptr"), fif_nil);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, false });
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		types.insert_or_assign(std::string("struct"), fif_struct);
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 	}
 };
 
@@ -817,7 +846,7 @@ public:
 		added.first->second->type = type;
 		added.first->second->data = 0;
 		added.first->second->alloc = LLVMAddGlobal(env.llvm_module, env.dict.type_array[type].llvm_type, name.c_str());
-		LLVMSetInitializer(added.first->second->alloc, env.dict.type_array[type].zero_constant(env.llvm_context));
+		LLVMSetInitializer(added.first->second->alloc, env.dict.type_array[type].zero_constant(env.llvm_context, type, &env));
 		return added.first->second.get();
 	}
 	let_data* get_global_let(std::string const& name) {
@@ -876,11 +905,11 @@ public:
 
 	virtual ~interpreter_stack() {
 		for(auto i = main_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[main_types[i]].refcounted_type)
+			if(env.dict.type_array[main_types[i]].refcounted_type())
 				release_refcounted(main_datas[i]);
 		}
 		for(auto i = return_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[return_types[i]].refcounted_type)
+			if(env.dict.type_array[return_types[i]].refcounted_type())
 				release_refcounted(return_datas[i]);
 		}
 	}
@@ -888,7 +917,7 @@ public:
 		if(main_datas.empty())
 			return;
 
-		if(env.dict.type_array[main_types.back()].refcounted_type)
+		if(env.dict.type_array[main_types.back()].refcounted_type())
 			release_refcounted(main_datas.back());
 		main_datas.pop_back();
 		main_types.pop_back();
@@ -899,7 +928,7 @@ public:
 		if(return_datas.empty())
 			return;
 
-		if(env.dict.type_array[return_types.back()].refcounted_type)
+		if(env.dict.type_array[return_types.back()].refcounted_type())
 			release_refcounted(return_datas.back());
 		return_datas.pop_back();
 		return_types.pop_back();
@@ -911,11 +940,11 @@ public:
 		min_main_depth = std::min(min_main_depth, main_sz);
 
 		for(auto i = main_datas.size(); i-- > main_sz; ) {
-			if(env.dict.type_array[main_types[i]].refcounted_type)
+			if(env.dict.type_array[main_types[i]].refcounted_type())
 				release_refcounted(main_datas[i]);
 		}
 		for(auto i = return_datas.size(); i-- > return_sz; ) {
-			if(env.dict.type_array[return_types[i]].refcounted_type)
+			if(env.dict.type_array[return_types[i]].refcounted_type())
 				release_refcounted(return_datas[i]);
 		}
 
@@ -949,7 +978,7 @@ public:
 		return nullptr;
 	}
 	virtual void set_main_data(size_t index, int64_t value) {
-		if(env.dict.type_array[main_type(index)].refcounted_type) {
+		if(env.dict.type_array[main_type(index)].refcounted_type()) {
 			release_refcounted(main_datas[index]);
 			increment_refcounted(value);
 		}
@@ -957,7 +986,7 @@ public:
 		min_main_depth = std::min(min_main_depth, index);
 	}
 	virtual void set_return_data(size_t index, int64_t value) {
-		if(env.dict.type_array[return_type(index)].refcounted_type) {
+		if(env.dict.type_array[return_type(index)].refcounted_type()) {
 			release_refcounted(return_datas[index]);
 			increment_refcounted(value);
 		}
@@ -971,7 +1000,7 @@ public:
 		min_return_depth = std::min(min_return_depth, index);
 	}
 	virtual void set_main_data_back(size_t index, int64_t value) {
-		if(env.dict.type_array[main_type_back(index)].refcounted_type) {
+		if(env.dict.type_array[main_type_back(index)].refcounted_type()) {
 			release_refcounted(main_datas[main_datas.size() - (index + 1)]);
 			increment_refcounted(value);
 		}
@@ -979,7 +1008,7 @@ public:
 		min_main_depth = std::min(min_main_depth, main_datas.size() - (index + 1));
 	}
 	virtual void set_return_data_back(size_t index, int64_t value) {
-		if(env.dict.type_array[return_type_back(index)].refcounted_type) {
+		if(env.dict.type_array[return_type_back(index)].refcounted_type()) {
 			release_refcounted(return_datas[return_datas.size() - (index + 1)]);
 			increment_refcounted(value);
 		}
@@ -1000,11 +1029,11 @@ public:
 			std::abort();
 
 		for(auto i = main_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[main_types[i]].refcounted_type)
+			if(env.dict.type_array[main_types[i]].refcounted_type())
 				release_refcounted(main_datas[i]);
 		}
 		for(auto i = return_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[return_types[i]].refcounted_type)
+			if(env.dict.type_array[return_types[i]].refcounted_type())
 				release_refcounted(return_datas[i]);
 		}
 
@@ -1025,11 +1054,11 @@ public:
 			std::abort();
 
 		for(auto i = main_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[main_types[i]].refcounted_type)
+			if(env.dict.type_array[main_types[i]].refcounted_type())
 				release_refcounted(main_datas[i]);
 		}
 		for(auto i = return_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[return_types[i]].refcounted_type)
+			if(env.dict.type_array[return_types[i]].refcounted_type())
 				release_refcounted(return_datas[i]);
 		}
 
@@ -1042,33 +1071,33 @@ public:
 		min_return_depth = std::min(min_return_depth, o.min_return_depth);
 
 		for(auto i = main_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[main_types[i]].refcounted_type)
+			if(env.dict.type_array[main_types[i]].refcounted_type())
 				increment_refcounted(main_datas[i]);
 		}
 		for(auto i = return_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[return_types[i]].refcounted_type)
+			if(env.dict.type_array[return_types[i]].refcounted_type())
 				increment_refcounted(return_datas[i]);
 		}
 	}
 	virtual void push_back_main(int32_t type, int64_t data, LLVMValueRef expr) {
-		if(env.dict.type_array[type].refcounted_type)
+		if(env.dict.type_array[type].refcounted_type())
 			increment_refcounted(data);
 		main_datas.push_back(data);
 		main_types.push_back(type);
 	}
 	virtual void push_back_return(int32_t type, int64_t data, LLVMValueRef expr) {
-		if(env.dict.type_array[type].refcounted_type)
+		if(env.dict.type_array[type].refcounted_type())
 			increment_refcounted(data);
 		return_datas.push_back(data);
 		return_types.push_back(type);
 	}
 	virtual std::unique_ptr<state_stack> copy() const {
 		for(auto i = main_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[main_types[i]].refcounted_type)
+			if(env.dict.type_array[main_types[i]].refcounted_type())
 				increment_refcounted(main_datas[i]);
 		}
 		for(auto i = return_datas.size(); i-- > 0;) {
-			if(env.dict.type_array[return_types[i]].refcounted_type)
+			if(env.dict.type_array[return_types[i]].refcounted_type())
 				increment_refcounted(return_datas[i]);
 		}
 
@@ -1230,6 +1259,338 @@ inline float parse_float(std::string_view content) {
 	return rvalue;
 }
 
+inline type_match resolve_span_type(std::span<int32_t const> tlist, std::vector<int32_t> const& type_subs, environment& env);
+
+
+LLVMValueRef struct_zero_constant(LLVMContextRef c, int32_t t, environment* e) {
+	std::vector<LLVMValueRef> zvals;
+	for(int32_t j = 1; j < e->dict.type_array[t].decomposed_types_count; ++j) {
+		auto st = e->dict.all_stack_types[e->dict.type_array[t].decomposed_types_start + j];
+		zvals.push_back(e->dict.type_array[st].zero_constant(c, st, e));
+	}
+	return LLVMConstNamedStruct(e->dict.type_array[t].llvm_type, zvals.data(), uint32_t(zvals.size()));
+}
+int64_t interpreter_struct_zero_constant(int32_t t, environment* e) {
+	auto member_count = e->dict.type_array[t].decomposed_types_count - 1;
+
+	auto bytes = member_count * 8 + 12;
+	auto mem = new char[bytes];
+
+	memset(mem, 0, bytes);
+	void (*delete_ptr)(char*) = +[](char* v) { };
+
+	memcpy(mem, &delete_ptr, 8);
+	auto c = (int32_t*)(mem + 8);
+	*c = 1;
+
+	return (int64_t)mem;
+}
+
+inline int32_t instantiate_templated_struct(int32_t template_base, std::vector<int32_t> const& subtypes, environment& env) {
+	std::vector<int32_t> final_subtype_list;
+	final_subtype_list.push_back(template_base);
+
+	auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + env.dict.type_array[template_base].decomposed_types_start, size_t(env.dict.type_array[template_base].decomposed_types_count));
+
+	uint32_t match_pos = 0;
+	while(match_pos < desc.size()) {
+		auto mresult = resolve_span_type(desc.subspan(match_pos), subtypes, env);
+		match_pos += mresult.end_match_pos;
+		final_subtype_list.push_back(mresult.type);
+	}
+
+	for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+		if(env.dict.type_array[i].decomposed_types_count == final_subtype_list.size()) {
+			auto ta_start = env.dict.type_array[i].decomposed_types_start;
+			bool match = true;
+
+			for(uint32_t j = 0; j < final_subtype_list.size(); ++j) {
+				if(env.dict.all_stack_types[ta_start + j] != final_subtype_list[j]) {
+					match = false;
+					break;
+				}
+			}
+
+			if(match) 
+				return  int32_t(i);
+		}
+	}
+	
+	int32_t new_type = int32_t(env.dict.type_array.size());
+	env.dict.type_array.emplace_back();
+
+	std::vector<LLVMTypeRef> ctypes;
+	for(uint32_t j = 1; j < final_subtype_list.size(); ++j) {
+		ctypes.push_back(env.dict.type_array[final_subtype_list[j]].llvm_type);
+	}
+
+	std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
+	auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
+	LLVMStructSetBody(ty, ctypes.data(), uint32_t(ctypes.size()), false);
+	env.dict.type_array.back().llvm_type = ty;
+	env.dict.type_array.back().zero_constant = struct_zero_constant;
+	env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
+
+	env.dict.type_array.back().decomposed_types_count = uint32_t(final_subtype_list.size());
+	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
+	
+	for(uint32_t j = 1; j < final_subtype_list.size(); ++j) {
+		env.dict.type_array.back().flags |= env.dict.type_array[final_subtype_list[j]].flags;
+	}
+	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
+	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+	env.dict.type_array.back().type_slots = 0;
+	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), final_subtype_list.begin(), final_subtype_list.end());
+
+	return new_type;
+}
+
+inline uint32_t next_encoded_stack_type(std::span<int32_t const> desc) {
+	if(desc.size() == 0)
+		return 0;
+	if(desc.size() == 1)
+		return 1;
+	if(desc[1] != std::numeric_limits<int32_t>::max())
+		return 1;
+	uint32_t i = 2;
+	while(i < desc.size() && desc[i] != -1) {
+		i += next_encoded_stack_type(desc.subspan(i));
+	}
+	if(i < desc.size() && desc[i] == -1)
+		++i;
+	return i;
+}
+
+inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> subtypes, std::vector<std::string_view> const& member_names, environment& env, int32_t template_types) {
+
+	int32_t new_type = int32_t(env.dict.type_array.size());
+	env.dict.type_array.emplace_back();
+	env.dict.types.insert_or_assign(std::string(name), new_type);
+
+	if(template_types == 0) {
+		std::vector<LLVMTypeRef> ctypes;
+		for(uint32_t j = 0; j < subtypes.size(); ++j) {
+			ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
+		}
+		std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
+		auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
+		LLVMStructSetBody(ty, ctypes.data(), uint32_t(ctypes.size()), false);
+		env.dict.type_array.back().llvm_type = ty;
+		env.dict.type_array.back().zero_constant = struct_zero_constant;
+		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
+	} else {
+		env.dict.type_array.back().llvm_type = LLVMVoidTypeInContext(env.llvm_context);
+		env.dict.type_array.back().zero_constant = struct_zero_constant;
+		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
+	}
+
+	env.dict.type_array.back().decomposed_types_count = uint32_t(subtypes.size() + 1);
+	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
+
+	if(template_types == 0) {
+		for(uint32_t j = 1; j < subtypes.size(); ++j) {
+			env.dict.type_array.back().flags |= env.dict.type_array[subtypes[j]].flags;
+		}
+	}
+	if(template_types > 0)
+		env.dict.type_array.back().flags |= type::FLAG_TEMPLATE;
+	else
+		env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
+	
+	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+	env.dict.type_array.back().type_slots = template_types;
+	if(template_types == 0)
+		env.dict.all_stack_types.push_back(fif_struct);
+	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
+
+	int32_t start_types = int32_t(env.dict.all_stack_types.size());
+	env.dict.all_stack_types.push_back(new_type);
+	if(template_types > 0) {
+		env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+		for(int32_t j = 0; j < template_types; ++j)
+			env.dict.all_stack_types.push_back(-(j+2));
+		env.dict.all_stack_types.push_back(-1);
+	}
+	int32_t end_zero = int32_t(env.dict.all_stack_types.size());
+	env.dict.all_stack_types.push_back(-1);
+	env.dict.all_stack_types.push_back(new_type);
+	if(template_types > 0) {
+		env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+		for(int32_t j = 0; j < template_types; ++j)
+			env.dict.all_stack_types.push_back(-(j + 2));
+		env.dict.all_stack_types.push_back(-1);
+	}
+	int32_t end_one = int32_t(env.dict.all_stack_types.size());
+	env.dict.all_stack_types.push_back(new_type);
+	if(template_types > 0) {
+		env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+		for(int32_t j = 0; j < template_types; ++j)
+			env.dict.all_stack_types.push_back(-(j + 2));
+		env.dict.all_stack_types.push_back(-1);
+	}
+
+	int32_t end_two = int32_t(env.dict.all_stack_types.size());
+
+	{
+		int32_t old_word = -1;
+		if(auto it = env.dict.words.find(std::string("copy")); it != env.dict.words.end()) {
+			old_word = it->second;
+		}
+		env.dict.words.insert_or_assign(std::string("copy"), int32_t(env.dict.word_array.size()));
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map2 copy");
+		env.dict.word_array.back().specialization_of = old_word;
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_two - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+	}
+	{
+		int32_t old_word = -1;
+		if(auto it = env.dict.words.find(std::string("dup")); it != env.dict.words.end()) {
+			old_word = it->second;
+		}
+		env.dict.words.insert_or_assign(std::string("dup"), int32_t(env.dict.word_array.size()));
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map2 dup");
+		env.dict.word_array.back().specialization_of = old_word;
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_two - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+	}
+	{
+		int32_t old_word = -1;
+		if(auto it = env.dict.words.find(std::string("init")); it != env.dict.words.end()) {
+			old_word = it->second;
+		}
+		env.dict.words.insert_or_assign(std::string("init"), int32_t(env.dict.word_array.size()));
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map1 init");
+		env.dict.word_array.back().specialization_of = old_word;
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_one - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+	}
+	{
+		int32_t old_word = -1;
+		if(auto it = env.dict.words.find(std::string("drop")); it != env.dict.words.end()) {
+			old_word = it->second;
+		}
+		env.dict.words.insert_or_assign(std::string("drop"), int32_t(env.dict.word_array.size()));
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map0 drop");
+		env.dict.word_array.back().specialization_of = old_word;
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_zero - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+	}
+
+	uint32_t index = 0;
+	auto desc = subtypes;
+	while(desc.size() > 0) {
+		auto next = next_encoded_stack_type(desc);
+
+		{
+			int32_t old_word = -1;
+			if(auto it = env.dict.words.find(std::string(".") + std::string{ member_names[index] }); it != env.dict.words.end()) {
+				old_word = it->second;
+			}
+
+			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
+			env.dict.all_stack_types.push_back(new_type);
+			if(template_types > 0) {
+				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+				for(int32_t j = 0; j < template_types; ++j)
+					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.push_back(-1);
+			}
+			env.dict.all_stack_types.push_back(-1);
+			for(uint32_t j = 0; j < next; ++j)
+				env.dict.all_stack_types.push_back(desc[j]);
+			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
+
+			env.dict.words.insert_or_assign(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size()));
+			env.dict.word_array.emplace_back();
+			env.dict.word_array.back().source = std::string("forth.extract ") + std::to_string(index);
+			env.dict.word_array.back().specialization_of = old_word;
+			env.dict.word_array.back().stack_types_start = start_types_i;
+			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
+			env.dict.word_array.back().treat_as_base = true;
+		}
+		{
+			int32_t old_word = -1;
+			if(auto it = env.dict.words.find(std::string(".") + std::string{ member_names[index] } + "!"); it != env.dict.words.end()) {
+				old_word = it->second;
+			}
+
+			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
+			env.dict.all_stack_types.push_back(new_type);
+			if(template_types > 0) {
+				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+				for(int32_t j = 0; j < template_types; ++j)
+					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.push_back(-1);
+			}
+			for(uint32_t j = 0; j < next; ++j)
+				env.dict.all_stack_types.push_back(desc[j]);
+			env.dict.all_stack_types.push_back(-1);
+			env.dict.all_stack_types.push_back(new_type);
+			if(template_types > 0) {
+				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+				for(int32_t j = 0; j < template_types; ++j)
+					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.push_back(-1);
+			}
+			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
+
+			env.dict.words.insert_or_assign(std::string(".") + std::string{ member_names[index] } + "!", int32_t(env.dict.word_array.size()));
+			env.dict.word_array.emplace_back();
+			env.dict.word_array.back().source = std::string("forth.insert ") + std::to_string(index);
+			env.dict.word_array.back().specialization_of = old_word;
+			env.dict.word_array.back().stack_types_start = start_types_i;
+			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
+			env.dict.word_array.back().treat_as_base = true;
+		}
+		{
+			int32_t old_word = -1;
+			if(auto it = env.dict.words.find(std::string(".") + std::string{ member_names[index] }); it != env.dict.words.end()) {
+				old_word = it->second;
+			}
+
+			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
+			env.dict.all_stack_types.push_back(fif_ptr);
+			env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+			env.dict.all_stack_types.push_back(new_type);
+			if(template_types > 0) {
+				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+				for(int32_t j = 0; j < template_types; ++j)
+					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.push_back(-1);
+			}
+			env.dict.all_stack_types.push_back(-1);
+			env.dict.all_stack_types.push_back(-1);
+			env.dict.all_stack_types.push_back(fif_ptr);
+			env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+			for(uint32_t j = 0; j < next; ++j)
+				env.dict.all_stack_types.push_back(desc[j]);
+			env.dict.all_stack_types.push_back(-1);
+			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
+
+			env.dict.words.insert_or_assign(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size()));
+			env.dict.word_array.emplace_back();
+			env.dict.word_array.back().source = std::string("forth.gep ") + std::to_string(index);
+			env.dict.word_array.back().specialization_of = old_word;
+			env.dict.word_array.back().stack_types_start = start_types_i;
+			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
+			env.dict.word_array.back().treat_as_base = true;
+		}
+
+		++index;
+		desc = desc.subspan(next);
+	}
+
+	return new_type;
+}
+
 inline type_match internal_resolve_type(std::string_view text, environment& env, std::vector<int32_t>* type_subs) {
 	uint32_t mt_end = 0;
 	if(text == "ptr(nil)") {
@@ -1249,6 +1610,9 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 			return type_match{ fif_nil, mt_end };
 		}
 	}
+	if(text.substr(0, mt_end) == "struct") { // prevent "generic" struct matching
+		return type_match{ -1, uint32_t(text.length()) };
+	}
 	if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
 		if(mt_end >= text.size() || text[mt_end] == ',' ||  text[mt_end] == ')') {	// case: plain type
 			return type_match{ it->second, mt_end };
@@ -1266,41 +1630,38 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		if(mt_end < text.size() && text[mt_end] == ')')
 			++mt_end;
 
-		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
-			if(env.dict.type_array[i].decomposed_types_count == 1 + subtypes.size()) {
-				auto ta_start = env.dict.type_array[i].decomposed_types_start;
-				if(env.dict.all_stack_types[ta_start] == it->second) {
-					bool match = true;
-					for(uint32_t j = 0; j < subtypes.size(); ++j) {
-						if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
-							match = false;
-							break;
-						}
-					}
-
-					if(match) {
-						return type_match{ int32_t(i), mt_end };
-					}
-				}
-			}
-		}
-		
 		if(env.dict.type_array[it->second].type_slots != int32_t(subtypes.size())) {
 			env.report_error("attempted to instantiate a type with the wrong number of parameters");
 			env.mode = fif_mode::error;
 			return type_match{ -1, mt_end };
+		} else if(env.dict.type_array[it->second].is_struct_template()) {
+			return type_match{ instantiate_templated_struct(it->second, subtypes, env), mt_end };
 		} else {
+			for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+				if(env.dict.type_array[i].decomposed_types_count == 1 + subtypes.size()) {
+					auto ta_start = env.dict.type_array[i].decomposed_types_start;
+					if(env.dict.all_stack_types[ta_start] == it->second) {
+						bool match = true;
+						for(uint32_t j = 0; j < subtypes.size(); ++j) {
+							if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
+								match = false;
+								break;
+							}
+						}
+
+						if(match) {
+							return type_match{ int32_t(i), mt_end };
+						}
+					}
+				}
+			}
+
 			int32_t new_type = int32_t(env.dict.type_array.size());
 			env.dict.type_array.emplace_back();
-			env.dict.type_array.back().do_constructor = env.dict.type_array[it->second].do_constructor;
-			env.dict.type_array.back().do_copy = env.dict.type_array[it->second].do_copy;
-			env.dict.type_array.back().do_destructor = env.dict.type_array[it->second].do_destructor;
-			env.dict.type_array.back().do_dup = env.dict.type_array[it->second].do_dup;
 			env.dict.type_array.back().llvm_type = env.dict.type_array[it->second].llvm_type;
 			env.dict.type_array.back().decomposed_types_count = uint32_t(1 + subtypes.size());
 			env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
-			env.dict.type_array.back().refcounted_type = env.dict.type_array[it->second].refcounted_type;
-			env.dict.type_array.back().stack_value = env.dict.type_array.back().stack_value;
+			env.dict.type_array.back().flags = env.dict.type_array[it->second].flags;
 			env.dict.type_array.back().zero_constant = env.dict.type_array.back().zero_constant;
 			env.dict.type_array.back().type_slots = 0;
 
@@ -1323,11 +1684,13 @@ inline int32_t resolve_type(std::string_view text, environment& env, std::vector
 struct type_span_gen_result {
 	std::vector<int32_t> type_array;
 	uint32_t end_match_pos = 0;
+	int32_t max_variable = -1;
 };
 
 inline type_span_gen_result internal_generate_type(std::string_view text, environment& env) {
 	uint32_t mt_end = 0;
 	type_span_gen_result r;
+
 	if(text == "ptr(nil)") {
 		r.type_array.push_back(fif_opaque_ptr);
 		r.end_match_pos = 8;
@@ -1341,7 +1704,7 @@ inline type_span_gen_result internal_generate_type(std::string_view text, enviro
 	if(text.size() > 0 && text[0] == '$') {
 		if(is_integer(text.data() + 1, text.data() + text.size())) {
 			auto v = parse_int(text.substr(1));
-
+			r.max_variable = std::max(r.max_variable, v);
 			r.type_array.push_back( -(v + 2) );
 			r.end_match_pos = mt_end;
 			return r;
@@ -1403,48 +1766,46 @@ inline type_match resolve_span_type(std::span<int32_t const> tlist, std::vector<
 	if(mt_end < tlist.size() && tlist[mt_end] == -1)
 		++mt_end;
 
-	for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
-		if(env.dict.type_array[i].decomposed_types_count == 1 + subtypes.size()) {
-			auto ta_start = env.dict.type_array[i].decomposed_types_start;
-			if(env.dict.all_stack_types[ta_start] == base_type) {
-				bool match = true;
-				for(uint32_t j = 0; j < subtypes.size(); ++j) {
-					if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
-						match = false;
-						break;
-					}
-				}
-
-				if(match) {
-					return type_match{ int32_t(i), mt_end };
-				}
-			}
-		}
-	}
-
+	
 	if(env.dict.type_array[base_type].type_slots != int32_t(subtypes.size())) {
 		env.report_error("attempted to instantiate a type with the wrong number of parameters");
 		env.mode = fif_mode::error;
 		return type_match{ -1, mt_end };
 	} else if(base_type == fif_ptr && !subtypes.empty() && subtypes[0] == fif_nil) {
 		return type_match{ fif_opaque_ptr, mt_end };
+	} else if(env.dict.type_array[base_type].is_struct_template()) {
+		return type_match{ instantiate_templated_struct(base_type, subtypes, env), mt_end };
 	} else {
+		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+			if(env.dict.type_array[i].decomposed_types_count == 1 + subtypes.size()) {
+				auto ta_start = env.dict.type_array[i].decomposed_types_start;
+				if(env.dict.all_stack_types[ta_start] == base_type) {
+					bool match = true;
+					for(uint32_t j = 0; j < subtypes.size(); ++j) {
+						if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
+							match = false;
+							break;
+						}
+					}
+
+					if(match) {
+						return type_match{ int32_t(i), mt_end };
+					}
+				}
+			}
+		}
+
 		int32_t new_type = int32_t(env.dict.type_array.size());
 		env.dict.type_array.emplace_back();
 
-		env.dict.type_array.back().do_constructor = env.dict.type_array[base_type].do_constructor;
-		env.dict.type_array.back().do_copy = env.dict.type_array[base_type].do_copy;
-		env.dict.type_array.back().do_destructor = env.dict.type_array[base_type].do_destructor;
-		env.dict.type_array.back().do_dup = env.dict.type_array[base_type].do_dup;
 		env.dict.type_array.back().llvm_type = env.dict.type_array[base_type].llvm_type;
 		env.dict.type_array.back().decomposed_types_count = uint32_t(1 + subtypes.size());
 		env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
-		env.dict.type_array.back().refcounted_type = env.dict.type_array[base_type].refcounted_type;
-		env.dict.type_array.back().stack_value = env.dict.type_array.back().stack_value;
-		env.dict.type_array.back().zero_constant = env.dict.type_array.back().zero_constant;
-		env.dict.all_stack_types.push_back(base_type);
+		env.dict.type_array.back().zero_constant = env.dict.type_array[base_type].zero_constant;
+		env.dict.type_array.back().flags = env.dict.type_array[base_type].flags;
 		env.dict.type_array.back().type_slots = 0;
 
+		env.dict.all_stack_types.push_back(base_type);
 		for(auto t : subtypes) {
 			env.dict.all_stack_types.push_back(t);
 		}
@@ -1510,21 +1871,6 @@ inline variable_match_result fill_in_variable_types(int32_t source_type, std::sp
 		++sub_offset;
 
 	return variable_match_result{ result, sub_offset };
-}
-inline uint32_t next_encoded_stack_type(std::span<int32_t const> desc) {
-	if(desc.size() == 0)
-		return 0;
-	if(desc.size() == 1)
-		return 1;
-	if(desc[1] != std::numeric_limits<int32_t>::max())
-		return 1;
-	uint32_t i = 2;
-	while( i < desc.size() && desc[i] != -1) {
-		i += next_encoded_stack_type(desc.subspan(i));
-	}
-	if(i < desc.size() && desc[i] == -1)
-		++i;
-	return i;
 }
 
 inline type_match_result match_stack_description(std::span<int32_t const> desc, state_stack& ts, environment& env, std::vector<int32_t>& type_subs) { // ret: true if function matched
@@ -1853,7 +2199,7 @@ inline void do_immediate_f32(state_stack& s, float value, environment* e) {
 
 	auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 	if(compile_bytes && e->mode == fif_mode::compiling_bytecode) {
-		fif_call imm = immediate_i32;
+		fif_call imm = immediate_f32;
 		uint64_t imm_bytes = 0;
 		memcpy(&imm_bytes, &imm, 8);
 		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
@@ -1864,45 +2210,18 @@ inline void do_immediate_f32(state_stack& s, float value, environment* e) {
 	if(e->mode == fif_mode::compiling_llvm) {
 		val = LLVMConstReal(LLVMFloatTypeInContext(e->llvm_context), value);
 	}
-	s.push_back_main(fif_i32, v8, val);
+	s.push_back_main(fif_f32, v8, val);
 }
 inline int32_t* function_return(state_stack& s, int32_t* p, environment*) {
 	return nullptr;
 }
-inline int32_t* type_construction(state_stack& s, int32_t* p, environment* e) {
-	auto type = *(p + 2);
-	auto is_refcounted = e->dict.type_array[type].refcounted_type;
-	s.push_back_main(is_refcounted ? -type : type, is_refcounted ? e->dict.type_array[type].stack_value() : 0, nullptr);
-	return p + 3;
-}
-inline void do_construct_type(state_stack& s, int32_t type, environment* env) {
-	if(typechecking_failed(env->mode))
-		return;
 
-	auto compile_bytes = env->compiler_stack.back()->bytecode_compilation_progress();
-	if(compile_bytes && env->mode == fif_mode::compiling_bytecode) {
-		fif_call imm = type_construction;
-		uint64_t imm_bytes = 0;
-		memcpy(&imm_bytes, &imm, 8);
-		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-		compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-		compile_bytes->push_back(type);
-	}
-	LLVMValueRef val = nullptr;
-	if(env->mode == fif_mode::compiling_llvm) {
-		if(env->dict.type_array[type].zero_constant) {
-			val = env->dict.type_array[type].zero_constant(env->llvm_context);
-		} else {
-			env->report_error("attempted to compile a type without an llvm representation");
-			env->mode = fif_mode::error;
-			return;
-		}
-	}
-	s.push_back_main(type, 0, val);
-	if(env->dict.type_array[type].do_constructor) {
-		env->dict.type_array[type].do_constructor(s, nullptr, env);
-	}
-}
+struct parse_result {
+	std::string_view content;
+	bool is_string = false;
+};
+
+inline void execute_fif_word(parse_result word, environment& env, bool ignore_specializations);
 
 inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int32_t const> desc) {
 	std::vector<LLVMTypeRef> parameter_group;
@@ -2104,6 +2423,7 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 		++insert_index;
 	}
 	LLVMBuildRet(env.llvm_builder, rstruct);
+	// LLVMBuildAggregateRet(env.llvm_builder, LLVMValueRef * RetVals, unsigned N);
 }
 
 inline void llvm_make_function_call(environment& env, LLVMValueRef fn, std::span<int32_t const> desc) {
@@ -2143,7 +2463,7 @@ inline void llvm_make_function_call(environment& env, LLVMValueRef fn, std::span
 		}
 	}
 	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc), fn, params.data(), uint32_t(params.size()), "");
-	LLVMSetFunctionCallConv(retvalue, 2);
+	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
 	auto rsummary = llvm_function_return_type_from_desc(env, desc);
 
 	if(rsummary.composite_type == nullptr) {
@@ -2250,6 +2570,8 @@ public:
 		if(auto it = vars.find(name); it != vars.end()) {
 			return nullptr;
 		}
+		if(data && env.dict.type_array[type].refcounted_type())
+			increment_refcounted(data);
 		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
 		added.first->second->type = type;
 		added.first->second->data = data;
@@ -2263,18 +2585,20 @@ public:
 	void release_locals() {
 		auto* ws = env.compiler_stack.back()->working_state();
 		for(auto& l : vars) {
-			if(env.dict.type_array[l.second->type].do_destructor) {
+			if(env.dict.type_array[l.second->type].flags != 0) {
 				auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
 				ws->push_back_main(l.second->type, l.second->data, iresult);
-				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-				ws->pop_main();
+				execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				if(l.second->data && env.dict.type_array[l.second->type].refcounted_type())
+					release_refcounted(l.second->data);
 			}
 		}
 		for(auto& l : lets) {
-			if(env.dict.type_array[l.second->type].do_destructor) {
+			if(env.dict.type_array[l.second->type].flags != 0) {
 				ws->push_back_main(l.second->type, l.second->data, l.second->expression);
-				env.dict.type_array[l.second->type].do_destructor(*ws, nullptr, &env);
-				ws->pop_main();
+				execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				if(l.second->data && env.dict.type_array[l.second->type].refcounted_type())
+					release_refcounted(l.second->data);
 			}
 		}
 		vars.clear();
@@ -3744,11 +4068,6 @@ public:
 
 inline constexpr size_t inlining_cells_limit = 512;
 
-struct parse_result {
-	std::string_view content;
-	bool is_string = false;
-};
-
 inline uint32_t codepoint_from_utf8(char const* start, char const* end) {
 	uint8_t byte1 = uint8_t(start + 0 < end ? start[0] : 0);
 	uint8_t byte2 = uint8_t(start + 1 < end ? start[1] : 0);
@@ -4409,9 +4728,10 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 							memcpy(&imm_bytes, &imm, 8);
 							cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 							cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-							cbytes->push_back(std::get<interpreted_word_instance>(wi).compiled_offset);
+							auto offset = std::get<interpreted_word_instance>(wi).compiled_offset;
+							cbytes->push_back(offset);
 						}
-						apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(wi).stack_types_start, size_t(std::get<compiled_word_instance>(wi).stack_types_count)), *ws, env);
+						apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count)), *ws, env);
 					}
 				}
 			} else if(std::holds_alternative<compiled_word_instance>(wi)) {
@@ -4637,7 +4957,7 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	}
 
 	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc), wi.llvm_function, params.data(), uint32_t(params.size()), "");
-	LLVMSetFunctionCallConv(retvalue, 2);
+	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
 	auto rsummary = llvm_function_return_type_from_desc(env, desc);
 
 	// make return
@@ -4929,41 +5249,45 @@ inline int32_t* f32_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
 
 inline int32_t* dup(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(1);
 		auto type = s.main_type_back(0);
 		auto expr = s.main_ex_back(0);
 		s.push_back_main(type, 0, expr);
-		if(e->dict.type_array[type].do_dup) {
-			e->dict.type_array[type].do_dup(s, p, e);
-		}
 	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
 		auto type = s.main_type_back(0);
 		auto dat = s.main_data_back(0);
 		s.push_back_main(type, dat, nullptr);
-		if(e->dict.type_array[type].do_dup) {
-			e->dict.type_array[type].do_dup(s, p, e);
-		}
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
 		auto type = s.main_type_back(0);
 		s.push_back_main(type, 0, nullptr);
 	}
 	return p + 2;
 }
+inline int32_t* init(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(1);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
 inline int32_t* copy(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(1);
 		auto type = s.main_type_back(0);
 		auto expr = s.main_ex_back(0);
 		s.push_back_main(type, 0, expr);
-		if(e->dict.type_array[type].do_copy) {
-			e->dict.type_array[type].do_copy(s, p, e);
-		}
 	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
 		auto type = s.main_type_back(0);
 		auto dat = s.main_data_back(0);
 		s.push_back_main(type, dat, nullptr);
-		if(e->dict.type_array[type].do_copy) {
-			e->dict.type_array[type].do_copy(s, p, e);
-		}
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
 		auto type = s.main_type_back(0);
 		s.push_back_main(type, 0, nullptr);
 	}
@@ -4972,15 +5296,9 @@ inline int32_t* copy(fif::state_stack& s, int32_t* p, fif::environment* e) {
 inline int32_t* drop(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto type = s.main_type_back(0);
-		if(e->dict.type_array[type].do_destructor) {
-			e->dict.type_array[type].do_destructor(s, p, e);
-		}
 		s.pop_main();
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		auto type = s.main_type_back(0);
-		if(e->dict.type_array[type].do_destructor) {
-			e->dict.type_array[type].do_destructor(s, p, e);
-		}
 		s.pop_main();
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		s.pop_main();
@@ -5002,17 +5320,17 @@ inline int32_t* fif_swap(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		auto type_b = s.main_type_back(1);
 		auto dat_a = s.main_data_back(0);
 		auto dat_b = s.main_data_back(1);
-		if(e->dict.type_array[type_a].refcounted_type)
+		if(e->dict.type_array[type_a].refcounted_type())
 			fif::increment_refcounted(dat_a);
-		if(e->dict.type_array[type_b].refcounted_type)
+		if(e->dict.type_array[type_b].refcounted_type())
 			fif::increment_refcounted(dat_b);
 		s.pop_main();
 		s.pop_main();
 		s.push_back_main(type_a, dat_a, nullptr);
 		s.push_back_main(type_b, dat_b, nullptr);
-		if(e->dict.type_array[type_a].refcounted_type)
+		if(e->dict.type_array[type_a].refcounted_type())
 			fif::release_refcounted(dat_a);
-		if(e->dict.type_array[type_b].refcounted_type)
+		if(e->dict.type_array[type_b].refcounted_type())
 			fif::release_refcounted(dat_b);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		auto type_a = s.main_type_back(0);
@@ -5368,8 +5686,13 @@ inline int32_t* impl_load(fif::state_stack& s, int32_t* p, fif::environment* e) 
 		s.pop_main();
 		s.push_back_main(pointer_contents, 0, result);
 
-		if(e->dict.type_array[pointer_contents].do_dup) {
-			e->dict.type_array[pointer_contents].do_dup(s, p, e);
+		if(e->dict.type_array[pointer_contents].flags != 0) {
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+
+			// remove the extra value and save the duplicated expression on top of the stack
+			auto expr_b = s.main_ex_back(0);
+			s.set_main_ex_back(1, expr_b);
+			s.pop_main();
 		}
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		auto v = s.main_data_back(0);
@@ -5377,10 +5700,13 @@ inline int32_t* impl_load(fif::state_stack& s, int32_t* p, fif::environment* e) 
 		int64_t* ptr_val = (int64_t*)v;
 		s.push_back_main(pointer_contents, *ptr_val, nullptr);
 
-		if(e->dict.type_array[pointer_contents].do_dup) {
-			e->dict.type_array[pointer_contents].do_dup(s, p, e);
+		if(e->dict.type_array[pointer_contents].flags != 0) {
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			// remove the extra value and save the duplicated expression on top of the stack
+			auto data_b = s.main_data_back(0);
+			s.set_main_data_back(1, data_b);
+			s.pop_main();
 		}
-
 	} else if(fif::typechecking_mode(e->mode)) {
 		s.pop_main();
 		s.push_back_main(pointer_contents, 0, nullptr);
@@ -5397,11 +5723,10 @@ inline int32_t* impl_store(fif::state_stack& s, int32_t* p, fif::environment* e)
 	auto pointer_contents = e->dict.all_stack_types[decomp + 1];
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
-		if(e->dict.type_array[pointer_contents].do_destructor) {
+		if(e->dict.type_array[pointer_contents].flags != 0) {
 			auto iresult = LLVMBuildLoad2(e->llvm_builder, e->dict.type_array[pointer_contents].llvm_type, s.main_ex_back(0), "");
 			s.push_back_main(pointer_contents, 0, iresult);
-			e->dict.type_array[pointer_contents].do_destructor(s, p, e);
-			s.pop_main();
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
 		}
 
 		auto result = LLVMBuildStore(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0));
@@ -5412,14 +5737,18 @@ inline int32_t* impl_store(fif::state_stack& s, int32_t* p, fif::environment* e)
 		auto v = s.main_data_back(0);
 		int64_t* ptr_val = (int64_t*)v;
 
-		if(e->dict.type_array[pointer_contents].do_destructor) {
+		if(e->dict.type_array[pointer_contents].flags != 0) {
 			s.push_back_main(pointer_contents, *ptr_val, nullptr);
-			e->dict.type_array[pointer_contents].do_destructor(s, p, e);
-			s.pop_main();
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+			if(e->dict.type_array[pointer_contents].refcounted_type())
+				release_refcounted(*ptr_val);
 		}
 
 		auto to_write = s.main_data_back(1);
-		
+
+		if(e->dict.type_array[pointer_contents].refcounted_type())
+			increment_refcounted(to_write);
+
 		memcpy(ptr_val, &to_write, 8);
 
 		s.pop_main();
@@ -5667,6 +5996,9 @@ inline int32_t* do_var_creation(fif::state_stack& s, int32_t* p, fif::environmen
 		return nullptr;
 	}
 	l->data = s.main_data_back(0);
+	if(e->dict.type_array[l->type].refcounted_type())
+		increment_refcounted(l->data);
+
 	s.pop_main();
 	return p + 4;
 }
@@ -5687,6 +6019,8 @@ inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e)
 			return nullptr;
 		}
 		l->data = s.main_data_back(0);
+		if(e->dict.type_array[l->type].refcounted_type())
+			increment_refcounted(l->data);
 	} else if(e->mode == fif_mode::compiling_llvm) {
 		auto l = e->compiler_stack.back()->create_var(std::string{ name.content }, s.main_type_back(0));
 		if(!l) {
@@ -5761,6 +6095,671 @@ inline int32_t* create_global_impl(fif::state_stack& s, int32_t* p, fif::environ
 	return nullptr;
 }
 
+inline int32_t* do_fextract(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	int32_t index_value = *(p + 2);
+	auto stype = s.main_type_back(0);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+
+	auto ptr = s.main_data_back(0);
+	auto children = from_refcounted<int64_t>(ptr);
+	auto child_data = children[index_value];
+
+	if(e->dict.type_array[child_type].flags != 0) {
+		s.push_back_main(child_type, child_data, nullptr);
+		execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+		child_data = s.main_data_back(0);
+		if(e->dict.type_array[child_type].refcounted_type())
+			increment_refcounted(child_data);
+		s.pop_main();
+		s.pop_main();
+	}
+
+	if(e->dict.type_array[stype].flags != 0) {
+		execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+	} else {
+		s.pop_main();
+	}
+
+	s.push_back_main(child_type, child_data, nullptr);
+
+	if(e->dict.type_array[child_type].refcounted_type())
+		release_refcounted(child_data);
+
+	return p + 3;
+}
+
+inline int32_t* forth_extract(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	auto index_str = read_token(e->source_stack.back(), *e);
+	auto index_value = parse_int(index_str.content);
+	auto stype = s.main_type_back(0);
+
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto struct_expr = s.main_ex_back(0);
+		auto result = LLVMBuildExtractValue(e->llvm_builder, struct_expr, index_value, "");
+		
+		if(e->dict.type_array[child_type].flags != 0) {
+			s.push_back_main(child_type, 0, result);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			result = s.main_ex_back(0);
+			s.pop_main();
+			s.pop_main();
+		}
+		if(e->dict.type_array[stype].flags != 0) {
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+		} else {
+			s.pop_main();
+		}
+		s.push_back_main(child_type, 0, result);
+
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ptr = s.main_data_back(0);
+		auto children = from_refcounted<int64_t>(ptr);
+		auto child_data = children[index_value];
+
+		
+		if(e->dict.type_array[child_type].flags != 0) {
+			s.push_back_main(child_type, child_data, nullptr);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			child_data = s.main_data_back(0);
+			if(e->dict.type_array[child_type].refcounted_type())
+				increment_refcounted(child_data);
+			s.pop_main();
+			s.pop_main();
+		}
+
+		if(e->dict.type_array[stype].flags != 0) {
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+		} else {
+			s.pop_main();
+		}
+
+		s.push_back_main(child_type, child_data, nullptr);
+
+		if(e->dict.type_array[child_type].refcounted_type())
+			release_refcounted(child_data);
+
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(child_type, 0, nullptr);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			fif_call imm = do_fextract;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			compile_bytes->push_back(index_value);
+		}
+		s.pop_main();
+		s.push_back_main(child_type, 0, nullptr);
+	}
+	return p + 2;
+}
+
+inline int32_t* do_finsert(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	int32_t index_value = *(p + 2);
+	auto stype = s.main_type_back(0);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+
+	auto ptr = s.main_data_back(0);
+	auto children = from_refcounted<int64_t>(ptr);
+	increment_refcounted(ptr);
+
+	if(e->dict.type_array[child_type].flags != 0) {
+		s.push_back_main(child_type, children[index_value], 0);
+		execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+		if(e->dict.type_array[child_type].refcounted_type()) {
+			release_refcounted(children[index_value]);
+		}
+	}
+	s.pop_main();
+	if(e->dict.type_array[child_type].refcounted_type()) {
+		increment_refcounted(s.main_data_back(0));
+	}
+	children[index_value] = s.main_data_back(0);
+	s.pop_main();
+
+	s.push_back_main(stype, ptr, 0);
+	release_refcounted(ptr);
+
+	return p + 3;
+}
+
+inline int32_t* forth_insert(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	auto index_str = read_token(e->source_stack.back(), *e);
+	auto index_value = parse_int(index_str.content);
+	auto stype = s.main_type_back(0);
+
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto struct_expr = s.main_ex_back(0);
+		
+		if(e->dict.type_array[child_type].flags != 0) {
+			auto oldv = LLVMBuildExtractValue(e->llvm_builder, struct_expr, index_value, "");
+			s.push_back_main(child_type, 0, oldv);
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+		}
+
+		s.pop_main();
+		struct_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), index_value, "");
+		s.pop_main();
+		s.push_back_main(stype, 0, struct_expr);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ptr = s.main_data_back(0);
+		auto children = from_refcounted<int64_t>(ptr);
+		increment_refcounted(ptr);
+
+		if(e->dict.type_array[child_type].flags != 0) {
+			s.push_back_main(child_type, children[index_value], 0);
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+			if(e->dict.type_array[child_type].refcounted_type()) {
+				release_refcounted(children[index_value]);
+			}
+		}
+		s.pop_main();
+		if(e->dict.type_array[child_type].refcounted_type()) {
+			increment_refcounted(s.main_data_back(0));
+		}
+		children[index_value] = s.main_data_back(0);
+		s.pop_main();
+
+		s.push_back_main(stype, ptr, 0);
+		release_refcounted(ptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(stype, 0, nullptr);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			fif_call imm = do_finsert;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			compile_bytes->push_back(index_value);
+		}
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(stype, 0, nullptr);
+	}
+	return p + 2;
+}
+
+inline int32_t* do_fgep(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	int32_t index_value = *(p + 2);
+	auto stype = s.main_type_back(0);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+
+	auto ptr = s.main_data_back(0);
+	auto children = from_refcounted<int64_t>(ptr);
+	auto child_ptr = children + index_value;
+
+	int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), child_type, -1 };
+	std::vector<int32_t> subs;
+	auto child_ptr_type = resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e);
+
+	s.pop_main();
+	s.push_back_main(child_ptr_type.type, (int64_t)child_ptr, 0);
+
+	return p + 3;
+}
+
+inline int32_t* forth_gep(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	auto index_str = read_token(e->source_stack.back(), *e);
+	auto index_value = parse_int(index_str.content);
+	auto ptr_type = s.main_data_back(0);
+
+	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
+	auto stype = e->dict.all_stack_types[decomp + 1];
+
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+
+	int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), child_type, -1 };
+	std::vector<int32_t> subs;
+	auto child_ptr_type = resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e);
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto struct_expr = s.main_ex_back(0);
+		auto ptr_expr = LLVMBuildStructGEP2(e->llvm_builder, e->dict.type_array[stype].llvm_type, struct_expr, uint32_t(index_value), "");
+		s.pop_main();
+		s.push_back_main(child_ptr_type.type, 0, ptr_expr);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ptr = s.main_data_back(0);
+		auto children = from_refcounted<int64_t>(ptr);
+		auto child_ptr = children + index_value;
+
+		s.pop_main();
+		s.push_back_main(child_ptr_type.type, (int64_t)child_ptr, 0);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(child_ptr_type.type, 0, nullptr);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			fif_call imm = do_fgep;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			compile_bytes->push_back(index_value);
+		}
+		s.pop_main();
+		s.push_back_main(child_ptr_type.type, 0, nullptr);
+	}
+	return p + 2;
+}
+
+inline int32_t* do_fsmz(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	char* command = nullptr;
+	memcpy(&command, p + 2, 8);
+
+	auto stype = s.main_type_back(0);
+	auto children_count = e->dict.type_array[stype].decomposed_types_count - 1;
+	auto ptr = s.main_data_back(0);
+	auto children = from_refcounted<int64_t>(ptr);
+
+	for(int32_t i = 0; i < children_count; ++i) {
+		auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+		auto child_type = e->dict.all_stack_types[child_index];
+		s.push_back_main(child_type, children[i], nullptr);
+		execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+	}
+
+	s.pop_main();
+	return p + 4;
+}
+
+inline int32_t* forth_struct_map_zero(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	auto mapped_function = read_token(e->source_stack.back(), *e);
+	auto stype = s.main_type_back(0);
+	auto children_count = e->dict.type_array[stype].decomposed_types_count - 1;
+
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto struct_expr = s.main_ex_back(0);
+	
+		for(int32_t i = 0; i < children_count; ++i) {
+			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+			auto child_type = e->dict.all_stack_types[child_index];
+			s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(i), ""));
+			execute_fif_word(mapped_function, *e, false);
+		}
+
+		s.pop_main();
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ptr = s.main_data_back(0);
+		auto children = from_refcounted<int64_t>(ptr);
+
+		for(int32_t i = 0; i < children_count; ++i) {
+			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+			auto child_type = e->dict.all_stack_types[child_index];
+			s.push_back_main(child_type, children[i], nullptr);
+			execute_fif_word(mapped_function, *e, false);
+		}
+
+		s.pop_main();
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			{
+				fif_call imm = do_fsmz;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
+			{
+				auto str_const = e->get_string_constant(mapped_function.content).data();
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &str_const, 8);
+				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
+		}
+		s.pop_main();
+	}
+	return p + 2;
+}
+
+inline int32_t* do_fsmo(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	char* command = nullptr;
+	memcpy(&command, p + 2, 8);
+
+	auto stype = s.main_type_back(0);
+	auto children_count = e->dict.type_array[stype].decomposed_types_count - 1;
+	auto ptr = s.main_data_back(0);
+	auto children = from_refcounted<int64_t>(ptr);
+
+	for(int32_t i = 0; i < children_count; ++i) {
+		auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+		auto child_type = e->dict.all_stack_types[child_index];
+		s.push_back_main(child_type, children[i], nullptr);
+		execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+
+		if(e->dict.type_array[child_type].refcounted_type())
+			release_refcounted(children[i]);
+
+		children[i] = s.main_data_back(0);
+
+		if(e->dict.type_array[child_type].refcounted_type())
+			increment_refcounted(children[i]);
+
+		s.pop_main();
+	}
+
+	s.mark_used_from_main(1);
+	return p + 4;
+}
+inline int32_t* forth_struct_map_one(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	auto mapped_function = read_token(e->source_stack.back(), *e);
+	auto stype = s.main_type_back(0);
+	auto children_count = e->dict.type_array[stype].decomposed_types_count - 1;
+
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto struct_expr = s.main_ex_back(0);
+
+		for(int32_t i = 0; i < children_count; ++i) {
+			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+			auto child_type = e->dict.all_stack_types[child_index];
+			s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(i), ""));
+			execute_fif_word(mapped_function, *e, false);
+			struct_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), uint32_t(i), "");
+			s.pop_main();
+		}
+		s.set_main_ex_back(0, struct_expr);
+		s.mark_used_from_main(1);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ptr = s.main_data_back(0);
+		auto children = from_refcounted<int64_t>(ptr);
+
+		for(int32_t i = 0; i < children_count; ++i) {
+			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+			auto child_type = e->dict.all_stack_types[child_index];
+			s.push_back_main(child_type, children[i], nullptr);
+			execute_fif_word(mapped_function, *e, false);
+
+			if(e->dict.type_array[child_type].refcounted_type())
+				release_refcounted(children[i]);
+
+			children[i] = s.main_data_back(0);
+
+			if(e->dict.type_array[child_type].refcounted_type())
+				increment_refcounted(children[i]);
+
+			s.pop_main();
+		}
+
+		s.mark_used_from_main(1);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			{
+				fif_call imm = do_fsmo;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
+			{
+				auto str_const = e->get_string_constant(mapped_function.content).data();
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &str_const, 8);
+				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
+		}
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
+inline int32_t* do_fsmt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	char* command = nullptr;
+	memcpy(&command, p + 2, 8);
+
+	auto stype = s.main_type_back(0);
+	auto children_count = e->dict.type_array[stype].decomposed_types_count - 1;
+	auto ptr = s.main_data_back(0);
+	auto new_ptr = e->dict.type_array[stype].interpreter_zero(stype, e);
+
+	auto children = from_refcounted<int64_t>(ptr);
+	auto new_children = from_refcounted<int64_t>(new_ptr);
+
+	for(int32_t i = 0; i < children_count; ++i) {
+		auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+		auto child_type = e->dict.all_stack_types[child_index];
+		s.push_back_main(child_type, children[i], nullptr);
+		execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+
+		if(e->dict.type_array[child_type].refcounted_type())
+			release_refcounted(new_children[i]);
+
+		new_children[i] = s.main_data_back(0);
+
+		if(e->dict.type_array[child_type].refcounted_type())
+			increment_refcounted(new_children[i]);
+
+		s.pop_main();
+		s.pop_main();
+	}
+
+	s.mark_used_from_main(1);
+	s.push_back_main(stype, new_ptr, nullptr);
+	release_refcounted(new_ptr);
+	return p + 4;
+}
+inline int32_t* forth_struct_map_two(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	auto mapped_function = read_token(e->source_stack.back(), *e);
+	auto stype = s.main_type_back(0);
+	auto children_count = e->dict.type_array[stype].decomposed_types_count - 1;
+
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto struct_expr = s.main_ex_back(0);
+		auto new_struct_expr = e->dict.type_array[stype].zero_constant(e->llvm_context, stype, e);
+
+		for(int32_t i = 0; i < children_count; ++i) {
+			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+			auto child_type = e->dict.all_stack_types[child_index];
+			s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(i), ""));
+			execute_fif_word(mapped_function, *e, false);
+			new_struct_expr = LLVMBuildInsertValue(e->llvm_builder, new_struct_expr, s.main_ex_back(0), uint32_t(i), "");
+			s.pop_main();
+			s.pop_main();
+		}
+		s.mark_used_from_main(1);
+		s.push_back_main(stype, 0, new_struct_expr);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ptr = s.main_data_back(0);
+		auto new_ptr = e->dict.type_array[stype].interpreter_zero(stype, e);
+
+		auto children = from_refcounted<int64_t>(ptr);
+		auto new_children = from_refcounted<int64_t>(new_ptr);
+
+		for(int32_t i = 0; i < children_count; ++i) {
+			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
+			auto child_type = e->dict.all_stack_types[child_index];
+			s.push_back_main(child_type, children[i], nullptr);
+			execute_fif_word(mapped_function, *e, false);
+
+			if(e->dict.type_array[child_type].refcounted_type())
+				release_refcounted(new_children[i]);
+
+			new_children[i] = s.main_data_back(0);
+
+			if(e->dict.type_array[child_type].refcounted_type())
+				increment_refcounted(new_children[i]);
+
+			s.pop_main();
+			s.pop_main();
+		}
+
+		s.mark_used_from_main(1);
+		s.push_back_main(stype, new_ptr, nullptr);
+		release_refcounted(new_ptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+		s.push_back_main(stype, 0, nullptr);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			{
+				fif_call imm = do_fsmt;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
+			{
+				auto str_const = e->get_string_constant(mapped_function.content).data();
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &str_const, 8);
+				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
+		}
+		s.mark_used_from_main(1);
+		s.push_back_main(stype, 0, nullptr);
+	}
+	return p + 2;
+}
+
+inline int32_t* type_construction(state_stack& s, int32_t* p, environment* e) {
+	auto type = *(p + 2);
+	auto is_refcounted = e->dict.type_array[type].refcounted_type();
+	s.push_back_main( type, is_refcounted ? e->dict.type_array[type].interpreter_zero(type, e) : 0, nullptr);
+	return p + 3;
+}
+inline int32_t* do_make(state_stack& s, int32_t* p, environment* env) {
+	if(env->source_stack.empty()) {
+		env->report_error("make was unable to read the word describing the type");
+		env->mode = fif_mode::error;
+		return nullptr;
+	}
+	auto type = read_token(env->source_stack.back(), *env);
+	
+	if(typechecking_failed(env->mode))
+		return p + 2;
+
+	auto resolved_type = resolve_type(type.content, *env, env->compiler_stack.back()->type_substitutions());
+	
+	if(resolved_type == -1) {
+		env->report_error("make was unable to resolve the type");
+		env->mode = fif_mode::error;
+		return nullptr;
+	}
+
+	if(typechecking_mode(env->mode)) {
+		s.push_back_main(resolved_type, 0, nullptr);
+		return p + 2;
+	}
+
+	auto compile_bytes = env->compiler_stack.back()->bytecode_compilation_progress();
+	if(compile_bytes && env->mode == fif_mode::compiling_bytecode) {
+		fif_call imm = type_construction;
+		uint64_t imm_bytes = 0;
+		memcpy(&imm_bytes, &imm, 8);
+		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+		compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+		compile_bytes->push_back(resolved_type);
+	}
+	LLVMValueRef val = nullptr;
+	if(env->mode == fif_mode::compiling_llvm) {
+		if(env->dict.type_array[resolved_type].zero_constant) {
+			val = env->dict.type_array[resolved_type].zero_constant(env->llvm_context, resolved_type, env);
+		} else {
+			env->report_error("attempted to compile a type without an llvm representation");
+			env->mode = fif_mode::error;
+			return nullptr;
+		}
+	}
+	int64_t data = 0;
+	if(env->mode == fif_mode::interpreting) {
+		if(env->dict.type_array[resolved_type].refcounted_type())
+			data = env->dict.type_array[resolved_type].interpreter_zero(resolved_type, env);
+	}
+	s.push_back_main(resolved_type, data, val);
+	execute_fif_word(fif::parse_result{ "init", false }, *env, false);
+
+	return p + 2;
+}
+
+inline int32_t* struct_definition(fif::state_stack&, int32_t* p, fif::environment* e) {
+	if(fif::typechecking_mode(e->mode))
+		return p + 2;
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to define a struct inside a definition");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to define a struct without a source");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	if(e->dict.types.find(std::string(name_token.content)) != e->dict.types.end()) {
+		e->report_error("attempted to redefine an existing type");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	std::vector<int32_t> stack_types;
+	std::vector<std::string_view> names;
+	int32_t max_variable = -1;
+	while(true) {
+		auto next_token = fif::read_token(e->source_stack.back(), *e);
+		if(next_token.content.length() == 0 || next_token.content == ";") {
+			break;
+		}
+
+		auto result = internal_generate_type(next_token.content, *e);
+		if(result.type_array.empty()) {
+			e->mode = fif_mode::error;
+			e->report_error("unable to resolve type from text");
+			return nullptr;
+		}
+		stack_types.insert(stack_types.end(), result.type_array.begin(), result.type_array.end());
+		max_variable = std::max(max_variable, result.max_variable);
+
+		auto nnext_token = fif::read_token(e->source_stack.back(), *e);
+		if(nnext_token.content.length() == 0 || nnext_token.content == ";") {
+			e->report_error("struct contained a type without a matching name");
+			e->mode = fif::fif_mode::error;
+			return nullptr;
+		}
+		names.push_back(nnext_token.content);
+	}
+
+	make_struct_type(name_token.content, std::span<int32_t const>{stack_types.begin(), stack_types.end()}, names, *e, max_variable + 1);
+
+	return p + 2;
+}
+
 void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ":", colon_definition, { });
 	add_precompiled(fif_env, ":s", colon_specialization, { });
@@ -5772,6 +6771,7 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ">=", i32_ge, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
 	add_precompiled(fif_env, "=", i32_eq, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
 	add_precompiled(fif_env, "<>", i32_ne, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "init", init, { -2, -1, -2 });
 	add_precompiled(fif_env, "dup", dup, { -2, -1, -2, -2 });
 	add_precompiled(fif_env, "copy", copy, { -2, -1, -2, -2 });
 	add_precompiled(fif_env, "drop", drop, { -2 });
@@ -5811,6 +6811,14 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "let", create_let, { -2 }, true);
 	add_precompiled(fif_env, "var", create_var, { -2 }, true);
 	add_precompiled(fif_env, "global", create_global_impl, { fif_type });
+	add_precompiled(fif_env, "forth.insert", forth_insert, { }, true);
+	add_precompiled(fif_env, "forth.extract", forth_extract, { }, true);
+	add_precompiled(fif_env, "forth.gep", forth_gep, { }, true);
+	add_precompiled(fif_env, "struct-map2", forth_struct_map_two, { }, true);
+	add_precompiled(fif_env, "struct-map1", forth_struct_map_one, { }, true);
+	add_precompiled(fif_env, "struct-map0", forth_struct_map_zero, { }, true);
+	add_precompiled(fif_env, "make", do_make, { }, true);
+	add_precompiled(fif_env, ":struct", struct_definition, { });
 
 	auto preinterpreted =
 		": r@ r> dup >r ; "
