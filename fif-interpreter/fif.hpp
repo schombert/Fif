@@ -430,12 +430,12 @@ struct type;
 using fif_call = int32_t * (*)(state_stack&, int32_t*, environment*);
 
 struct interpreted_word_instance {
+	std::vector<int32_t> compiled_bytecode;
 	LLVMValueRef llvm_function = nullptr;
 	int32_t stack_types_start = 0;
 	int32_t stack_types_count = 0;
-	int32_t compiled_offset = -1;
-	int32_t compiled_size = 0;
 	int32_t typechecking_level = 0;
+	bool being_compiled = false;
 	bool llvm_compilation_finished = false;
 };
 
@@ -455,7 +455,6 @@ struct word {
 	int32_t stack_types_count = 0;
 	bool treat_as_base = false;
 	bool immediate =  false;
-	bool being_compiled = false;
 	bool being_typechecked = false;
 };
 
@@ -1384,7 +1383,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
 	}
 
-	env.dict.type_array.back().decomposed_types_count = uint32_t(subtypes.size() + 1);
+	env.dict.type_array.back().decomposed_types_count = uint32_t(subtypes.size() + (template_types == 0 ? 1 : 0));
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 
 	if(template_types == 0) {
@@ -1407,8 +1406,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 	env.dict.all_stack_types.push_back(new_type);
 	if(template_types > 0) {
 		env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
-		for(int32_t j = 0; j < template_types; ++j)
-			env.dict.all_stack_types.push_back(-(j+2));
+		env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 		env.dict.all_stack_types.push_back(-1);
 	}
 	int32_t end_zero = int32_t(env.dict.all_stack_types.size());
@@ -1416,72 +1414,74 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 	env.dict.all_stack_types.push_back(new_type);
 	if(template_types > 0) {
 		env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
-		for(int32_t j = 0; j < template_types; ++j)
-			env.dict.all_stack_types.push_back(-(j + 2));
+		env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 		env.dict.all_stack_types.push_back(-1);
 	}
 	int32_t end_one = int32_t(env.dict.all_stack_types.size());
 	env.dict.all_stack_types.push_back(new_type);
 	if(template_types > 0) {
 		env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
-		for(int32_t j = 0; j < template_types; ++j)
-			env.dict.all_stack_types.push_back(-(j + 2));
+		env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 		env.dict.all_stack_types.push_back(-1);
 	}
 
 	int32_t end_two = int32_t(env.dict.all_stack_types.size());
 
-	{
-		int32_t old_word = -1;
-		if(auto it = env.dict.words.find(std::string("copy")); it != env.dict.words.end()) {
-			old_word = it->second;
+	auto bury_word = [&](std::string const& name, int32_t id) { 
+		int32_t start_word = 0;
+		int32_t preceding_word = -1;
+		if(auto it = env.dict.words.find(name); it != env.dict.words.end()) {
+			start_word = it->second;
+		} else {
+			env.dict.words.insert_or_assign(name, id);
+			return;
 		}
-		env.dict.words.insert_or_assign(std::string("copy"), int32_t(env.dict.word_array.size()));
+		while(env.dict.word_array[start_word].specialization_of != -1) {
+			preceding_word = start_word;
+			start_word = env.dict.word_array[start_word].specialization_of;
+		}
+		if(preceding_word == -1) {
+			env.dict.words.insert_or_assign(name, id);
+			env.dict.word_array[id].specialization_of = start_word;
+			assert(id != start_word);
+		} else {
+			env.dict.word_array[preceding_word].specialization_of = id;
+			env.dict.word_array[id].specialization_of = start_word;
+			assert(id != start_word);
+		}
+	};
+
+	{
 		env.dict.word_array.emplace_back();
 		env.dict.word_array.back().source = std::string("struct-map2 copy");
-		env.dict.word_array.back().specialization_of = old_word;
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_two - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		bury_word("copy", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
-		int32_t old_word = -1;
-		if(auto it = env.dict.words.find(std::string("dup")); it != env.dict.words.end()) {
-			old_word = it->second;
-		}
-		env.dict.words.insert_or_assign(std::string("dup"), int32_t(env.dict.word_array.size()));
 		env.dict.word_array.emplace_back();
 		env.dict.word_array.back().source = std::string("struct-map2 dup");
-		env.dict.word_array.back().specialization_of = old_word;
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_two - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		bury_word("dup", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
-		int32_t old_word = -1;
-		if(auto it = env.dict.words.find(std::string("init")); it != env.dict.words.end()) {
-			old_word = it->second;
-		}
-		env.dict.words.insert_or_assign(std::string("init"), int32_t(env.dict.word_array.size()));
 		env.dict.word_array.emplace_back();
 		env.dict.word_array.back().source = std::string("struct-map1 init");
-		env.dict.word_array.back().specialization_of = old_word;
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_one - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		bury_word("init", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
-		int32_t old_word = -1;
-		if(auto it = env.dict.words.find(std::string("drop")); it != env.dict.words.end()) {
-			old_word = it->second;
-		}
-		env.dict.words.insert_or_assign(std::string("drop"), int32_t(env.dict.word_array.size()));
 		env.dict.word_array.emplace_back();
 		env.dict.word_array.back().source = std::string("struct-map0 drop");
-		env.dict.word_array.back().specialization_of = old_word;
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		bury_word("drop", int32_t(env.dict.word_array.size() - 1));
 	}
 
 	uint32_t index = 0;
@@ -1490,17 +1490,12 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 		auto next = next_encoded_stack_type(desc);
 
 		{
-			int32_t old_word = -1;
-			if(auto it = env.dict.words.find(std::string(".") + std::string{ member_names[index] }); it != env.dict.words.end()) {
-				old_word = it->second;
-			}
-
+			
 			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
 			env.dict.all_stack_types.push_back(new_type);
 			if(template_types > 0) {
 				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
-				for(int32_t j = 0; j < template_types; ++j)
-					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 				env.dict.all_stack_types.push_back(-1);
 			}
 			env.dict.all_stack_types.push_back(-1);
@@ -1508,26 +1503,20 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 				env.dict.all_stack_types.push_back(desc[j]);
 			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
 
-			env.dict.words.insert_or_assign(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size()));
 			env.dict.word_array.emplace_back();
 			env.dict.word_array.back().source = std::string("forth.extract ") + std::to_string(index);
-			env.dict.word_array.back().specialization_of = old_word;
 			env.dict.word_array.back().stack_types_start = start_types_i;
 			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
 			env.dict.word_array.back().treat_as_base = true;
+
+			bury_word(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size() - 1));
 		}
 		{
-			int32_t old_word = -1;
-			if(auto it = env.dict.words.find(std::string(".") + std::string{ member_names[index] } + "!"); it != env.dict.words.end()) {
-				old_word = it->second;
-			}
-
 			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
 			env.dict.all_stack_types.push_back(new_type);
 			if(template_types > 0) {
 				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
-				for(int32_t j = 0; j < template_types; ++j)
-					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 				env.dict.all_stack_types.push_back(-1);
 			}
 			for(uint32_t j = 0; j < next; ++j)
@@ -1536,34 +1525,27 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 			env.dict.all_stack_types.push_back(new_type);
 			if(template_types > 0) {
 				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
-				for(int32_t j = 0; j < template_types; ++j)
-					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 				env.dict.all_stack_types.push_back(-1);
 			}
 			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
 
-			env.dict.words.insert_or_assign(std::string(".") + std::string{ member_names[index] } + "!", int32_t(env.dict.word_array.size()));
 			env.dict.word_array.emplace_back();
 			env.dict.word_array.back().source = std::string("forth.insert ") + std::to_string(index);
-			env.dict.word_array.back().specialization_of = old_word;
 			env.dict.word_array.back().stack_types_start = start_types_i;
 			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
 			env.dict.word_array.back().treat_as_base = true;
+
+			bury_word(std::string(".") + std::string{ member_names[index] } + "!", int32_t(env.dict.word_array.size() - 1));
 		}
 		{
-			int32_t old_word = -1;
-			if(auto it = env.dict.words.find(std::string(".") + std::string{ member_names[index] }); it != env.dict.words.end()) {
-				old_word = it->second;
-			}
-
 			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
 			env.dict.all_stack_types.push_back(fif_ptr);
 			env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
 			env.dict.all_stack_types.push_back(new_type);
 			if(template_types > 0) {
 				env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
-				for(int32_t j = 0; j < template_types; ++j)
-					env.dict.all_stack_types.push_back(-(j + 2));
+				env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 				env.dict.all_stack_types.push_back(-1);
 			}
 			env.dict.all_stack_types.push_back(-1);
@@ -1575,13 +1557,13 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 			env.dict.all_stack_types.push_back(-1);
 			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
 
-			env.dict.words.insert_or_assign(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size()));
 			env.dict.word_array.emplace_back();
 			env.dict.word_array.back().source = std::string("forth.gep ") + std::to_string(index);
-			env.dict.word_array.back().specialization_of = old_word;
 			env.dict.word_array.back().stack_types_start = start_types_i;
 			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
 			env.dict.word_array.back().treat_as_base = true;
+
+			bury_word(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size() - 1));
 		}
 
 		++index;
@@ -1702,7 +1684,7 @@ inline type_span_gen_result internal_generate_type(std::string_view text, enviro
 	}
 
 	if(text.size() > 0 && text[0] == '$') {
-		if(is_integer(text.data() + 1, text.data() + text.size())) {
+		if(is_integer(text.data() + 1, text.data() + mt_end)) {
 			auto v = parse_int(text.substr(1));
 			r.max_variable = std::max(r.max_variable, v);
 			r.type_array.push_back( -(v + 2) );
@@ -1719,12 +1701,39 @@ inline type_span_gen_result internal_generate_type(std::string_view text, enviro
 		//followed by type list
 		++mt_end;
 		r.type_array.push_back(std::numeric_limits<int32_t>::max());
-		while(mt_end < text.size() && text[mt_end] != ')') {
-			auto sub_match = internal_generate_type(text.substr(mt_end), env);
-			r.type_array.insert(r.type_array.end(), sub_match.type_array.begin(), sub_match.type_array.end());
-			mt_end += sub_match.end_match_pos;
-			if(mt_end < text.size() && text[mt_end] == ',')
-				++mt_end;
+		if((env.dict.type_array[it->second].flags & type::FLAG_TEMPLATE) != 0) {
+			std::vector<type_span_gen_result> sub_matches;
+			while(mt_end < text.size() && text[mt_end] != ')') {
+				auto sub_match = internal_generate_type(text.substr(mt_end), env);
+				r.max_variable = std::max(r.max_variable, sub_match.max_variable);
+				sub_matches.push_back(std::move(sub_match));
+				mt_end += sub_match.end_match_pos;
+				if(mt_end < text.size() && text[mt_end] == ',')
+					++mt_end;
+			}
+			auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + env.dict.type_array[it->second].decomposed_types_start, size_t(env.dict.type_array[it->second].decomposed_types_count));
+			for(auto v : desc) {
+				if(v < -1) {
+					auto index = -(v + 2);
+					if(size_t(index) < sub_matches.size()) {
+						r.type_array.insert(r.type_array.end(), sub_matches[index].type_array.begin(), sub_matches[index].type_array.end());
+					} else {
+						r.type_array.push_back(fif_nil);
+					}
+				} else {
+					r.type_array.push_back(v);
+				}
+			}
+
+		} else {
+			while(mt_end < text.size() && text[mt_end] != ')') {
+				auto sub_match = internal_generate_type(text.substr(mt_end), env);
+				r.type_array.insert(r.type_array.end(), sub_match.type_array.begin(), sub_match.type_array.end());
+				r.max_variable = std::max(r.max_variable, sub_match.max_variable);
+				mt_end += sub_match.end_match_pos;
+				if(mt_end < text.size() && text[mt_end] == ',')
+					++mt_end;
+			}
 		}
 		r.type_array.push_back(-1);
 		if(mt_end < text.size() && text[mt_end] == ')')
@@ -1862,11 +1871,11 @@ inline variable_match_result fill_in_variable_types(int32_t source_type, std::sp
 		auto dmatch = dest_offset < destructured_source.size() ? destructured_source[dest_offset] : -1;
 		auto sub_result = fill_in_variable_types(dmatch, match_span.subspan(sub_offset), type_subs, env);
 		sub_offset += sub_result.match_end;
-		result |= sub_result.match_result;
+		result &= sub_result.match_result;
 		++dest_offset;
 	}
 	if(dest_offset < destructured_source.size())
-		result |= false;
+		result = false;
 	if(sub_offset < match_span.size() && match_span[sub_offset] == -1)
 		++sub_offset;
 
@@ -2089,7 +2098,7 @@ inline std::string_view read_word(std::string_view source, uint32_t& read_positi
 }
 
 inline void execute_fif_word(interpreted_word_instance& wi, state_stack& ss, environment& env) {
-	int32_t* ptr = env.dict.all_compiled.data() + wi.compiled_offset;
+	int32_t* ptr = wi.compiled_bytecode.data();
 	while(ptr) {
 		fif_call fn = nullptr;
 		memcpy(&fn, ptr, 8);
@@ -2462,6 +2471,8 @@ inline void llvm_make_function_call(environment& env, LLVMValueRef fn, std::span
 			++consumed_rstack_cells;
 		}
 	}
+
+	assert(fn);
 	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc), fn, params.data(), uint32_t(params.size()), "");
 	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
 	auto rsummary = llvm_function_return_type_from_desc(env, desc);
@@ -2632,8 +2643,10 @@ public:
 		
 			if(typechecking_mode(env.mode))
 				env.dict.word_array[for_word].being_typechecked = true;
-			else if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm)
-				env.dict.word_array[for_word].being_compiled = true;
+			else if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+				assert(for_instance != -1);
+				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = true;
+			}
 
 			if(env.mode == fif_mode::compiling_llvm) {
 				assert(for_instance != -1);
@@ -2784,12 +2797,10 @@ public:
 			compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
+			wi.compiled_bytecode = std::move(compiled_bytes);
 
-			wi.compiled_offset = int32_t(env.dict.all_compiled.size());
-			wi.compiled_size = int32_t(compiled_bytes.size() - 2);
-			env.dict.all_compiled.insert(env.dict.all_compiled.end(), compiled_bytes.begin(), compiled_bytes.end());
-
-			env.dict.word_array[for_word].being_compiled = false;
+			if(for_instance != -1)
+				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
 		} else if(env.mode == fif_mode::compiling_llvm) {
 			if(for_instance == -1) {
 				env.report_error("tried to compile a word without an instance");
@@ -2810,7 +2821,8 @@ public:
 				return true;
 			}
 
-			env.dict.word_array[for_word].being_compiled = false;
+			if(for_instance != -1)
+				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
 		} else if(typechecking_failed(env.mode)) {
 			env.dict.word_array[for_word].being_typechecked = false;
 			return true;
@@ -2836,12 +2848,13 @@ public:
 	}
 };
 inline int32_t* call_function(state_stack& s, int32_t* p, environment* env) {
-	auto ptr = env->dict.all_compiled.data() + *(p + 2);
+	int32_t* jump_target = nullptr;
+	memcpy(&jump_target, p + 2, 8);
 	env->compiler_stack.push_back(std::make_unique<runtime_function_scope>(env->compiler_stack.back().get(), *env));
-	execute_fif_word(s, ptr, *env);
+	execute_fif_word(s, jump_target, *env);
 	env->compiler_stack.back()->finish(*env);
 	env->compiler_stack.pop_back();
-	return p + 3;
+	return p + 4;
 }
 inline int32_t* call_function_indirect(state_stack& s, int32_t* p, environment* env) {
 	auto instance = *(p + 2);
@@ -4207,16 +4220,6 @@ inline void run_to_scope_end(environment& env) { // execute/compile source code 
 				execute_fif_word(word, env, false);
 			}
 		} while(word.content.length() > 0 && !env.compiler_stack.empty() && env.mode != fif_mode::error);
-
-		//if(env.compiler_stack.empty())
-		//	return;
-
-		//if(env.compiler_stack.size() <= scope_depth)
-		//	return;
-
-		//if(env.compiler_stack.back()->finish(env)) {
-		//	env.compiler_stack.pop_back();
-		//}
 	}
 }
 
@@ -4423,9 +4426,9 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 
 	switch_compiler_stack_mode(env, compile_mode);
 
-	if(env.mode != fif_mode::compiling_llvm && wi.compiled_offset == -1) {
+	if(env.mode != fif_mode::compiling_llvm && wi.compiled_bytecode.size() == 0) {
 		// typed but uncompiled word
-		if(!env.dict.word_array[w].being_compiled) {
+		if(!std::get<interpreted_word_instance>(env.dict.all_instances[word_index]).being_compiled) {
 			env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 			auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, state, w, word_index);
 			fnscope->type_subs = tsubs;
@@ -4438,7 +4441,12 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 	// case: reached an uncompiled llvm definition
 	if(env.mode == fif_mode::compiling_llvm && !wi.llvm_compilation_finished) {
 		// typed but uncompiled word
-		if(!env.dict.word_array[w].being_compiled) {
+		if(!std::get<interpreted_word_instance>(env.dict.all_instances[word_index]).being_compiled) {
+			LLVMBasicBlockRef stored_block = nullptr;
+			if(auto pb = env.compiler_stack.back()->llvm_block(); pb)
+				stored_block = *pb;
+
+			
 			env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 			auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, state, w, word_index);
 			fnscope->type_subs = tsubs;
@@ -4446,10 +4454,11 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 			run_to_function_end(env);
 			env.source_stack.pop_back();
 
-			if(!env.compiler_stack.empty()) {
-				if(auto pb = env.compiler_stack.back()->llvm_block(); pb)
-					LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
+			if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
+				*pb = stored_block;
+				LLVMPositionBuilderAtEnd(env.llvm_builder, stored_block);
 			}
+			
 		}
 	}
 
@@ -4711,11 +4720,9 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 					std::span<int32_t const> desc{ env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count) };
 					llvm_make_function_call(env, std::get<interpreted_word_instance>(wi).llvm_function, desc);
 				} else if(env.mode == fif_mode::compiling_bytecode) {
-					auto precompiled = std::get<interpreted_word_instance>(wi).compiled_offset;
-					auto precompiled_sz = std::get<interpreted_word_instance>(wi).compiled_size;
 					auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
 					if(cbytes) {
-						if(env.dict.word_array[w].being_compiled) {
+						if(std::get<interpreted_word_instance>(wi).being_compiled) {
 							fif_call imm = call_function_indirect;
 							uint64_t imm_bytes = 0;
 							memcpy(&imm_bytes, &imm, 8);
@@ -4723,13 +4730,20 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 							cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 							cbytes->push_back(match.word_index);
 						} else {
-							fif_call imm = call_function;
-							uint64_t imm_bytes = 0;
-							memcpy(&imm_bytes, &imm, 8);
-							cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-							cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-							auto offset = std::get<interpreted_word_instance>(wi).compiled_offset;
-							cbytes->push_back(offset);
+							{
+								fif_call imm = call_function;
+								uint64_t imm_bytes = 0;
+								memcpy(&imm_bytes, &imm, 8);
+								cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+								cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+							}
+							{
+								int32_t* bcode = std::get<interpreted_word_instance>(wi).compiled_bytecode.data();
+								uint64_t imm_bytes = 0;
+								memcpy(&imm_bytes, &bcode, 8);
+								cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+								cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+							}
 						}
 						apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count)), *ws, env);
 					}
@@ -5223,7 +5237,7 @@ inline int32_t* i32_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
 }
 inline int32_t* f32_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
-		auto add_result = LLVMBuildAdd(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		auto add_result = LLVMBuildFAdd(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
 		s.pop_main();
 		s.push_back_main(fif_f32, 0, add_result);
@@ -5237,6 +5251,51 @@ inline int32_t* f32_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		memcpy(&fa, &a, 4);
 		memcpy(&fb, &b, 4);
 		fa = fa + fb;
+		memcpy(&a, &fa, 4);
+		s.push_back_main(fif::fif_f32, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f32, 0, nullptr);
+	}
+	return p + 2;
+}
+
+inline int32_t* i32_mul(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildMul(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_i32, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_i32, a * b, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_i32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32_mul(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFMul(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f32, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &a, 4);
+		memcpy(&fb, &b, 4);
+		fa = fa * fb;
 		memcpy(&a, &fa, 4);
 		s.push_back_main(fif::fif_f32, a, nullptr);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
@@ -6116,6 +6175,8 @@ inline int32_t* do_fextract(fif::state_stack& s, int32_t* p, fif::environment* e
 		s.pop_main();
 	}
 
+	// FIX: compiled data may move when we do this
+
 	if(e->dict.type_array[stype].flags != 0) {
 		execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
 	} else {
@@ -6759,12 +6820,29 @@ inline int32_t* struct_definition(fif::state_stack&, int32_t* p, fif::environmen
 
 	return p + 2;
 }
+inline int32_t* do_use_base(state_stack& s, int32_t* p, environment* env) {
+	if(env->source_stack.empty()) {
+		env->report_error("make was unable to read name of word");
+		env->mode = fif_mode::error;
+		return nullptr;
+	}
+	auto type = read_token(env->source_stack.back(), *env);
+
+	if(typechecking_failed(env->mode))
+		return p + 2;
+
+	execute_fif_word(type, *env, true);
+
+	return p + 2;
+}
 
 void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ":", colon_definition, { });
 	add_precompiled(fif_env, ":s", colon_specialization, { });
 	add_precompiled(fif_env, "+", i32_add, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
 	add_precompiled(fif_env, "+", f32_add, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
+	add_precompiled(fif_env, "*", i32_mul, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, "*", f32_mul, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
 	add_precompiled(fif_env, "<", i32_lt, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
 	add_precompiled(fif_env, "<=", i32_le, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
 	add_precompiled(fif_env, ">", i32_gt, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
@@ -6819,6 +6897,7 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "struct-map0", forth_struct_map_zero, { }, true);
 	add_precompiled(fif_env, "make", do_make, { }, true);
 	add_precompiled(fif_env, ":struct", struct_definition, { });
+	add_precompiled(fif_env, "use-base", do_use_base, { }, true);
 
 	auto preinterpreted =
 		": r@ r> dup >r ; "

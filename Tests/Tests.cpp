@@ -1338,6 +1338,297 @@ TEST_CASE("struct tests", "fif combined tests") {
 			CHECK(fn() == 2.5);
 		}
 	}
+
+	SECTION("struct template definition bytecode") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct pair i32 low $0 high ; "
+			": t 2.5 make pair(f32) .high! .high ; "
+			"t",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_f32);
+		int32_t val = 0;
+		float fval = 2.5;
+		memcpy(&val, &fval, 4);
+		CHECK(values.main_data(0) == val);
+	}
+	SECTION("struct template definition llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct pair i32 low $0 high ; "
+			": t 2.5 make pair(f32) .high! .high ; "
+			,
+			values);
+
+		auto export_fn = fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+
+		CHECK(!(error));
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+			std::cout << msg << std::endl;
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			REQUIRE(bare_address != 0);
+			using ftype = float(*)();
+			ftype fn = (ftype)bare_address;
+			CHECK(fn() == 2.5);
+		}
+	}
+
+	SECTION("struct overloading error bytecode") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct pair i32 low $0 high ; "
+			":s dup pair(f32) s: use-base dup use-base dup .low 1 + .low! ; "
+			": t make pair(f32) dup swap drop .low ; "
+			": t2 make pair(bool) dup swap drop .low ; "
+			"t t2 ",
+			values);
+
+		CHECK(error_count > 0);
+		CHECK(error_list != "");
+	}
+
+	SECTION("struct overloading a bytecode") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct pair i32 low $0 high ; "
+			":s dup pair(f32) s: use-base dup use-base dup .low 1 + swap .low! ; "
+			": t make pair(f32) dup swap drop .low ; "
+			": t2 make pair(bool) dup swap drop .low ; "
+			"t t2 ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 2);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_type(1) == fif::fif_i32);
+		CHECK(values.main_data(0) == 1);
+		CHECK(values.main_data(1) == 0);
+	}
+	SECTION("struct overloading b bytecode") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct pair i32 low $0 high ; "
+			":s dup pair($0) s: use-base dup use-base dup .low 1 + swap .low! ; "
+			": t make pair(f32) dup swap drop .low ; "
+			": t2 make pair(bool) dup swap drop .low ; "
+			"t t2 ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 2);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_type(1) == fif::fif_i32);
+		CHECK(values.main_data(0) == 1);
+		CHECK(values.main_data(1) == 1);
+	}
+	SECTION("struct overloading a llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct pair i32 low $0 high ; "
+			":s dup pair(f32) s: use-base dup use-base dup .low 1 + swap .low! ; "
+			": t make pair(f32) dup swap drop .low ; "
+			": t2 make pair(bool) dup swap drop .low ; "
+			,
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
+		fif::make_exportable_function("test_jit_fn2", "t2", { }, { }, fif_env);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 1);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn2");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 0);
+			}
+		}
+	}
+	SECTION("struct overloading b llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct pair i32 low $0 high ; "
+			":s dup pair($0) s: use-base dup use-base dup .low 1 + swap .low! ; "
+			": t make pair(f32) dup swap drop .low ; "
+			": t2 make pair(bool) dup swap drop .low ; "
+			"t t2 ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		
+		fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
+		fif::make_exportable_function("test_jit_fn2", "t2", { }, { }, fif_env);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 1);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn2");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 1);
+			}
+		}
+	}
 }
 
 
