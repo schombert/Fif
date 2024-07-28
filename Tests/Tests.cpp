@@ -1429,8 +1429,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			":struct pair i32 low $0 high ; "
 			":s dup pair(f32) s: use-base dup use-base dup .low 1 + .low! ; "
 			": t make pair(f32) dup swap drop .low ; "
-			": t2 make pair(bool) dup swap drop .low ; "
-			"t t2 ",
+			"t ",
 			values);
 
 		CHECK(error_count > 0);
@@ -1631,4 +1630,160 @@ TEST_CASE("struct tests", "fif combined tests") {
 	}
 }
 
+TEST_CASE("array_tests", "fif combined tests") {
+	SECTION("buf resize") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
 
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			": t sizeof i32 2 * buf-alloc dup sizeof i32 swap buf-add ptr-cast ptr(i32) 42 swap ! "
+			"	sizeof i32 2 * sizeof i32 4 * buf-resize sizeof i32 swap buf-add ptr-cast ptr(i32) @ "
+			" ; "
+			"t",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 42);
+	}
+	SECTION("buf resize llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			": t sizeof i32 2 * buf-alloc dup sizeof i32 swap buf-add ptr-cast ptr(i32) 42 swap ! "
+			"	sizeof i32 2 * sizeof i32 4 * buf-resize sizeof i32 swap buf-add ptr-cast ptr(i32) @ "
+			" ; "
+			"t",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 42);
+			}
+		}
+	}
+
+	
+	SECTION("dy-array defines") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ fif_env };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct dy-array-block ptr(nil) memory i32 size i32 capacity i32 refcount ; "
+			":struct dy-array ptr(dy-array-block) ptr $ 1 ; "
+			":s init dy-array($0) s: " // array -> array
+			"	sizeof dy-array-block buf-alloc ptr-cast ptr(dy-array-block) swap .ptr! "
+			" ; "
+			":s dup dy-array($0) s: " // array -> array, array
+			"	use-base dup .ptr@ " // original copy ptr-to-block
+			"	.refcount dup @ 1 +  swap ! " // increase ref count
+			" ; "
+			":s drop dy-array($0) s: .ptr@ " // array ->
+			"	.refcount dup @ -1 + " // decrement refcount
+			"	dup 0 >= if "
+			"		swap ! " // store refcount back into pointer
+			"	else "
+			"		drop drop " // drop pointer to refcount and -1
+			"		.ptr@ dup .size let sz .memory let mem " // grab values
+			"		while "
+			"			sz @ 0 > "
+			"		loop "
+			"			sz @ -1 + sz ! " // reduce sz
+			"			sz @ sizeof $0 * mem @ buf-add ptr-cast ptr($0) @@ " // copy last value, dupless
+			"			drop " // run its destructor
+			"		end-while "
+			"		mem @ buf-free " // free managed buffer
+			"		.ptr@ ptr-cast ptr(nil) buf-free " // destroy control block
+			"	end-if "
+			"	use-base drop "
+			" ; "
+			":s push dy-array($0) $0 s: " // array , value -> array
+			"	let val " // store value to be saved in val
+			"	.ptr@ "
+			"	dup dup .size let sz .capacity let cap .memory let mem" // destructure
+			"	sz @ cap @ >= if " // size >= capacity ?
+			"		mem @ " // put old buffer on stack
+			"		cap @ sizeof $0 * " // old size
+			"		cap @ 1 + 2 * sizeof $0 * " // new size
+			"		dup cap ! " // copy new size to capacity
+			"		buf-resize "
+			"		mem ! "
+			"	end-if "
+			"	sz @ sizeof $0 * mem @ buf-add ptr-cast ptr($0) val swap !! " // move value into last position
+			"	sz @ 1 + sz ! " // +1 to stored size
+			" ; "
+			":s pop dy-array($0) s: " // array -> array , value
+			"	.ptr@ " // ptr to control block on stack
+			"	dup .size let sz .memory let mem" // destructure
+			"	sz @ 0 > if "
+			"		sz @ -1 + sz ! " // reduce sz
+			"		sz @ sizeof $0 * mem @ buf-add ptr-cast ptr($0) @@ " // copy last value, dupless
+			"	else "
+			"		make $0 " // nothing left, make new value
+			"	end-if "
+			" ; "
+			": t make dy-array(i32) 4 push pop swap drop ; "
+			" t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 4);
+	}
+	/**/
+}
