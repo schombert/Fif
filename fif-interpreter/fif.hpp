@@ -395,6 +395,7 @@ struct interpreted_word_instance {
 	int32_t typechecking_level = 0;
 	bool being_compiled = false;
 	bool llvm_compilation_finished = false;
+	bool is_imported_function = false;
 };
 
 struct compiled_word_instance {
@@ -718,10 +719,15 @@ inline fif_mode fail_typechecking(fif_mode m) {
 		return fif_mode::typechecking_lvl3_failed;
 	return m;
 }
+struct import_item {
+	std::string name;
+	void* ptr = nullptr;
+};
 class environment {
 public:
 	ankerl::unordered_dense::set<std::unique_ptr<char[]>, indirect_string_hash, indirect_string_eq> string_constants;
 	std::vector<LLVMValueRef> exported_functions;
+	std::vector<import_item> imported_functions;
 	LLVMOrcThreadSafeContextRef llvm_ts_context = nullptr;
 	LLVMContextRef llvm_context = nullptr;
 	LLVMModuleRef llvm_module = nullptr;
@@ -2632,8 +2638,11 @@ public:
 				auto compiled_fn = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function;
 				llvm_fn = compiled_fn;
 
-				// for unknown reasons, this calling convention breaks things
-				LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMFastCallConv);
+				
+				if(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).is_imported_function)
+					LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMWin64CallConv);
+				else
+					LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMFastCallConv);
 
 				LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMPrivateLinkage);
 				auto entry_block = LLVMAppendBasicBlockInContext(env.llvm_context, compiled_fn, "fn_entry_point");
@@ -5023,6 +5032,70 @@ inline LLVMErrorRef perform_transform(void* Ctx, LLVMOrcThreadSafeModuleRef* the
 	return LLVMOrcThreadSafeModuleWithModuleDo(*the_module, module_transform, Ctx);
 }
 
+inline void add_import(std::string_view name, void* ptr, fif_call interpreter_implementation, std::vector<int32_t> const& params, std::vector<int32_t> const& returns, environment& env) {
+	env.imported_functions.push_back(import_item{ std::string(name), ptr });
+
+	std::vector<int32_t> itype_list;
+	for(auto j = params.size(); j-->0;) {
+		itype_list.push_back(params[j]);
+	}
+	auto pcount = itype_list.size();
+	if(!returns.empty()) {
+		itype_list.push_back(-1);
+		for(auto r : returns) {
+			itype_list.push_back(r);
+		}
+	}
+
+	int32_t start_types = int32_t(env.dict.all_stack_types.size());
+	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), itype_list.begin(), itype_list.end());
+	int32_t count_types = int32_t(itype_list.size());
+
+	auto nstr = std::string(name);
+	int32_t old_word = -1;
+	if(auto it = env.dict.words.find(nstr); it != env.dict.words.end()) {
+		old_word = it->second;
+	}
+
+	env.dict.words.insert_or_assign(nstr, int32_t(env.dict.word_array.size()));
+	env.dict.word_array.emplace_back();
+	env.dict.word_array.back().specialization_of = old_word;
+	env.dict.word_array.back().stack_types_start = start_types;
+	env.dict.word_array.back().stack_types_count = int32_t(pcount);
+
+	auto instance_num = int32_t(env.dict.all_instances.size());
+	env.dict.word_array.back().instances.push_back(instance_num);
+
+	interpreted_word_instance wi;
+	{
+		fif_call imm = interpreter_implementation;
+		uint64_t imm_bytes = 0;
+		memcpy(&imm_bytes, &imm, 8);
+		wi.compiled_bytecode.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+		wi.compiled_bytecode.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+	}
+	{
+		fif_call imm = function_return;
+		uint64_t imm_bytes = 0;
+		memcpy(&imm_bytes, &imm, 8);
+		wi.compiled_bytecode.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+		wi.compiled_bytecode.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+	}
+	wi.llvm_compilation_finished = true;
+	wi.stack_types_start = start_types;
+	wi.stack_types_count = count_types;
+	wi.typechecking_level = 3;
+	wi.is_imported_function = true;
+
+	auto fn_desc = std::span<int32_t const>(itype_list.begin(), itype_list.end());
+	auto fn_type = llvm_function_type_from_desc(env, fn_desc);
+	wi.llvm_function = LLVMAddFunction(env.llvm_module, nstr.c_str(), fn_type);
+	LLVMSetFunctionCallConv(wi.llvm_function, LLVMCallConv::LLVMWin64CallConv);
+	LLVMSetLinkage(wi.llvm_function, LLVMLinkage::LLVMExternalLinkage);
+
+	env.dict.all_instances.emplace_back(std::move(wi));
+}
+
 void perform_jit(environment& e) {
 	//add_exportable_functions_to_globals(e);
 
@@ -5059,6 +5132,7 @@ void perform_jit(environment& e) {
 		return;
 	}
 
+
 	LLVMOrcIRTransformLayerRef TL = LLVMOrcLLJITGetIRTransformLayer(e.llvm_jit);
 	LLVMOrcIRTransformLayerSetTransform(TL, *perform_transform, nullptr);
 
@@ -5070,6 +5144,28 @@ void perform_jit(environment& e) {
 	if(!main_dyn_lib) {
 		std::cout << "failed to get main dylib" << std::endl;
 		std::abort();
+	}
+
+	// add imports
+	std::vector< LLVMOrcCSymbolMapPair> import_symbols;
+	for(auto& i : e.imported_functions) {
+		auto name = LLVMOrcLLJITMangleAndIntern(e.llvm_jit, i.name.c_str());
+		LLVMJITEvaluatedSymbol sym;
+		sym.Address = (LLVMOrcExecutorAddress)i.ptr;
+		sym.Flags.GenericFlags = LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsCallable;
+		sym.Flags.TargetFlags = 0;
+		import_symbols.push_back(LLVMOrcCSymbolMapPair{ name, sym });
+	}
+
+	if(import_symbols.size() > 0) {
+		auto import_mr = LLVMOrcAbsoluteSymbols(import_symbols.data(), import_symbols.size());
+		auto import_result = LLVMOrcJITDylibDefine(main_dyn_lib, import_mr);
+		if(import_result) {
+			auto msg = LLVMGetErrorMessage(import_result);
+			e.report_error(msg);
+			LLVMDisposeErrorMessage(msg);
+			return;
+		}
 	}
 
 	auto error = LLVMOrcLLJITAddLLVMIRModule(e.llvm_jit, main_dyn_lib, orc_mod);
@@ -6945,6 +7041,52 @@ inline int32_t* struct_definition(fif::state_stack&, int32_t* p, fif::environmen
 
 	return p + 2;
 }
+inline int32_t* export_definition(fif::state_stack&, int32_t* p, fif::environment* e) {
+	if(fif::typechecking_mode(e->mode))
+		return p + 2;
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to define an export inside a definition");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to define an export without a source");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	std::vector<int32_t> stack_types;
+	std::vector<std::string_view> names;
+	int32_t max_variable = -1;
+	bool read_extra_count = false;
+
+	while(true) {
+		auto next_token = fif::read_token(e->source_stack.back(), *e);
+		if(next_token.content.length() == 0 || next_token.content == ";") {
+			break;
+		}
+		names.push_back(next_token.content);
+	}
+
+	auto fn_to_export = names.back();
+	names.pop_back();
+
+	for(auto tyn : names) {
+		auto result = resolve_type(tyn, *e, nullptr);
+		if(result == -1) {
+			e->mode = fif_mode::error;
+			e->report_error("unable to resolve type from text");
+			return nullptr;
+		}
+		stack_types.push_back(result);
+	}
+
+	make_exportable_function(std::string(name_token.content), std::string(fn_to_export), stack_types, { }, *e);
+	return p + 2;
+}
 inline int32_t* do_use_base(state_stack& s, int32_t* p, environment* env) {
 	if(env->source_stack.empty()) {
 		env->report_error("make was unable to read name of word");
@@ -7028,6 +7170,7 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "struct-map0", forth_struct_map_zero, { }, true);
 	add_precompiled(fif_env, "make", do_make, { }, true);
 	add_precompiled(fif_env, ":struct", struct_definition, { });
+	add_precompiled(fif_env, ":export", export_definition, { });
 	add_precompiled(fif_env, "use-base", do_use_base, { }, true);
 
 	auto preinterpreted =
@@ -7090,6 +7233,15 @@ void initialize_standard_vocab(environment& fif_env) {
 		"	else "
 		"		make $0 " // nothing left, make new value
 		"	end-if "
+		" ; "
+		":s empty? dy-array($0) s: " // array -> array, value
+		"	.ptr@ .size @ <= 0 "
+		" ; "
+		":s index-into dy-array($0) i32 s:" // array, int -> array, ptr(0)
+		"	let index .ptr@ .memory @ sizeof $0 index * swap buf-add ptr-cast ptr($0) "
+		" ; "
+		":s size dy-array($0) s:" // array -> array, int
+		"	.ptr@ .size @ "
 		" ; "
 		;
 
