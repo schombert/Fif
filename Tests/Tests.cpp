@@ -1,3 +1,4 @@
+#define HEAP_CHECKS
 #define CATCH_CONFIG_MAIN 
 #pragma warning(disable : 4127)
 
@@ -21,7 +22,7 @@ TEST_CASE("trivial test cases", "fif jit tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		fif::run_fif_interpreter(fif_env, ": t 42 ;", values);
 
 		auto export_fn = fif::make_exportable_function("test_jit_fn", "t", { fif::fif_i32, fif::fif_i32 }, { }, fif_env);
@@ -62,7 +63,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		std::string error_list;
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -85,7 +86,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		int64_t temp_dat = 0;
 		float temp_val = 2.5f;
 		memcpy(&temp_dat, &temp_val, 4);
@@ -116,7 +117,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		int64_t temp_dat = 0;
 		float temp_val = 2.5f;
 		memcpy(&temp_dat, &temp_val, 4);
@@ -151,7 +152,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		values.push_back_return(fif::fif_i16, 1, nullptr);
 
@@ -177,7 +178,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		values.push_back_return(fif::fif_i16, 1, nullptr);
 
@@ -200,7 +201,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		values.push_back_main(fif::fif_i16, 1, nullptr);
 
@@ -223,7 +224,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		int64_t temp_dat = 0;
 		float temp_val = 2.5f;
 		memcpy(&temp_dat, &temp_val, 4);
@@ -252,7 +253,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		std::string error_list;
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -273,7 +274,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		std::string error_list;
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -298,7 +299,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		std::string error_list;
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -319,7 +320,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		std::string error_list;
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -340,7 +341,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		std::string error_list;
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -363,7 +364,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, "5 true if drop 6 then", values);
 
@@ -384,7 +385,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n"; 
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, "5 false if drop 6 then", values);
 
@@ -405,7 +406,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, "1 while dup 5 < loop 3 + end-while", values);
 
@@ -426,7 +427,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, "1 do dup 5 < if  6 + else 2 + then until dup 10 > end-do", values);
 
@@ -450,7 +451,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -473,7 +474,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 5 true if drop 6 then ; t", values);
 
@@ -494,7 +495,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 5 false if drop 6 then ; t", values);
 
@@ -515,7 +516,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 1 while dup 5 < loop 3 + end-while ; t", values);
 
@@ -536,7 +537,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 1 do dup 5 < if  6 + else 2 + then until dup 10 > end-do ; t", values);
 
@@ -561,7 +562,7 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 		values.push_back_main(fif::fif_i32, 2, nullptr);
 		values.push_back_main(fif::fif_i32, 3, nullptr);
 
@@ -602,7 +603,7 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 5 true if drop 6 then ;", values);
 
@@ -641,7 +642,7 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 5 false if drop 6 then ;", values);
 
@@ -680,7 +681,7 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 1 while dup 5 < loop 3 + end-while ;", values);
 
@@ -721,7 +722,7 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, ": t 1 do dup 5 < if  6 + else 2 + then until dup 10 > end-do ;", values);
 
@@ -765,7 +766,7 @@ TEST_CASE("bracket test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env, 
 			": if2 ] if [ ; immediate "
@@ -790,7 +791,7 @@ TEST_CASE("bracket test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": if2 ] if [ ; immediate "
@@ -835,7 +836,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t 0 heap-alloc dup dup sizeof i16 swap ! @ swap heap-free drop ; "
@@ -859,7 +860,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t 0 heap-alloc dup dup sizeof i16 swap ! @ swap heap-free drop ; "
@@ -902,7 +903,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t 10 buf-alloc dup 1 swap buf-add ptr-cast ptr(i32) 1 swap ! dup ptr-cast ptr(i32) @ swap buf-free ; "
@@ -927,7 +928,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t 10 buf-alloc dup 1 swap buf-add ptr-cast ptr(i32) 1 swap ! dup ptr-cast ptr(i32) @ swap buf-free ; "
@@ -977,7 +978,7 @@ TEST_CASE("variables test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t let a let b a b ; "
@@ -1001,7 +1002,7 @@ TEST_CASE("variables test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t let a let b a b ; "
@@ -1044,7 +1045,7 @@ TEST_CASE("variables test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			"i32 global start "
@@ -1079,7 +1080,7 @@ TEST_CASE("variables test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			"i32 global start "
@@ -1139,7 +1140,7 @@ TEST_CASE("specialization test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":s t $0 s: drop $0 ; "
@@ -1164,7 +1165,7 @@ TEST_CASE("specialization test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":s t $0 s: drop $0 ; "
@@ -1189,7 +1190,7 @@ TEST_CASE("specialization test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":s t $0 s: drop $0 ; "
@@ -1231,7 +1232,7 @@ TEST_CASE("specialization test", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":s t $0 s: drop $0 ; "
@@ -1277,7 +1278,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low f32 high ; "
@@ -1305,7 +1306,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low f32 high ; "
@@ -1349,7 +1350,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low $0 high ; "
@@ -1377,7 +1378,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low $0 high ; "
@@ -1423,7 +1424,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low $0 high ; "
@@ -1446,7 +1447,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low $0 high ; "
@@ -1475,7 +1476,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low $0 high ; "
@@ -1504,7 +1505,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low $0 high ; "
@@ -1571,7 +1572,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			":struct pair i32 low $0 high ; "
@@ -1641,7 +1642,7 @@ TEST_CASE("array_tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t sizeof i32 2 * buf-alloc dup sizeof i32 swap buf-add ptr-cast ptr(i32) 42 swap ! "
@@ -1667,7 +1668,7 @@ TEST_CASE("array_tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
 			": t sizeof i32 2 * buf-alloc dup sizeof i32 swap buf-add ptr-cast ptr(i32) 42 swap ! "
@@ -1707,7 +1708,6 @@ TEST_CASE("array_tests", "fif combined tests") {
 		}
 	}
 
-	
 	SECTION("dy-array defines") {
 		fif::environment fif_env;
 		fif::initialize_standard_vocab(fif_env);
@@ -1718,62 +1718,85 @@ TEST_CASE("array_tests", "fif combined tests") {
 			++error_count; error_list += std::string(s) + "\n";
 		};
 
-		fif::interpreter_stack values{ fif_env };
+		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
-			":struct dy-array-block ptr(nil) memory i32 size i32 capacity i32 refcount ; "
-			":struct dy-array ptr(dy-array-block) ptr $ 1 ; "
-			":s init dy-array($0) s: " // array -> array
-			"	sizeof dy-array-block buf-alloc ptr-cast ptr(dy-array-block) swap .ptr! "
-			" ; "
-			":s dup dy-array($0) s: " // array -> array, array
-			"	use-base dup .ptr@ " // original copy ptr-to-block
-			"	.refcount dup @ 1 +  swap ! " // increase ref count
-			" ; "
-			":s drop dy-array($0) s: .ptr@ " // array ->
-			"	.refcount dup @ -1 + " // decrement refcount
-			"	dup 0 >= if "
-			"		swap ! " // store refcount back into pointer
-			"	else "
-			"		drop drop " // drop pointer to refcount and -1
-			"		.ptr@ dup .size let sz .memory let mem " // grab values
-			"		while "
-			"			sz @ 0 > "
-			"		loop "
-			"			sz @ -1 + sz ! " // reduce sz
-			"			sz @ sizeof $0 * mem @ buf-add ptr-cast ptr($0) @@ " // copy last value, dupless
-			"			drop " // run its destructor
-			"		end-while "
-			"		mem @ buf-free " // free managed buffer
-			"		.ptr@ ptr-cast ptr(nil) buf-free " // destroy control block
-			"	end-if "
-			"	use-base drop "
-			" ; "
-			":s push dy-array($0) $0 s: " // array , value -> array
-			"	let val " // store value to be saved in val
-			"	.ptr@ "
-			"	dup dup .size let sz .capacity let cap .memory let mem" // destructure
-			"	sz @ cap @ >= if " // size >= capacity ?
-			"		mem @ " // put old buffer on stack
-			"		cap @ sizeof $0 * " // old size
-			"		cap @ 1 + 2 * sizeof $0 * " // new size
-			"		dup cap ! " // copy new size to capacity
-			"		buf-resize "
-			"		mem ! "
-			"	end-if "
-			"	sz @ sizeof $0 * mem @ buf-add ptr-cast ptr($0) val swap !! " // move value into last position
-			"	sz @ 1 + sz ! " // +1 to stored size
-			" ; "
-			":s pop dy-array($0) s: " // array -> array , value
-			"	.ptr@ " // ptr to control block on stack
-			"	dup .size let sz .memory let mem" // destructure
-			"	sz @ 0 > if "
-			"		sz @ -1 + sz ! " // reduce sz
-			"		sz @ sizeof $0 * mem @ buf-add ptr-cast ptr($0) @@ " // copy last value, dupless
-			"	else "
-			"		make $0 " // nothing left, make new value
-			"	end-if "
-			" ; "
+			":struct tdy-array-block ptr(nil) memory i32 size i32 capacity i32 refcount ; "
+			": m sizeof tdy-array-block buf-alloc ptr-cast ptr(tdy-array-block) dup make tdy-array-block swap !! ; "
+			": t m dup .capacity @ swap drop ; "
+			" t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 0);
+	}
+	
+	SECTION("dy-array defines llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
+			":struct tdy-array-block ptr(nil) memory i32 size i32 capacity i32 refcount ; "
+			": m sizeof tdy-array-block buf-alloc ptr-cast ptr(tdy-array-block) dup make tdy-array-block swap !! ; "
+			": t m dup .capacity @ swap drop ; ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 0);
+			}
+		}
+	}
+
+	SECTION("dy-array defines b") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
 			": t make dy-array(i32) 4 push pop swap drop ; "
 			" t ",
 			values);
@@ -1784,6 +1807,125 @@ TEST_CASE("array_tests", "fif combined tests") {
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.main_data(0) == 4);
+	}
+
+	SECTION("dy-array defines b llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
+			": t make dy-array(i32) 4 push pop swap drop ; ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 4);
+			}
+		}
+	}
+
+	SECTION("dy-array multi-push") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
+			": t make dy-array(i32) 4 push 5 push 6 push 7 push 8 push 9 push pop drop pop drop pop let result pop drop pop drop pop drop drop result ; "
+			" t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 7);
+	}
+
+	SECTION("dy-array multi-push llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
+			": t make dy-array(i32) 4 push 5 push 6 push 7 push 8 push 9 push pop drop pop drop pop let result pop drop pop drop pop drop drop result ; ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 7);
+			}
+		}
 	}
 	/**/
 }
