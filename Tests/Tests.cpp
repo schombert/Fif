@@ -1809,6 +1809,31 @@ TEST_CASE("array_tests", "fif combined tests") {
 		CHECK(values.main_data(0) == 4);
 	}
 
+	SECTION("dy-array multi-push") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
+			": t make dy-array(i32) 4 push 5 push 6 push 7 push 8 push 9 push pop drop pop drop pop let result pop drop pop drop pop drop drop result ; "
+			" t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 7);
+	}
+
 	SECTION("dy-array defines b llvm") {
 		fif::environment fif_env;
 		fif::initialize_standard_vocab(fif_env);
@@ -1854,31 +1879,6 @@ TEST_CASE("array_tests", "fif combined tests") {
 				CHECK(fn() == 4);
 			}
 		}
-	}
-
-	SECTION("dy-array multi-push") {
-		fif::environment fif_env;
-		fif::initialize_standard_vocab(fif_env);
-
-		int32_t error_count = 0;
-		std::string error_list;
-		fif_env.report_error = [&](std::string_view s) {
-			++error_count; error_list += std::string(s) + "\n";
-		};
-
-		fif::interpreter_stack values{ };
-
-		fif::run_fif_interpreter(fif_env,
-			": t make dy-array(i32) 4 push 5 push 6 push 7 push 8 push 9 push pop drop pop drop pop let result pop drop pop drop pop drop drop result ; "
-			" t ",
-			values);
-
-		CHECK(error_count == 0);
-		CHECK(error_list == "");
-		REQUIRE(values.main_size() == 1);
-		CHECK(values.return_size() == 0);
-		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 7);
 	}
 
 	SECTION("dy-array multi-push llvm") {
