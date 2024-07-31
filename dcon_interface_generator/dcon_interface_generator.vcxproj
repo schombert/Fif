@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{dd5dd6f0-ca19-493c-96ea-c5020630e949}</ProjectGuid>
-    <RootNamespace>Tests</RootNamespace>
+    <ProjectGuid>{eefb9ab8-24dd-440c-a831-390244b9fc2e}</ProjectGuid>
+    <RootNamespace>dconinterfacegenerator</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -70,13 +70,6 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <LibraryWPath>$(LibraryWPath)</LibraryWPath>
-    <LibraryPath>..\fif-interpreter\llvm-c;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64)</LibraryPath>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <LibraryPath>..\fif-interpreter\llvm-c;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64)</LibraryPath>
-  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -112,7 +105,6 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -137,40 +129,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="common_types.cpp" />
-    <ClCompile Include="Tests.cpp" />
+    <ClInclude Include="code_fragments.hpp" />
+    <ClInclude Include="parsing.hpp" />
+    <ClInclude Include="source_builder.hpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="catch.hpp" />
-    <ClInclude Include="common_types.hpp" />
-    <ClInclude Include="dcon_stuff.hpp" />
-    <ClInclude Include="fif_dcon_stuff_copy.hpp" />
-    <ClInclude Include="ve.hpp" />
-    <ClInclude Include="ve_avx.hpp" />
-    <ClInclude Include="ve_avx2.hpp" />
-    <ClInclude Include="ve_avx512.hpp" />
-    <ClInclude Include="ve_sse.hpp" />
-    <ClInclude Include="ve_sse3.hpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <CustomBuild Include="dcon_stuff.txt">
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">DataContainerGenerator dcon_stuff.txt</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">dcon_stuff.hpp</Outputs>
-      <OutputItemType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ClInclude</OutputItemType>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">dcon_stuff.hpp</Outputs>
-      <OutputItemType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ClInclude</OutputItemType>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">DataContainerGenerator dcon_stuff.txt</Command>
-    </CustomBuild>
-  </ItemGroup>
-  <ItemGroup>
-    <CustomBuild Include="dcon_stuff_copy.txt">
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">dcon_interface_generator.exe dcon_stuff_copy.txt</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">fif_dcon_stuff_copy.hpp</Outputs>
-      <OutputItemType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ClInclude</OutputItemType>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">dcon_interface_generator.exe dcon_stuff_copy.txt</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">fif_dcon_stuff_copy.hpp</Outputs>
-      <OutputItemType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ClInclude</OutputItemType>
-    </CustomBuild>
+    <ClCompile Include="code_fragments.cpp" />
+    <ClCompile Include="DataContainerGenerator.cpp" />
+    <ClCompile Include="parsing.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

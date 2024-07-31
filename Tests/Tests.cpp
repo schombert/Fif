@@ -8,6 +8,9 @@
 #undef min
 #undef max
 #include <stdint.h>
+#include "common_types.hpp"
+#include "dcon_stuff.hpp"
+#include "fif_dcon_stuff_copy.hpp"
 
 #pragma comment(lib, "LLVM-C.lib")
 
@@ -2132,6 +2135,111 @@ TEST_CASE("import_export_tests", "fif combined tests") {
 				ftype fn = (ftype)bare_address;
 				fn();
 				CHECK(our_global == 12);
+			}
+		}
+	}
+}
+
+TEST_CASE("dcon integration tests", "fif combined tests") {
+	SECTION("read_value") {
+		auto container = std::make_unique<dcon::data_container>();
+
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		auto thandle = container->create_thingy();
+		container->thingy_set_some_value(thandle, 42);
+
+		fif::run_fif_interpreter(fif_env,
+			fif::container_interface(),
+			values);
+
+		values.push_back_main(fif::fif_opaque_ptr, (int64_t)(container.get()), nullptr);
+		fif::run_fif_interpreter(fif_env,
+			"set-container ",
+			values);
+
+		fif::run_fif_interpreter(fif_env,
+			"0 >thingy_id some_value @ ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 42);
+		CHECK(values.main_type(0) == fif::fif_i32);
+	}
+	SECTION("read_value llvm") {
+		auto container = std::make_unique<dcon::data_container>();
+
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		auto thandle = container->create_thingy();
+		container->thingy_set_some_value(thandle, 42);
+
+		fif::run_fif_interpreter(fif_env,
+			fif::container_interface(),
+			values);
+
+		fif::run_fif_interpreter(fif_env,
+			": t 0 >thingy_id some_value @ ; "
+			":export test_jit_fn t ; ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "set_container");
+			REQUIRE(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = void(*)(void*);
+				ftype fn = (ftype)bare_address;
+				fn(container.get());
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 42);
 			}
 		}
 	}
