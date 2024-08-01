@@ -34,9 +34,7 @@
 #pragma warning( disable : 4324 )
 #endif
 
-namespace fif {
-std::string container_interface();
-}
+namespace fif { std::string container_interface(); }
 
 namespace dcon {
 	struct load_record {

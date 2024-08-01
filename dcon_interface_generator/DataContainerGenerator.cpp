@@ -308,14 +308,24 @@ int main(int argc, char *argv[]) {
 
 		output += "\" ptr(nil) global data-container \"\n";
 		output += "\" : set-container data-container ! ; \"\n";
+		output += "\" ptr(nil) global vector-storage \"\n";
+		output += "\" : set-vector-storage vector-storage ! ; \"\n";
 		output +=  "\" :export set_container ptr(nil) set-container ;  \"\n";
+		output += "\" :export set_vector_storage ptr(nil) set-vector-storage ;  \"\n";
 		output += "\" :struct bit-proxy i32 bit ptr(i8) byte ; \"\n";
 		output += "\" :struct index-view ptr($0) wrapped ; \"\n";
 		output += "\" :s @ index-view($0) s: .wrapped @ ; \"\n";
 		output += "\" :s make-index-view ptr($0) s: make index-view($0) .wrapped! ; \"\n";
-		output += "\" :s ! bool bit-proxy s: .byte@ let byte .bit let bit 1 >i8 not bit shl byte @ and byte ! >i8 bit shl byte @ or byte ! ; \"\n";
-		output += "\" :s @ bit-proxy s: .byte@ let byte .bit let bit byte @ bit shr 1 >i8 and >bool ; \"\n";
+		output += "\" :s ! bool bit-proxy s: .byte@ let byte .bit let bit let arg 1 bit shl not byte @ >i32 and arg >i32 bit shl or >i8 byte ! ; \"\n";
+		output += "\" :s @ bit-proxy s: .byte@ let byte .bit let bit byte @ >i32 bit shr 1 and >bool ; \"\n";
 		output += "\" :s >index i32 s:  ; \"\n"; // nop
+		output += "\" :s >index ui32 s: >i32 ; \"\n"; 
+		output += "\" :s >index i16 s: >i32 ; \"\n"; 
+		output += "\" :s >index ui16 s: >i32 ; \"\n"; 
+		output += "\" :s >index i8 s: >i32 ; \"\n"; 
+		output += "\" :s >index ui8 s: >i32 ; \"\n"; 
+		output += "\" :s >index i64 s: >i32 ; \"\n"; 
+		output += "\" :s >index ui64 s: >i32 ; \"\n"; 
 
 		//
 		//
@@ -349,55 +359,59 @@ int main(int argc, char *argv[]) {
 
 			if(ob.store_type == storage_type::erasable) {
 				output += "\" :s _index " + ob.name + "_id s: >index \" + sizeof(" + self_index_id + ") + \" * " + offset_of_member_container(ob.name, "_index") + " + data-container @ buf-add ptr-cast ptr(" + ob.name + "_id) ; \"\n";
+				output += "\" :s live? " + ob.name + "_id s: dup _index @ = ; \"\n";
+			} else {
+				output += "\" :s live? " + ob.name + "_id s: true ; \"\n";
 			}
 
 			for(auto& p : ob.properties) {
 
 				std::string property_type = p.data_type;
+				bool known = known_as_fif_type(p.data_type);
+				auto d_type = type_to_fif_type(p.data_type);
+
 				if(property_type.ends_with("_id")) {
 					property_type = "dcon::" + property_type;
+					known = true;
 				}
 
 				if(p.is_derived) {
 					// no data for a derived property
 				} else if(p.type == property_type::bitfield) {
-					output += "\" :s " + p.name + " " + ob.name + "_id s: >index  dup 8 / " + offset_of_member_container(ob.name, p.name) + " + data-container @ buf-add ptr-cast ptr(i8) make bit-proxy .byte! swap >i32 8 mod swap .bit! ; \"\n";
+					output += "\" :s " + p.name + " " + ob.name + "_id s: >index  dup 3 shr " + offset_of_member_container(ob.name, p.name) + " + data-container @ buf-add ptr-cast ptr(i8) make bit-proxy .byte! swap >i32 7 and swap .bit! ; \"\n";
 				} else if(p.type == property_type::object) {
 					output += "\" :s " + p.name + " " + ob.name + "_id s: >index \" + std::to_string(sizeof(" + property_type + ")) + \" * " + offset_of_member_container(ob.name, p.name) + " + data-container @ buf-add ; \"\n";
 				} else if(p.type == property_type::special_vector) {
 					//fill in with special vector type and pool object
+					
 					output += "\" :struct vpool-" + p.name + " ptr(i32) content ;  \"\n";
 					output += "\" :s " + p.name + " " + ob.name + "_id s: >index 4 * " + offset_of_member_container(ob.name, p.name) + " + data-container @ buf-add ptr-cast ptr(i32) make vpool-" + p.name + " .content! ; \"\n";
+					output += "\" :s size vpool-" + p.name + " s: .content @ dup 1 + >i32 0 = if drop 0 else 8 * 4 + vector-storage @ buf-add ptr-cast ptr(ui16) @ >i32 then ;  \"\n";
+					output += "\" :s index vpool-" + p.name + " i32 s: let idx .content @ 8 * 8 + \" + std::to_string(sizeof(" + property_type + ")) + \" idx * + vector-storage @ buf-add ptr-cast ptr(" + (known ? d_type : std::string("nil")) + ") ;  \"\n";
 
 					// TODO: write vpool functions
 
 					//output += "\t\t\tdcon::stable_variable_vector_storage_mk_2<" + p.data_type + ", 16, " + std::to_string(p.special_pool_size) + " > " + p.name + "_storage;\n";
 				} else if(p.type == property_type::array_bitfield) {
 					auto index_type = type_to_fif_type(p.array_index_type);
-					auto d_type = type_to_fif_type(p.data_type);
 
-					output += "\" :s " + p.name + " " + ob.name + "_id " + index_type + " s: >index swap >index swap " + offset_of_array_member_container(ob.name, p.name) + " + data-container @ buf-add ptr-cast ptr(ptr(nil)) @ swap 1 + " + array_member_row_size(property_type, ob.size, true) + " * " + array_member_leading_padding(property_type, ob.size, true) + " swap buf-add swap dup let tidx 8 / swap buf-add ptr-cast ptr(i8) make bit-proxy .byte! tidx >i32 8 mod swap .bit! ; \"\n";
+					output += "\" :s " + p.name + " " + ob.name + "_id " + index_type + " s: >index swap >index swap " + offset_of_array_member_container(ob.name, p.name) + " data-container @ buf-add ptr-cast ptr(ptr(nil)) @ swap 1 + " + array_member_row_size(property_type, ob.size, true) + " * " + array_member_leading_padding(property_type, ob.size, true) + " + swap buf-add swap dup let tidx 3 shr swap buf-add ptr-cast ptr(i8) make bit-proxy .byte! tidx >i32 7 and swap .bit! ; \"\n";
 				} else if(p.type == property_type::array_other || p.type == property_type::array_vectorizable) {
 					auto index_type = type_to_fif_type(p.array_index_type);
-					auto d_type = type_to_fif_type(p.data_type);
 
-					output += "\" :s " + p.name + " " + ob.name + "_id " + index_type + " s: >index swap >index swap " + offset_of_array_member_container(ob.name, p.name) + " + data-container @ buf-add ptr-cast ptr(ptr(nil)) @ swap 1 + " + array_member_row_size(property_type, ob.size, false) + " * " + array_member_leading_padding(property_type, ob.size, false) + " swap buf-add swap \" + std::to_string(sizeof(" + property_type + ")) + \" * swap buf-add ptr-cast ptr(" + (p.data_type == d_type ? d_type : std::string("nil")) + ") ; \"\n";
+					output += "\" :s " + p.name + " " + ob.name + "_id " + index_type + " s: >index swap >index swap " + offset_of_array_member_container(ob.name, p.name) + " data-container @ buf-add ptr-cast ptr(ptr(nil)) @ swap 1 + " + array_member_row_size(property_type, ob.size, false) + " * " + array_member_leading_padding(property_type, ob.size, false) + " + swap buf-add swap \" + std::to_string(sizeof(" + property_type + ")) + \" * swap buf-add ptr-cast ptr(" + (known ? d_type : std::string("nil")) + ") ; \"\n";
 				} else {
-					auto d_type = type_to_fif_type(p.data_type);
 					output += "\" :s " + p.name + " " + ob.name + "_id s: >index \" + std::to_string(sizeof(" + property_type + ")) + \" * " + offset_of_member_container(ob.name, p.name) + " + data-container @ buf-add ptr-cast ptr(" + d_type + ") ; \"\n";
 				}
 			} //end non relationship members
 
 			// begin relationship members
 			for(auto& i : ob.indexed_objects) {
-				//
-				// object in relationship -> link back to relationship
-				//
 				if(ob.primary_key == i) {
-					output += "\" :s " + ob.name + "-" + i.property_name + " " + i.type_name + "_id s: >index >" + ob.name + "_id ; \"\n";
+					output += "\" :s " + i.property_name + " " + ob.name + "_id s: >index >" + i.type_name +"_id ; \"\n";
 				} else {
 					auto d_type = type_to_fif_type(i.type_name);
-					output += "\" :s " + ob.name + "-" + i.property_name + " " + i.type_name + "_id s: >index \" + std::to_string(sizeof(" + self_index_id + ")) + \" * " + offset_of_member_container(ob.name, i.property_name) + " + data-container @ buf-add ptr-cast ptr(" + d_type + ") make-index-view ; \"\n";
+					output += "\" :s " +  i.property_name + " " + ob.name + "_id s: >index \" + std::to_string(sizeof(dcon::" + i.type_name + "_id)) + \" * " + (i.multiplicity > 1 ? std::to_string(i.multiplicity) + " * " : std::string("")) + offset_of_member_container(ob.name, i.property_name) + " + data-container @ buf-add ptr-cast ptr(" + i.type_name + "_id) make-index-view ; \"\n";
 
 					//output += make_member_container(o, i.property_name, i.type_name + "_id",
 					//	i.multiplicity == 1 ? expand_size_to_fill_cacheline_calculation(i.type_name + "_id", ob.size) : std::to_string(ob.size),
@@ -410,8 +424,10 @@ int main(int argc, char *argv[]) {
 						//array of relation ids in object
 						if(!i.related_to->is_expandable) {
 							output += "\" :struct vpool-" + i.property_name + " ptr(i32) content ;  \"\n";
-							output += "\" :s " + i.property_name + " " + ob.name + "_id s: >index 4 * " + offset_of_member_container(ob.name, std::string("array_") + i.property_name) + " + data-container @ buf-add ptr-cast ptr(i32) make vpool-" + i.property_name + " .content! ; \"\n";
-							// TODO: write vpool functions
+							output += "\" :s " + ob.name + "-" + i.property_name + " " + i.type_name + "_id s: >index 4 * " + offset_of_member_container(ob.name, std::string("array_") + i.property_name) + " + data-container @ buf-add ptr-cast ptr(i32) make vpool-" + i.property_name + " .content! ; \"\n";
+
+							output += "\" :s size vpool-" + i.property_name + " s: .content @ dup 1 + >i32 0 = if drop 0 else 8 * 4 + vector-storage @ buf-add ptr-cast ptr(ui16) @ >i32 then ;  \"\n";
+							output += "\" :s index vpool-" + i.property_name + " i32 s: let idx .content @ 8 * 8 + \" + std::to_string(sizeof(dcon::" + ob.name + "_id)) + \" idx * + vector-storage @ buf-add ptr-cast ptr(" + ob.name + "_id) ;  \"\n";
 
 							//output += "\t\t\tdcon::stable_variable_vector_storage_mk_2<" + ob.name + "_id, 4, " + std::to_string(ob.size * 8) + " > "
 							//	+ i.property_name + "_storage;\n";
@@ -420,21 +436,21 @@ int main(int argc, char *argv[]) {
 					}
 				} else if(i.index == index_type::at_most_one) {
 					if(ob.primary_key == i) {
-						output += "\" :s " + i.property_name + " " + ob.name + "_id s: >index >" + i.type_name + "_id ; \"\n";
+						output += "\" :s " + ob.name + "-" + i.property_name + " " + i.type_name + "_id s: >index >" + ob.name + "_id ; \"\n";
 					} else {
 						auto d_type = i.type_name + "_id";
-						output += "\" :s " + i.property_name + " " + ob.name + "_id s: >index \" + std::to_string(sizeof(dcon::" + i.type_name + "_id)) + \" * " + offset_of_member_container(ob.name, std::string("link_back_") + i.property_name) + " + data-container @ buf-add ptr-cast ptr(" + d_type + ") make-index-view ; \"\n";
+						output += "\" :s " + ob.name + "-" + i.property_name + " " + i.type_name + "_id s: >index \" + std::to_string(sizeof(dcon::" + ob.name + "_id)) + \" * " + offset_of_member_container(ob.name, std::string("link_back_") + i.property_name) + " + data-container @ buf-add ptr-cast ptr(" + d_type + ") make-index-view ; \"\n";
 					}
 				}
 			} // end relationship members
 
-			/*
-			if (!ob.primary_key.points_to) {
-				output += "\t\t\tuint32_t size_used = 0;\n";
-				output += "\n";
-			}
-			*/
 
+			if(!ob.primary_key.points_to) {
+				std::string class_name = "dcon::internal::" + ob.name + "_class";
+				std::string offset = "offsetof(dcon::data_container, " + ob.name + ") "
+					"+ offsetof(" + class_name + ",  size_used)";
+				output += "\" : " + ob.name + "-size \" + std::to_string(" + offset + ") + \" data-container @ buf-add ptr-cast ptr(i32) @ ; \"\n";
+			}
 			/*
 			// make composite key functions and hashmaps
 			for(auto& cc : ob.composite_indexes) {
@@ -445,7 +461,6 @@ int main(int argc, char *argv[]) {
 
 		//
 		// TO ADD:
-		// size of objects
 		// iteration functions
 		// create / destroy functions
 		// relationship setters

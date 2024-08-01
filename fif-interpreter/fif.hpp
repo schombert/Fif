@@ -1578,7 +1578,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 
 inline type_match internal_resolve_type(std::string_view text, environment& env, std::vector<int32_t>* type_subs) {
 	uint32_t mt_end = 0;
-	if(text == "ptr(nil)") {
+	if(text.starts_with("ptr(nil)")) {
 		return type_match{ fif_opaque_ptr, 8 };
 	}
 	for(; mt_end < text.size(); ++mt_end) {
@@ -1647,7 +1647,7 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 			env.dict.type_array.back().decomposed_types_count = uint32_t(1 + subtypes.size());
 			env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 			env.dict.type_array.back().flags = env.dict.type_array[it->second].flags;
-			env.dict.type_array.back().zero_constant = env.dict.type_array.back().zero_constant;
+			env.dict.type_array.back().zero_constant = env.dict.type_array[it->second].zero_constant;
 			env.dict.type_array.back().type_slots = 0;
 
 			env.dict.all_stack_types.push_back(it->second);
@@ -1676,7 +1676,7 @@ inline type_span_gen_result internal_generate_type(std::string_view text, enviro
 	uint32_t mt_end = 0;
 	type_span_gen_result r;
 
-	if(text == "ptr(nil)") {
+	if(text.starts_with("ptr(nil)")) {
 		r.type_array.push_back(fif_opaque_ptr);
 		r.end_match_pos = 8;
 		return r;
@@ -4586,16 +4586,16 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 			}
 		}
 
-		word_types& wi = env.dict.all_instances[match.word_index];
+		word_types* wi = &(env.dict.all_instances[match.word_index]);
 
 		// IMMEDIATE words (source not available)
 		if(env.dict.word_array[w].immediate) {
-			if(std::holds_alternative<interpreted_word_instance>(wi)) {
+			if(std::holds_alternative<interpreted_word_instance>(*wi)) {
 				switch_compiler_stack_mode(env, fif_mode::interpreting);
-				execute_fif_word(std::get<interpreted_word_instance>(wi), *ws, env);
+				execute_fif_word(std::get<interpreted_word_instance>(*wi), *ws, env);
 				restore_compiler_stack_mode(env);
-			} else if(std::holds_alternative<compiled_word_instance>(wi)) {
-				execute_fif_word(std::get<compiled_word_instance>(wi), *ws, env);
+			} else if(std::holds_alternative<compiled_word_instance>(*wi)) {
+				execute_fif_word(std::get<compiled_word_instance>(*wi), *ws, env);
 			}
 			return;
 		}
@@ -4609,14 +4609,14 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		if(env.mode == fif_mode::typechecking_lvl_1 || env.mode == fif_mode::typechecking_lvl1_failed
 			|| env.mode == fif_mode::typechecking_lvl_2 || env.mode == fif_mode::typechecking_lvl2_failed) {
 
-			if(std::holds_alternative<interpreted_word_instance>(wi)) {
+			if(std::holds_alternative<interpreted_word_instance>(*wi)) {
 				if(!typechecking_failed(env.mode)) {
-					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count)), *ws, env);
+					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(*wi).stack_types_start, size_t(std::get<interpreted_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
-			} else if(std::holds_alternative<compiled_word_instance>(wi)) {
+			} else if(std::holds_alternative<compiled_word_instance>(*wi)) {
 				// no special logic, compiled words assumed to always typecheck
 				if(!typechecking_failed(env.mode)) {
-					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(wi).stack_types_start, size_t(std::get<compiled_word_instance>(wi).stack_types_count)), *ws, env);
+					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(*wi).stack_types_start, size_t(std::get<compiled_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
 			}
 			return;
@@ -4627,10 +4627,10 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		//
 
 		if(env.mode == fif_mode::typechecking_lvl_3 || env.mode == fif_mode::typechecking_lvl3_failed) {
-			if(std::holds_alternative<interpreted_word_instance>(wi)) {
+			if(std::holds_alternative<interpreted_word_instance>(*wi)) {
 				if(!typechecking_failed(env.mode)) {
 					// add typecheck info
-					if(std::get<interpreted_word_instance>(wi).typechecking_level < 3) {
+					if(std::get<interpreted_word_instance>(*wi).typechecking_level < 3) {
 						// this word also hasn't been compiled yet
 
 						auto rword = env.compiler_stack.back()->word_id();
@@ -4652,7 +4652,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 								return;
 							}
 
-							if(std::get<interpreted_word_instance>(wi).typechecking_level < 2) {
+							if(std::get<interpreted_word_instance>(*wi).typechecking_level < 2) {
 								switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_2);
 
 								env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
@@ -4672,7 +4672,8 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 									return;
 								}
 
-								std::get<interpreted_word_instance>(wi).typechecking_level = 2;
+								wi = &(env.dict.all_instances[match.word_index]);
+								std::get<interpreted_word_instance>(*wi).typechecking_level = 2;
 							}
 
 							env.mode = fif_mode::typechecking_lvl_3;
@@ -4700,12 +4701,12 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 						}
 					}
 
-					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count)), *ws, env);
+					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(*wi).stack_types_start, size_t(std::get<interpreted_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
-			} else if(std::holds_alternative<compiled_word_instance>(wi)) {
+			} else if(std::holds_alternative<compiled_word_instance>(*wi)) {
 				if(!typechecking_failed(env.mode)) {
 					// no special logic, compiled words assumed to always typecheck
-					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(wi).stack_types_start, size_t(std::get<compiled_word_instance>(wi).stack_types_count)), *ws, env);
+					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(*wi).stack_types_start, size_t(std::get<compiled_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
 			}
 
@@ -4718,20 +4719,21 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 				env.mode = fif_mode::error;
 				return;
 			}
+			wi = &(env.dict.all_instances[match.word_index]);
 
-			if(std::holds_alternative<interpreted_word_instance>(wi)) {
+			if(std::holds_alternative<interpreted_word_instance>(*wi)) {
 				if(env.mode == fif_mode::interpreting) {
 					env.compiler_stack.push_back(std::make_unique<runtime_function_scope>(env.compiler_stack.back().get(), env));
-					execute_fif_word(std::get<interpreted_word_instance>(wi), *ws, env);
+					execute_fif_word(std::get<interpreted_word_instance>(*wi), *ws, env);
 					env.compiler_stack.back()->finish(env);
 					env.compiler_stack.pop_back();
 				} else if(env.mode == fif_mode::compiling_llvm) {
-					std::span<int32_t const> desc{ env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count) };
-					llvm_make_function_call(env, std::get<interpreted_word_instance>(wi).llvm_function, desc);
+					std::span<int32_t const> desc{ env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(*wi).stack_types_start, size_t(std::get<interpreted_word_instance>(*wi).stack_types_count) };
+					llvm_make_function_call(env, std::get<interpreted_word_instance>(*wi).llvm_function, desc);
 				} else if(env.mode == fif_mode::compiling_bytecode) {
 					auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
 					if(cbytes) {
-						if(std::get<interpreted_word_instance>(wi).being_compiled) {
+						if(std::get<interpreted_word_instance>(*wi).being_compiled) {
 							fif_call imm = call_function_indirect;
 							uint64_t imm_bytes = 0;
 							memcpy(&imm_bytes, &imm, 8);
@@ -4747,30 +4749,30 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 								cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 							}
 							{
-								int32_t* bcode = std::get<interpreted_word_instance>(wi).compiled_bytecode.data();
+								int32_t* bcode = std::get<interpreted_word_instance>(*wi).compiled_bytecode.data();
 								uint64_t imm_bytes = 0;
 								memcpy(&imm_bytes, &bcode, 8);
 								cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 								cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 							}
 						}
-						apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(wi).stack_types_start, size_t(std::get<interpreted_word_instance>(wi).stack_types_count)), *ws, env);
+						apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(*wi).stack_types_start, size_t(std::get<interpreted_word_instance>(*wi).stack_types_count)), *ws, env);
 					}
 				}
-			} else if(std::holds_alternative<compiled_word_instance>(wi)) {
+			} else if(std::holds_alternative<compiled_word_instance>(*wi)) {
 				if(env.mode == fif_mode::compiling_bytecode) {
 					auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
 					if(cbytes) {
-						fif_call imm = std::get<compiled_word_instance>(wi).implementation;
+						fif_call imm = std::get<compiled_word_instance>(*wi).implementation;
 						uint64_t imm_bytes = 0;
 						memcpy(&imm_bytes, &imm, 8);
 						cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 						cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 
-						apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(wi).stack_types_start, size_t(std::get<compiled_word_instance>(wi).stack_types_count)), *ws, env);
+						apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(*wi).stack_types_start, size_t(std::get<compiled_word_instance>(*wi).stack_types_count)), *ws, env);
 					}
 				} else {
-					std::get<compiled_word_instance>(wi).implementation(*ws, nullptr, &env);
+					std::get<compiled_word_instance>(*wi).implementation(*ws, nullptr, &env);
 				}
 			}
 		}
@@ -5315,22 +5317,21 @@ inline int32_t* colon_specialization(fif::state_stack&, int32_t* p, fif::environ
 	return p + 2;
 }
 
-inline int32_t* i32_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* iadd(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(2);
 		auto add_result = LLVMBuildAdd(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
-		s.pop_main();
-		s.push_back_main(fif_i32, 0, add_result);
+		s.set_main_ex_back(0, add_result);
 	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(2);
 		auto a = s.main_data_back(0);
 		auto b = s.main_data_back(1);
 		s.pop_main();
-		s.pop_main();
-		s.push_back_main(fif::fif_i32, a + b, nullptr);
+		s.set_main_data_back(0, b + a);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(2);
 		s.pop_main();
-		s.pop_main();
-		s.push_back_main(fif::fif_i32, 0, nullptr);
 	}
 	return p + 2;
 }
@@ -5359,23 +5360,114 @@ inline int32_t* f32_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
-
-inline int32_t* i32_mul(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* f64_add(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
-		auto add_result = LLVMBuildMul(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		auto add_result = LLVMBuildFAdd(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
 		s.pop_main();
-		s.push_back_main(fif_i32, 0, add_result);
+		s.push_back_main(fif_f64, 0, add_result);
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		auto a = s.main_data_back(0);
 		auto b = s.main_data_back(1);
 		s.pop_main();
 		s.pop_main();
-		s.push_back_main(fif::fif_i32, a * b, nullptr);
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &a, 8);
+		memcpy(&fb, &b, 8);
+		fa = fa + fb;
+		memcpy(&a, &fa, 8);
+		s.push_back_main(fif::fif_f64, a, nullptr);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		s.pop_main();
 		s.pop_main();
-		s.push_back_main(fif::fif_i32, 0, nullptr);
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* isub(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(2);
+		auto add_result = LLVMBuildSub(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.set_main_ex_back(0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(2);
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.set_main_data_back(0, b - a);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(2);
+		s.pop_main();
+	}
+	return p + 2;
+}
+inline int32_t* f32_sub(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFSub(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f32, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &a, 4);
+		memcpy(&fb, &b, 4);
+		fa = fa - fb;
+		memcpy(&a, &fa, 4);
+		s.push_back_main(fif::fif_f32, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64_sub(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFSub(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f64, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &a, 8);
+		memcpy(&fb, &b, 8);
+		fa = fa - fb;
+		memcpy(&a, &fa, 8);
+		s.push_back_main(fif::fif_f64, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* imul(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(2);
+		auto add_result = LLVMBuildMul(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.set_main_ex_back(0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(2);
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.set_main_data_back(0, b * a);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(2);
+		s.pop_main();
 	}
 	return p + 2;
 }
@@ -5394,7 +5486,7 @@ inline int32_t* f32_mul(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		float fb = 0;
 		memcpy(&fa, &a, 4);
 		memcpy(&fb, &b, 4);
-		fa = fa * fb;
+		fa =  fb * fa;
 		memcpy(&a, &fa, 4);
 		s.push_back_main(fif::fif_f32, a, nullptr);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
@@ -5404,7 +5496,203 @@ inline int32_t* f32_mul(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
-
+inline int32_t* f64_mul(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFMul(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f64, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &a, 8);
+		memcpy(&fb, &b, 8);
+		fa = fb * fa;
+		memcpy(&a, &fa, 8);
+		s.push_back_main(fif::fif_f64, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* sidiv(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(2);
+		auto add_result = LLVMBuildSDiv(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.set_main_ex_back(0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(2);
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.set_main_data_back(0, b / a);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(2);
+		s.pop_main();
+	}
+	return p + 2;
+}
+inline int32_t* uidiv(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(2);
+		auto add_result = LLVMBuildUDiv(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.set_main_ex_back(0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(2);
+		auto a = uint64_t(s.main_data_back(0));
+		auto b = uint64_t(s.main_data_back(1));
+		s.pop_main();
+		s.set_main_data_back(0, b / a);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(2);
+		s.pop_main();
+	}
+	return p + 2;
+}
+inline int32_t* f32_div(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFDiv(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f32, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &a, 4);
+		memcpy(&fb, &b, 4);
+		fa = fb / fa;
+		memcpy(&a, &fa, 4);
+		s.push_back_main(fif::fif_f32, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64_div(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFDiv(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f64, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &a, 8);
+		memcpy(&fb, &b, 8);
+		fa = fb / fa;
+		memcpy(&a, &fa, 8);
+		s.push_back_main(fif::fif_f64, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* simod(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(2);
+		auto add_result = LLVMBuildSRem(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.set_main_ex_back(0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(2);
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.set_main_data_back(0, b % a);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(2);
+		s.pop_main();
+	}
+	return p + 2;
+}
+inline int32_t* uimod(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(2);
+		auto add_result = LLVMBuildURem(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.set_main_ex_back(0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(2);
+		auto a = uint64_t(s.main_data_back(0));
+		auto b = uint64_t(s.main_data_back(1));
+		s.pop_main();
+		s.set_main_data_back(0, b % a);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(2);
+		s.pop_main();
+	}
+	return p + 2;
+}
+inline int32_t* f32_mod(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFRem(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f32, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &a, 4);
+		memcpy(&fb, &b, 4);
+		fa = fmodf(fb, fa);
+		memcpy(&a, &fa, 4);
+		s.push_back_main(fif::fif_f32, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64_mod(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto add_result = LLVMBuildFDiv(e->llvm_builder, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_f64, 0, add_result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = s.main_data_back(0);
+		auto b = s.main_data_back(1);
+		s.pop_main();
+		s.pop_main();
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &a, 8);
+		memcpy(&fb, &b, 8);
+		fa = fmod(fb, fa);
+		memcpy(&a, &fa, 8);
+		s.push_back_main(fif::fif_f64, a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
 inline int32_t* dup(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		s.mark_used_from_main(1);
@@ -5623,7 +5911,7 @@ inline void add_precompiled(fif::environment& env, std::string name, fif::fif_ca
 	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), types.begin(), types.end());
 }
 
-inline int32_t* i32_lt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* ilt(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntSLT, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
@@ -5642,7 +5930,72 @@ inline int32_t* i32_lt(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
-inline int32_t* i32_gt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* f32lt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOLT, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &ia, 4);
+		memcpy(&fb, &ib, 4);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb < fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64lt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOLT, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &ia, 8);
+		memcpy(&fb, &ib, 8);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb < fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* uilt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntULT, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = uint64_t(s.main_data_back(0));
+		auto b = uint64_t(s.main_data_back(1));
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, b < a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* igt(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntSGT, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
@@ -5661,7 +6014,72 @@ inline int32_t* i32_gt(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
-inline int32_t* i32_le(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* uigt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntUGT, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = uint64_t(s.main_data_back(0));
+		auto b = uint64_t(s.main_data_back(1));
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, b > a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32gt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOGT, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &ia, 4);
+		memcpy(&fb, &ib, 4);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb > fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64gt(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOGT, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &ia, 8);
+		memcpy(&fb, &ib, 8);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb > fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* ile(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntSLE, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
@@ -5680,7 +6098,72 @@ inline int32_t* i32_le(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
-inline int32_t* i32_ge(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* uile(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntULE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = uint64_t(s.main_data_back(0));
+		auto b = uint64_t(s.main_data_back(1));
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, b <= a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32le(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOLE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &ia, 4);
+		memcpy(&fb, &ib, 4);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb <= fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64le(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOLE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &ia, 8);
+		memcpy(&fb, &ib, 8);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb <= fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* ige(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntSGE, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
@@ -5699,7 +6182,72 @@ inline int32_t* i32_ge(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
-inline int32_t* i32_eq(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* uige(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntUGE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto a = uint64_t(s.main_data_back(0));
+		auto b = uint64_t(s.main_data_back(1));
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, b >= a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32ge(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOGE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &ia, 4);
+		memcpy(&fb, &ib, 4);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb >= fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64ge(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOGE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &ia, 8);
+		memcpy(&fb, &ib, 8);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb >= fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* ieq(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntEQ, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
@@ -5718,7 +6266,53 @@ inline int32_t* i32_eq(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
-inline int32_t* i32_ne(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* f32eq(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOEQ, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &ia, 4);
+		memcpy(&fb, &ib, 4);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb == fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64eq(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealOEQ, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &ia, 8);
+		memcpy(&fb, &ib, 8);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb == fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* ine(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto result = LLVMBuildICmp(e->llvm_builder, LLVMIntPredicate::LLVMIntNE, s.main_ex_back(1), s.main_ex_back(0), "");
 		s.pop_main();
@@ -5730,6 +6324,52 @@ inline int32_t* i32_ne(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		s.pop_main();
 		s.pop_main();
 		s.push_back_main(fif::fif_bool, b != a, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32ne(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealONE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		float fa = 0;
+		float fb = 0;
+		memcpy(&fa, &ia, 4);
+		memcpy(&fb, &ib, 4);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb != fa, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64ne(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFCmp(e->llvm_builder, LLVMRealPredicate::LLVMRealONE, s.main_ex_back(1), s.main_ex_back(0), "");
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif_bool, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto ia = s.main_data_back(0);
+		auto ib = s.main_data_back(1);
+		double fa = 0;
+		double fb = 0;
+		memcpy(&fa, &ia, 8);
+		memcpy(&fb, &ib, 8);
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(fif::fif_bool, fb != fa, nullptr);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		s.pop_main();
 		s.pop_main();
@@ -5848,7 +6488,20 @@ inline int32_t* impl_load(fif::state_stack& s, int32_t* p, fif::environment* e) 
 		auto v = s.main_data_back(0);
 		s.pop_main();
 		int64_t* ptr_val = (int64_t*)v;
-		s.push_back_main(pointer_contents, *ptr_val, nullptr);
+		if(pointer_contents == fif_i32 || pointer_contents == fif_f32)
+			s.push_back_main(pointer_contents, *(int32_t*)(ptr_val), nullptr);
+		else if(pointer_contents == fif_ui32)
+			s.push_back_main(pointer_contents, *(uint32_t*)(ptr_val), nullptr);
+		else if(pointer_contents == fif_i16)
+			s.push_back_main(pointer_contents, *(int16_t*)(ptr_val), nullptr);
+		else if(pointer_contents == fif_ui16)
+			s.push_back_main(pointer_contents, *(uint16_t*)(ptr_val), nullptr);
+		else if(pointer_contents == fif_i16)
+			s.push_back_main(pointer_contents, *(int8_t*)(ptr_val), nullptr);
+		else if(pointer_contents == fif_ui16)
+			s.push_back_main(pointer_contents, *(uint8_t*)(ptr_val), nullptr);
+		else
+			s.push_back_main(pointer_contents, *ptr_val, nullptr);
 
 		if(e->dict.type_array[pointer_contents].flags != 0) {
 			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
@@ -7762,6 +8415,407 @@ inline int32_t* nop1(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
+inline int32_t* ftrunc(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPTrunc(e->llvm_builder, s.main_ex_back(0), LLVMFloatTypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_f32, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		float fout = float(fin);
+		int64_t iout = 0;
+		memcpy(&iout, &fout, 4);
+		s.pop_main();
+		s.push_back_main(fif_f32, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_f32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* fext(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPExt(e->llvm_builder, s.main_ex_back(0), LLVMFloatTypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_f64, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		double fout = double(fin);
+		int64_t iout = 0;
+		memcpy(&iout, &fout, 8);
+		s.pop_main();
+		s.push_back_main(fif_f64, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32i8(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt8TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i8, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int8_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i8, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i8, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* sif32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildSIToFP(e->llvm_builder, s.main_ex_back(0), LLVMFloatTypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_f32, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fout = float(v);
+		int64_t iout = 0;
+		memcpy(&iout, &fout, 4);
+		s.pop_main();
+		s.push_back_main(fif_f32, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_f32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* uif32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildUIToFP(e->llvm_builder, s.main_ex_back(0), LLVMFloatTypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_f32, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = uint64_t(s.main_data_back(0));
+		float fout = float(v);
+		int64_t iout = 0;
+		memcpy(&iout, &fout, 4);
+		s.pop_main();
+		s.push_back_main(fif_f32, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_f32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* sif64(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildSIToFP(e->llvm_builder, s.main_ex_back(0), LLVMDoubleTypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_f64, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fout = double(v);
+		int64_t iout = 0;
+		memcpy(&iout, &fout, 8);
+		s.pop_main();
+		s.push_back_main(fif_f64, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* uif64(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildUIToFP(e->llvm_builder, s.main_ex_back(0), LLVMDoubleTypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_f64, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = uint64_t(s.main_data_back(0));
+		double fout = double(v);
+		int64_t iout = 0;
+		memcpy(&iout, &fout, 8);
+		s.pop_main();
+		s.push_back_main(fif_f64, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_f64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32i16(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt16TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i16, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int16_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i16, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i16, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32i32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt32TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i32, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int32_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i32, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32i64(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt64TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i64, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int64_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i64, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32ui8(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt8TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui8, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int64_t(uint8_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui8, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui8, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32ui16(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt16TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui16, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int64_t(uint16_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui16, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui16, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32ui32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt32TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui32, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int64_t(uint32_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui32, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f32ui64(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt64TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui64, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		float fin = 0;
+		memcpy(&fin, &v, 4);
+		int64_t iout = int64_t(uint64_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui64, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui64, 0, nullptr);
+	}
+	return p + 2;
+}
+
+inline int32_t* f64i8(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt8TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i8, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int8_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i8, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i8, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64i16(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt16TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i16, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int16_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i16, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i16, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64i32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt32TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i32, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int32_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i32, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64i64(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToSI(e->llvm_builder, s.main_ex_back(0), LLVMInt64TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_i64, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int64_t(fin);
+		s.pop_main();
+		s.push_back_main(fif_i64, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_i64, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64ui8(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt8TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui8, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int64_t(uint8_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui8, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui8, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64ui16(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt16TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui16, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int64_t(uint16_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui16, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui16, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64ui32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt32TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui32, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int64_t(uint32_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui32, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui32, 0, nullptr);
+	}
+	return p + 2;
+}
+inline int32_t* f64ui64(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto result = LLVMBuildFPToUI(e->llvm_builder, s.main_ex_back(0), LLVMInt64TypeInContext(e->llvm_context), "");
+		s.pop_main();
+		s.push_back_main(fif_ui64, 0, result);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto v = s.main_data_back(0);
+		double fin = 0;
+		memcpy(&fin, &v, 8);
+		int64_t iout = int64_t(uint64_t(fin));
+		s.pop_main();
+		s.push_back_main(fif_ui64, iout, nullptr);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.pop_main();
+		s.push_back_main(fif::fif_ui64, 0, nullptr);
+	}
+	return p + 2;
+}
 inline int32_t* bit_and(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		s.mark_used_from_main(2);
@@ -7841,7 +8895,7 @@ inline int32_t* bit_shl(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		auto a = s.main_data_back(0);
 		auto b = s.main_data_back(1);
 		s.pop_main();
-		s.set_main_data_back(0, a << b);
+		s.set_main_data_back(0, b << a);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		s.mark_used_from_main(2);
 		s.pop_main();
@@ -7859,7 +8913,7 @@ inline int32_t* bit_ashr(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		auto a = s.main_data_back(0);
 		auto b = s.main_data_back(1);
 		s.pop_main();
-		s.set_main_data_back(0, a >> b);
+		s.set_main_data_back(0, b >> a);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		s.mark_used_from_main(2);
 		s.pop_main();
@@ -7877,10 +8931,81 @@ inline int32_t* bit_lshr(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		auto a = s.main_data_back(0);
 		auto b = s.main_data_back(1);
 		s.pop_main();
-		s.set_main_data_back(0, uint64_t(a) >> b);
+		s.set_main_data_back(0, uint64_t(b) >> a);
 	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
 		s.mark_used_from_main(2);
 		s.pop_main();
+	}
+	return p + 2;
+}
+
+inline int32_t* ident32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+		s.set_main_data_back(0, s.main_data_back(0) & 0x0FFFFFFFF);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
+inline int32_t* ident16(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+		s.set_main_data_back(0, s.main_data_back(0) & 0x0FFFF);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
+inline int32_t* ident8(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+		s.set_main_data_back(0, s.main_data_back(0) & 0x0FF);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
+inline int32_t* idents32(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+		s.set_main_data_back(0, int32_t(s.main_data_back(0) & 0x0FFFFFFFF));
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
+inline int32_t* idents16(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+		s.set_main_data_back(0, int16_t(s.main_data_back(0) & 0x0FFFF));
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
+inline int32_t* idents8(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+		s.set_main_data_back(0, int8_t(s.main_data_back(0) & 0x0FF));
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
+}
+inline int32_t* ident1(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+		s.set_main_data_back(0, s.main_data_back(0) & 0x01);
+	} else if(fif::typechecking_mode(e->mode) && !fif::typechecking_failed(e->mode)) {
+		s.mark_used_from_main(1);
 	}
 	return p + 2;
 }
@@ -7890,17 +9015,128 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ":s", colon_specialization, { });
 	add_precompiled(fif_env, "((", long_comment, { }, true);
 	add_precompiled(fif_env, "--", line_comment, { }, true);
-	add_precompiled(fif_env, "+", i32_add, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+
+	add_precompiled(fif_env, "+", iadd, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, "+", iadd, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, "+", iadd, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_ui64 });
+	add_precompiled(fif_env, "+", iadd, { fif::fif_i64, fif::fif_i64, -1, fif::fif_i64 });
+	add_precompiled(fif_env, "+", iadd, { fif::fif_i16, fif::fif_i16, -1, fif::fif_i16 });
+	add_precompiled(fif_env, "+", iadd, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, "+", iadd, { fif::fif_i8, fif::fif_i8, -1, fif::fif_i8 });
+	add_precompiled(fif_env, "+", iadd, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, "+", f32_add, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
-	add_precompiled(fif_env, "*", i32_mul, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, "+", f64_add, { fif::fif_f64, fif::fif_f64, -1, fif::fif_f64 });
+
+	add_precompiled(fif_env, "-", isub, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, "-", isub, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, "-", isub, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_ui64 });
+	add_precompiled(fif_env, "-", isub, { fif::fif_i64, fif::fif_i64, -1, fif::fif_i64 });
+	add_precompiled(fif_env, "-", isub, { fif::fif_i16, fif::fif_i16, -1, fif::fif_i16 });
+	add_precompiled(fif_env, "-", isub, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, "-", isub, { fif::fif_i8, fif::fif_i8, -1, fif::fif_i8 });
+	add_precompiled(fif_env, "-", isub, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_ui8 });
+	add_precompiled(fif_env, "-", f32_sub, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
+	add_precompiled(fif_env, "-", f64_sub, { fif::fif_f64, fif::fif_f64, -1, fif::fif_f64 });
+
+	add_precompiled(fif_env, "/", sidiv, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, "/", uidiv, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, "/", uidiv, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_ui64 });
+	add_precompiled(fif_env, "/", sidiv, { fif::fif_i64, fif::fif_i64, -1, fif::fif_i64 });
+	add_precompiled(fif_env, "/", sidiv, { fif::fif_i16, fif::fif_i16, -1, fif::fif_i16 });
+	add_precompiled(fif_env, "/", uidiv, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, "/", sidiv, { fif::fif_i8, fif::fif_i8, -1, fif::fif_i8 });
+	add_precompiled(fif_env, "/", uidiv, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_ui8 });
+	add_precompiled(fif_env, "/", f32_div, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
+	add_precompiled(fif_env, "/", f64_div, { fif::fif_f64, fif::fif_f64, -1, fif::fif_f64 });
+
+	add_precompiled(fif_env, "mod", simod, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, "mod", uimod, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, "mod", uimod, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_ui64 });
+	add_precompiled(fif_env, "mod", simod, { fif::fif_i64, fif::fif_i64, -1, fif::fif_i64 });
+	add_precompiled(fif_env, "mod", simod, { fif::fif_i16, fif::fif_i16, -1, fif::fif_i16 });
+	add_precompiled(fif_env, "mod", uimod, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, "mod", simod, { fif::fif_i8, fif::fif_i8, -1, fif::fif_i8 });
+	add_precompiled(fif_env, "mod", uimod, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_ui8 });
+	add_precompiled(fif_env, "mod", f32_mod, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
+	add_precompiled(fif_env, "mod", f64_mod, { fif::fif_f64, fif::fif_f64, -1, fif::fif_f64 });
+
+	add_precompiled(fif_env, "*", imul, { fif::fif_i32, fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, "*", imul, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, "*", imul, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_ui64 });
+	add_precompiled(fif_env, "*", imul, { fif::fif_i64, fif::fif_i64, -1, fif::fif_i64 });
+	add_precompiled(fif_env, "*", imul, { fif::fif_i16, fif::fif_i16, -1, fif::fif_i16 });
+	add_precompiled(fif_env, "*", imul, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, "*", imul, { fif::fif_i8, fif::fif_i8, -1, fif::fif_i8 });
+	add_precompiled(fif_env, "*", imul, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, "*", f32_mul, { fif::fif_f32, fif::fif_f32, -1, fif::fif_f32 });
-	add_precompiled(fif_env, "<", i32_lt, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
-	add_precompiled(fif_env, "<=", i32_le, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
-	add_precompiled(fif_env, ">", i32_gt, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
-	add_precompiled(fif_env, ">=", i32_ge, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
-	add_precompiled(fif_env, "=", i32_eq, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
-	add_precompiled(fif_env, "<>", i32_ne, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
-	
+	add_precompiled(fif_env, "*", f64_mul, { fif::fif_f64, fif::fif_f64, -1, fif::fif_f64 });
+
+	add_precompiled(fif_env, "<", ilt, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", ile, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", igt, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", ige, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_i32, fif::fif_i32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<", ilt, { fif::fif_i64, fif::fif_i64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", ile, { fif::fif_i64, fif::fif_i64, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", igt, { fif::fif_i64, fif::fif_i64, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", ige, { fif::fif_i64, fif::fif_i64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_i64, fif::fif_i64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_i64, fif::fif_i64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<", ilt, { fif::fif_i16, fif::fif_i16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", ile, { fif::fif_i16, fif::fif_i16, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", igt, { fif::fif_i16, fif::fif_i16, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", ige, { fif::fif_i16, fif::fif_i16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_i16, fif::fif_i16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_i16, fif::fif_i16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<", ilt, { fif::fif_i8, fif::fif_i8, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", ile, { fif::fif_i8, fif::fif_i8, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", igt, { fif::fif_i8, fif::fif_i8, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", ige, { fif::fif_i8, fif::fif_i8, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_i8, fif::fif_i8, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_i8, fif::fif_i8, -1, fif::fif_bool });
+
+	add_precompiled(fif_env, "<", uilt, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", uile, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", uigt, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", uige, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_ui32, fif::fif_ui32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<", uilt, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", uile, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", uigt, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", uige, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_ui64, fif::fif_ui64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<", uilt, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", uile, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", uigt, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", uige, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_ui16, fif::fif_ui16, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<", uilt, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", uile, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", uigt, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", uige, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", ieq, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_ui8, fif::fif_ui8, -1, fif::fif_bool });
+
+	add_precompiled(fif_env, "<", f32lt, { fif::fif_f32, fif::fif_f32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", f32le, { fif::fif_f32, fif::fif_f32, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", f32gt, { fif::fif_f32, fif::fif_f32, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", f32ge, { fif::fif_f32, fif::fif_f32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", f32eq, { fif::fif_f32, fif::fif_f32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", f32ne, { fif::fif_f32, fif::fif_f32, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<", f64lt, { fif::fif_f64, fif::fif_f64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<=", f64le, { fif::fif_f64, fif::fif_f64, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">", f64gt, { fif::fif_f64, fif::fif_f64, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">=", f64ge, { fif::fif_f64, fif::fif_f64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "=", f64eq, { fif::fif_f64, fif::fif_f64, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", f64ne, { fif::fif_f64, fif::fif_f64, -1, fif::fif_bool });
+
+	add_precompiled(fif_env, "=", ieq, { fif::fif_bool, fif::fif_bool, -1, fif::fif_bool });
+	add_precompiled(fif_env, "<>", ine, { fif::fif_bool, fif::fif_bool, -1, fif::fif_bool });
+
 	add_precompiled(fif_env, ">i64", zext_i64, { fif::fif_ui64, -1, fif::fif_i64 });
 	add_precompiled(fif_env, ">i64", zext_i64, { fif::fif_ui32, -1, fif::fif_i64 });
 	add_precompiled(fif_env, ">i64", zext_i64, { fif::fif_ui16, -1, fif::fif_i64 });
@@ -7910,6 +9146,8 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ">i64", sext_i64, { fif::fif_i16, -1, fif::fif_i64 });
 	add_precompiled(fif_env, ">i64", sext_i64, { fif::fif_i8, -1, fif::fif_i64 });
 	add_precompiled(fif_env, ">i64", zext_i64, { fif::fif_bool, -1, fif::fif_i64 });
+	add_precompiled(fif_env, ">i64", f32i64, { fif::fif_f32, -1, fif::fif_i64 });
+	add_precompiled(fif_env, ">i64", f64i64, { fif::fif_f64, -1, fif::fif_i64 });
 
 	add_precompiled(fif_env, ">ui64", nop1, { fif::fif_ui64, -1, fif::fif_ui64 });
 	add_precompiled(fif_env, ">ui64", zext_ui64, { fif::fif_ui32, -1, fif::fif_ui64 });
@@ -7920,19 +9158,23 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ">ui64", sext_ui64, { fif::fif_i16, -1, fif::fif_ui64 });
 	add_precompiled(fif_env, ">ui64", sext_ui64, { fif::fif_i8, -1, fif::fif_ui64 });
 	add_precompiled(fif_env, ">ui64", zext_ui64, { fif::fif_bool, -1, fif::fif_ui64 });
+	add_precompiled(fif_env, ">ui64", f32ui64, { fif::fif_f32, -1, fif::fif_ui64 });
+	add_precompiled(fif_env, ">ui64", f64ui64, { fif::fif_f64, -1, fif::fif_ui64 });
 
 	add_precompiled(fif_env, ">i32", trunc_i32, { fif::fif_ui64, -1, fif::fif_i32 });
 	add_precompiled(fif_env, ">i32", zext_i32, { fif::fif_ui32, -1, fif::fif_i32 });
 	add_precompiled(fif_env, ">i32", zext_i32, { fif::fif_ui16, -1, fif::fif_i32 });
 	add_precompiled(fif_env, ">i32", zext_i32, { fif::fif_ui8, -1, fif::fif_i32 });
 	add_precompiled(fif_env, ">i32", trunc_i32, { fif::fif_i64, -1, fif::fif_i32 });
-	add_precompiled(fif_env, ">i32", nop1, { fif::fif_i32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, ">i32", idents32, { fif::fif_i32, -1, fif::fif_i32 });
 	add_precompiled(fif_env, ">i32", sext_i32, { fif::fif_i16, -1, fif::fif_i32 });
 	add_precompiled(fif_env, ">i32", sext_i32, { fif::fif_i8, -1, fif::fif_i32 });
 	add_precompiled(fif_env, ">i32", zext_i32, { fif::fif_bool, -1, fif::fif_i32 });
+	add_precompiled(fif_env, ">i32", f32i32, { fif::fif_f32, -1, fif::fif_i32 });
+	add_precompiled(fif_env, ">i32", f64i32, { fif::fif_f64, -1, fif::fif_i32 });
 
 	add_precompiled(fif_env, ">ui32", trunc_ui32, { fif::fif_ui64, -1, fif::fif_ui32 });
-	add_precompiled(fif_env, ">ui32", nop1, { fif::fif_ui32, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, ">ui32", ident32, { fif::fif_ui32, -1, fif::fif_ui32 });
 	add_precompiled(fif_env, ">ui32", zext_ui32, { fif::fif_ui16, -1, fif::fif_ui32 });
 	add_precompiled(fif_env, ">ui32", zext_ui32, { fif::fif_ui8, -1, fif::fif_ui32 });
 	add_precompiled(fif_env, ">ui32", trunc_ui32, { fif::fif_i64, -1, fif::fif_ui32 });
@@ -7940,6 +9182,8 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ">ui32", sext_ui32, { fif::fif_i16, -1, fif::fif_ui32 });
 	add_precompiled(fif_env, ">ui32", sext_ui32, { fif::fif_i8, -1, fif::fif_ui32 });
 	add_precompiled(fif_env, ">ui32", zext_ui32, { fif::fif_bool, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, ">i64", f32ui32, { fif::fif_f32, -1, fif::fif_ui32 });
+	add_precompiled(fif_env, ">i64", f64ui32, { fif::fif_f64, -1, fif::fif_ui32 });
 
 	add_precompiled(fif_env, ">i16", trunc_i16, { fif::fif_ui64, -1, fif::fif_i16 });
 	add_precompiled(fif_env, ">i16", trunc_i16, { fif::fif_ui32, -1, fif::fif_i16 });
@@ -7947,19 +9191,23 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ">i16", zext_i16, { fif::fif_ui8, -1, fif::fif_i16 });
 	add_precompiled(fif_env, ">i16", trunc_i16, { fif::fif_i64, -1, fif::fif_i16 });
 	add_precompiled(fif_env, ">i16", trunc_i16, { fif::fif_i32, -1, fif::fif_i16 });
-	add_precompiled(fif_env, ">i16", nop1, { fif::fif_i16, -1, fif::fif_i16 });
+	add_precompiled(fif_env, ">i16", idents16, { fif::fif_i16, -1, fif::fif_i16 });
 	add_precompiled(fif_env, ">i16", sext_i16, { fif::fif_i8, -1, fif::fif_i16 });
 	add_precompiled(fif_env, ">i16", zext_i16, { fif::fif_bool, -1, fif::fif_i16 });
+	add_precompiled(fif_env, ">i16", f32i16, { fif::fif_f32, -1, fif::fif_i16 });
+	add_precompiled(fif_env, ">i16", f64i16, { fif::fif_f64, -1, fif::fif_i16 });
 
 	add_precompiled(fif_env, ">ui16", trunc_ui16, { fif::fif_ui64, -1, fif::fif_ui16 });
 	add_precompiled(fif_env, ">ui16", trunc_ui16, { fif::fif_ui32, -1, fif::fif_ui16 });
-	add_precompiled(fif_env, ">ui16", nop1, { fif::fif_ui16, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, ">ui16", ident16, { fif::fif_ui16, -1, fif::fif_ui16 });
 	add_precompiled(fif_env, ">ui16", zext_ui16, { fif::fif_ui8, -1, fif::fif_ui16 });
 	add_precompiled(fif_env, ">ui16", trunc_ui16, { fif::fif_i64, -1, fif::fif_ui16 });
 	add_precompiled(fif_env, ">ui16", trunc_ui16, { fif::fif_i32, -1, fif::fif_ui16 });
 	add_precompiled(fif_env, ">ui16", sext_ui16, { fif::fif_i16, -1, fif::fif_ui16 });
 	add_precompiled(fif_env, ">ui16", sext_ui16, { fif::fif_i8, -1, fif::fif_ui16 });
 	add_precompiled(fif_env, ">ui16", zext_ui16, { fif::fif_bool, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, ">ui16", f32ui16, { fif::fif_f32, -1, fif::fif_ui16 });
+	add_precompiled(fif_env, ">ui16", f64ui16, { fif::fif_f64, -1, fif::fif_ui16 });
 
 	add_precompiled(fif_env, ">i8", trunc_i8, { fif::fif_ui64, -1, fif::fif_i8 });
 	add_precompiled(fif_env, ">i8", trunc_i8, { fif::fif_ui32, -1, fif::fif_i8 });
@@ -7968,18 +9216,44 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ">i8", trunc_i8, { fif::fif_i64, -1, fif::fif_i8 });
 	add_precompiled(fif_env, ">i8", trunc_i8, { fif::fif_i32, -1, fif::fif_i8 });
 	add_precompiled(fif_env, ">i8", trunc_i8, { fif::fif_i16, -1, fif::fif_i8 });
-	add_precompiled(fif_env, ">i8", nop1, { fif::fif_i8, -1, fif::fif_i8 });
+	add_precompiled(fif_env, ">i8", idents8, { fif::fif_i8, -1, fif::fif_i8 });
 	add_precompiled(fif_env, ">i8", zext_i8, { fif::fif_bool, -1, fif::fif_i8 });
+	add_precompiled(fif_env, ">i8", f32i8, { fif::fif_f32, -1, fif::fif_i8 });
+	add_precompiled(fif_env, ">i8", f64i8, { fif::fif_f64, -1, fif::fif_i8 });
 
 	add_precompiled(fif_env, ">ui8", trunc_ui8, { fif::fif_ui64, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, ">ui8", trunc_ui8, { fif::fif_ui32, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, ">ui8", trunc_ui8, { fif::fif_ui16, -1, fif::fif_ui8 });
-	add_precompiled(fif_env, ">ui8", nop1, { fif::fif_ui8, -1, fif::fif_ui8 });
+	add_precompiled(fif_env, ">ui8", ident8, { fif::fif_ui8, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, ">ui8", trunc_ui8, { fif::fif_i64, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, ">ui8", trunc_ui8, { fif::fif_i32, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, ">ui8", trunc_ui8, { fif::fif_i16, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, ">ui8", sext_ui8, { fif::fif_i8, -1, fif::fif_ui8 });
 	add_precompiled(fif_env, ">ui8", zext_ui8, { fif::fif_bool, -1, fif::fif_ui8 });
+	add_precompiled(fif_env, ">ui8", f32ui8, { fif::fif_f32, -1, fif::fif_ui8 });
+	add_precompiled(fif_env, ">ui8", f64ui8, { fif::fif_f64, -1, fif::fif_ui8 });
+
+	add_precompiled(fif_env, ">f32", uif32, { fif::fif_ui64, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", uif32, { fif::fif_ui32, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", uif32, { fif::fif_ui16, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", uif32, { fif::fif_ui8, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", sif32, { fif::fif_i64, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", sif32, { fif::fif_i32, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", sif32, { fif::fif_i16, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", sif32, { fif::fif_i8, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", nop1, { fif::fif_f32, -1, fif::fif_f32 });
+	add_precompiled(fif_env, ">f32", ftrunc, { fif::fif_f64, -1, fif::fif_f32 });
+
+	add_precompiled(fif_env, ">f64", uif64, { fif::fif_ui64, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", uif64, { fif::fif_ui32, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", uif64, { fif::fif_ui16, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", uif64, { fif::fif_ui8, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", sif64, { fif::fif_i64, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", sif64, { fif::fif_i32, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", sif64, { fif::fif_i16, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", sif64, { fif::fif_i8, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", fext, { fif::fif_f32, -1, fif::fif_f64 });
+	add_precompiled(fif_env, ">f64", nop1, { fif::fif_f64, -1, fif::fif_f64 });
 
 	add_precompiled(fif_env, ">bool", trunc_i1, { fif::fif_ui64, -1, fif::fif_bool });
 	add_precompiled(fif_env, ">bool", trunc_i1, { fif::fif_ui32, -1, fif::fif_bool });
@@ -7989,7 +9263,7 @@ void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, ">bool", trunc_i1, { fif::fif_i32, -1, fif::fif_bool });
 	add_precompiled(fif_env, ">bool", trunc_i1, { fif::fif_i16, -1, fif::fif_bool });
 	add_precompiled(fif_env, ">bool", trunc_i1, { fif::fif_i8, -1, fif::fif_bool });
-	add_precompiled(fif_env, ">bool", nop1, { fif::fif_bool, -1, fif::fif_bool });
+	add_precompiled(fif_env, ">bool", ident1, { fif::fif_bool, -1, fif::fif_bool });
 
 	add_precompiled(fif_env, "and", bit_and, { fif::fif_ui64, fif_ui64, -1, fif::fif_ui64 });
 	add_precompiled(fif_env, "and", bit_and, { fif::fif_ui32, fif_ui32, -1, fif::fif_ui32 });

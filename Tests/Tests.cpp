@@ -2166,6 +2166,10 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		fif::run_fif_interpreter(fif_env,
 			"set-container ",
 			values);
+		values.push_back_main(fif::fif_opaque_ptr, (int64_t)(dcon::shared_backing_storage.allocation), nullptr);
+		fif::run_fif_interpreter(fif_env,
+			"set-vector-storage ",
+			values);
 
 		fif::run_fif_interpreter(fif_env,
 			"0 >thingy_id some_value @ ",
@@ -2177,6 +2181,159 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_data(0) == 42);
 		CHECK(values.main_type(0) == fif::fif_i32);
+
+		values.pop_main();
+
+		auto thandleb = container->create_thingy();
+		container->thingy_set_bf_value(thandleb, true);
+
+		fif::run_fif_interpreter(fif_env,
+			"1 >thingy_id bf_value @ ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 1);
+		CHECK(values.main_type(0) == fif::fif_bool);
+
+		values.pop_main();
+
+		fif::run_fif_interpreter(fif_env,
+			"0 >thingy_id bf_value @ ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 0);
+		CHECK(values.main_type(0) == fif::fif_bool);
+		values.pop_main();
+
+		fif::run_fif_interpreter(fif_env,
+			"true 0 >thingy_id bf_value ! ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 0);
+		CHECK(values.return_size() == 0);
+
+		CHECK(container->thingy_get_bf_value(thandle) == true);
+
+		container->thingy_resize_big_array(7);
+		container->thingy_set_big_array(thandleb, 3, 2.5f);
+
+		fif::run_fif_interpreter(fif_env,
+			"1 >thingy_id 3 big_array @ ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		float fvalue = 2.5f;
+		int64_t ivalue = 0;
+		memcpy(&ivalue, &fvalue, 4);
+		CHECK(values.main_data(0) == ivalue);
+		CHECK(values.main_type(0) == fif::fif_f32);
+		values.pop_main();
+
+
+		container->thingy_resize_big_array_bf(13);
+		container->thingy_set_big_array_bf(thandle, 6, true);
+
+		fif::run_fif_interpreter(fif_env,
+			"0 >thingy_id 6 big_array_bf @ ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 1);
+		CHECK(values.main_type(0) == fif::fif_bool);
+		values.pop_main();
+
+		auto vp = container->thingy_get_pooled_v(thandleb);
+		vp.push_back(4);
+		vp.push_back(18);
+		vp.push_back(21);
+
+		fif::run_fif_interpreter(fif_env,
+			"1 >thingy_id pooled_v size ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 3);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		values.pop_main();
+
+		fif::run_fif_interpreter(fif_env,
+			"0 >thingy_id pooled_v size ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		values.pop_main();
+
+		fif::run_fif_interpreter(fif_env,
+			"1 >thingy_id pooled_v 1 index @ ",
+			values);
+		
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 18);
+		CHECK(values.main_type(0) == fif::fif_i16);
+		values.pop_main();
+
+		auto pa  = container->create_person(); 
+		auto pb = container->create_person();
+
+		auto ca = container->create_car();
+		auto cb = container->create_car();
+		auto cc = container->create_car();
+
+		container->force_create_car_ownership(pa, cb);
+		container->force_create_car_ownership(pb, ca);
+		container->force_create_car_ownership(pb, cc);
+
+		container->person_set_age(pb, 80);
+
+		fif::run_fif_interpreter(fif_env,
+			"2 >car_id car_ownership-owned_car @ owner @ age @",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 80);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		values.pop_main();
+
+		fif::run_fif_interpreter(fif_env,
+			"thingy-size ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 2);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		values.pop_main();
 	}
 	SECTION("read_value llvm") {
 		auto container = std::make_unique<dcon::data_container>();
@@ -2194,6 +2351,28 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 
 		auto thandle = container->create_thingy();
 		container->thingy_set_some_value(thandle, 42);
+		auto thandleb = container->create_thingy();
+		container->thingy_set_bf_value(thandleb, true);
+		container->thingy_resize_big_array(7);
+		container->thingy_set_big_array(thandleb, 3, 2.5f);
+		container->thingy_resize_big_array_bf(13);
+		container->thingy_set_big_array_bf(thandle, 6, true);
+		auto vp = container->thingy_get_pooled_v(thandleb);
+		vp.push_back(4);
+		vp.push_back(18);
+		vp.push_back(21);
+		auto pa = container->create_person();
+		auto pb = container->create_person();
+
+		auto ca = container->create_car();
+		auto cb = container->create_car();
+		auto cc = container->create_car();
+
+		container->force_create_car_ownership(pa, cb);
+		container->force_create_car_ownership(pb, ca);
+		container->force_create_car_ownership(pb, cc);
+
+		container->person_set_age(pb, 80);
 
 		fif::run_fif_interpreter(fif_env,
 			fif::container_interface(),
@@ -2201,7 +2380,21 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 
 		fif::run_fif_interpreter(fif_env,
 			": t 0 >thingy_id some_value @ ; "
-			":export test_jit_fn t ; ",
+			": t2 1 >thingy_id bf_value @ ; "
+			": t3 true 0 >thingy_id bf_value ! ; "
+			": t4 1 >thingy_id 3 big_array @ ; "
+			": t5 0 >thingy_id 6 big_array_bf @ ; "
+			": t6 1 >thingy_id pooled_v size ; "
+			": t7 1 >thingy_id pooled_v 1 index @ ; "
+			": t8 2 >car_id car_ownership-owned_car @ owner @ age @ ; "
+			":export test_jit_fn t ; "
+			":export test_jit_fnB t2 ; "
+			":export test_jit_fnC t3 ; "
+			":export test_jit_fnD t4 ; "
+			":export test_jit_fnE t5 ; "
+			":export test_jit_fnF t6 ; "
+			":export test_jit_fnG t7 ; "
+			":export test_jit_fnH t8 ; ",
 			values);
 
 		CHECK(error_count == 0);
@@ -2229,6 +2422,21 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		}
 		{
 			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "set_vector_storage");
+			REQUIRE(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = void(*)(void*);
+				ftype fn = (ftype)bare_address;
+				fn(dcon::shared_backing_storage.allocation);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
 			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
 			CHECK(!(error));
 			if(error) {
@@ -2240,6 +2448,113 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 				using ftype = int32_t(*)();
 				ftype fn = (ftype)bare_address;
 				CHECK(fn() == 42);
+			}
+		}
+
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fnB");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = bool(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == true);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fnC");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = void(*)();
+				ftype fn = (ftype)bare_address;
+				fn();
+				CHECK(container->thingy_get_bf_value(thandle) == true);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fnD");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = float(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 2.5f);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fnE");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = bool(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == true);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fnF");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 3);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fnG");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int16_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 18);
+			}
+		}
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fnH");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 80);
 			}
 		}
 	}
