@@ -995,6 +995,31 @@ TEST_CASE("variables test", "fif combined tests") {
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.main_data(0) == 2);
 	}
+	SECTION("custom swap bytecode") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
+			": cswap { ( a b ) b a } ; "
+			": t 1 cswap ; "
+			"2.5 t drop ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(0) == 1);
+	}
 	SECTION("let llvm") {
 		fif::environment fif_env;
 		fif::initialize_standard_vocab(fif_env);
@@ -1035,6 +1060,50 @@ TEST_CASE("variables test", "fif combined tests") {
 			using ftype = int32_t(*)();
 			ftype fn = (ftype)bare_address;
 			CHECK(fn() == 2);
+		}
+	}
+	SECTION("custom swap llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+
+		fif::run_fif_interpreter(fif_env,
+			": cswap { ( a b ) b a } ; "
+			": t 1 cswap drop ; "
+			":export test_jit_fn f32 t ; ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		LLVMOrcExecutorAddress bare_address = 0;
+		auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+
+		CHECK(!(error));
+		if(error) {
+			auto msg = LLVMGetErrorMessage(error);
+			std::cout << msg << std::endl;
+			LLVMDisposeErrorMessage(msg);
+		} else {
+			REQUIRE(bare_address != 0);
+			using ftype = int32_t(*)(float);
+			ftype fn = (ftype)bare_address;
+			CHECK(fn(3.0f) == 1);
 		}
 	}
 

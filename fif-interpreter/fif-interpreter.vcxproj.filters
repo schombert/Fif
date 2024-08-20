@@ -113,5 +113,8 @@
     <ClInclude Include="llvm-c\Transforms\PassBuilder.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="fif_language.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
