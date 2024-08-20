@@ -49,6 +49,7 @@ namespace dcon {
 		bool car_wheels : 1;
 		bool car_resale_value : 1;
 		bool person : 1;
+		bool person__index : 1;
 		bool person_age : 1;
 		bool car_ownership : 1;
 		bool car_ownership_owner : 1;
@@ -66,6 +67,7 @@ namespace dcon {
 			car_wheels = false;
 			car_resale_value = false;
 			person = false;
+			person__index = false;
 			person_age = false;
 			car_ownership = false;
 			car_ownership_owner = false;
@@ -438,6 +440,17 @@ namespace dcon {
 			friend std::string fif::container_interface();
 			private:
 			//
+			// storage space for _index of type person_id
+			//
+			struct dtype__index {
+				person_id values[100];
+				DCON_RELEASE_INLINE auto vptr() const { return values; }
+				DCON_RELEASE_INLINE auto vptr() { return values; }
+				dtype__index() { std::uninitialized_value_construct_n(values, 100); }
+			}
+			m__index;
+			
+			//
 			// storage space for age of type int32_t
 			//
 			struct alignas(64) dtype_age {
@@ -449,11 +462,16 @@ namespace dcon {
 			}
 			m_age;
 			
+			person_id first_free = person_id();
 			uint32_t size_used = 0;
 
 
 			public:
 			person_class() {
+				for(int32_t i = 100 - 1; i >= 0; --i) {
+					m__index.vptr()[i] = first_free;
+					first_free = person_id(uint8_t(i));
+				}
 			}
 			friend data_container;
 		};
@@ -468,10 +486,9 @@ namespace dcon {
 		class alignas(64) car_ownership_class {
 			friend const_object_iterator_car_ownership;
 			friend object_iterator_car_ownership;
+			friend std::string fif::container_interface();
 			friend const_iterator_person_foreach_car_ownership_as_owner;
 			friend iterator_person_foreach_car_ownership_as_owner;
-			friend std::string fif::container_interface();
-			friend void unknown_fn();
 			private:
 			//
 			// storage space for ownership_date of type int32_t
@@ -1220,38 +1237,6 @@ namespace dcon {
 			DCON_RELEASE_INLINE person_fat_id operator*() const noexcept {
 				return person_fat_id(container, person_id(person_id::value_base_t(index)));
 			}
-			DCON_RELEASE_INLINE object_iterator_person& operator+=(int32_t n) noexcept {
-				index = uint32_t(int32_t(index) + n);
-				return *this;
-			}
-			DCON_RELEASE_INLINE object_iterator_person& operator-=(int32_t n) noexcept {
-				index = uint32_t(int32_t(index) - n);
-				return *this;
-			}
-			DCON_RELEASE_INLINE object_iterator_person operator+(int32_t n) const noexcept {
-				return object_iterator_person(container, uint32_t(int32_t(index) + n));
-			}
-			DCON_RELEASE_INLINE object_iterator_person operator-(int32_t n) const noexcept {
-				return object_iterator_person(container, uint32_t(int32_t(index) - n));
-			}
-			DCON_RELEASE_INLINE int32_t operator-(object_iterator_person const& o) const noexcept {
-				return int32_t(index) - int32_t(o.index);
-			}
-			DCON_RELEASE_INLINE bool operator>(object_iterator_person const& o) const noexcept {
-				return index > o.index;
-			}
-			DCON_RELEASE_INLINE bool operator>=(object_iterator_person const& o) const noexcept {
-				return index >= o.index;
-			}
-			DCON_RELEASE_INLINE bool operator<(object_iterator_person const& o) const noexcept {
-				return index < o.index;
-			}
-			DCON_RELEASE_INLINE bool operator<=(object_iterator_person const& o) const noexcept {
-				return index <= o.index;
-			}
-			DCON_RELEASE_INLINE person_fat_id operator[](int32_t n) const noexcept {
-				return person_fat_id(container, person_id(person_id::value_base_t(int32_t(index) + n)));
-			}
 		};
 		class const_object_iterator_person {
 			private:
@@ -1269,38 +1254,6 @@ namespace dcon {
 			}
 			DCON_RELEASE_INLINE person_const_fat_id operator*() const noexcept {
 				return person_const_fat_id(container, person_id(person_id::value_base_t(index)));
-			}
-			DCON_RELEASE_INLINE const_object_iterator_person& operator+=(int32_t n) noexcept {
-				index = uint32_t(int32_t(index) + n);
-				return *this;
-			}
-			DCON_RELEASE_INLINE const_object_iterator_person& operator-=(int32_t n) noexcept {
-				index = uint32_t(int32_t(index) - n);
-				return *this;
-			}
-			DCON_RELEASE_INLINE const_object_iterator_person operator+(int32_t n) const noexcept {
-				return const_object_iterator_person(container, uint32_t(int32_t(index) + n));
-			}
-			DCON_RELEASE_INLINE const_object_iterator_person operator-(int32_t n) const noexcept {
-				return const_object_iterator_person(container, uint32_t(int32_t(index) - n));
-			}
-			DCON_RELEASE_INLINE int32_t operator-(const_object_iterator_person const& o) const noexcept {
-				return int32_t(index) - int32_t(o.index);
-			}
-			DCON_RELEASE_INLINE bool operator>(const_object_iterator_person const& o) const noexcept {
-				return index > o.index;
-			}
-			DCON_RELEASE_INLINE bool operator>=(const_object_iterator_person const& o) const noexcept {
-				return index >= o.index;
-			}
-			DCON_RELEASE_INLINE bool operator<(const_object_iterator_person const& o) const noexcept {
-				return index < o.index;
-			}
-			DCON_RELEASE_INLINE bool operator<=(const_object_iterator_person const& o) const noexcept {
-				return index <= o.index;
-			}
-			DCON_RELEASE_INLINE person_const_fat_id operator[](int32_t n) const noexcept {
-				return person_const_fat_id(container, person_id(person_id::value_base_t(int32_t(index) + n)));
 			}
 		};
 		
@@ -1979,7 +1932,7 @@ namespace dcon {
 			std::for_each(temp.begin(), temp.end(), [t = this](car_ownership_id i) { t->car_ownership_set_owner(i, person_id()); });
 		}
 		DCON_RELEASE_INLINE bool person_is_valid(person_id id) const noexcept {
-			return bool(id) && uint32_t(id.index()) < person.size_used;
+			return bool(id) && uint32_t(id.index()) < person.size_used && person.m__index.vptr()[id.index()] == id;
 		}
 		
 		uint32_t person_size() const noexcept { return person.size_used; }
@@ -2267,14 +2220,36 @@ namespace dcon {
 		}
 		
 		//
-		// container pop_back for person
+		// container delete for person
 		//
-		void pop_back_person() {
-			if(person.size_used == 0) return;
-			person_id id_removed(person_id::value_base_t(person.size_used - 1));
+		void delete_person(person_id id_removed) {
+			#ifndef NDEBUG
+			assert(id_removed.index() >= 0);
+			assert(person.m__index.vptr()[id_removed.index()] == id_removed);
+			#endif
+			person.m__index.vptr()[id_removed.index()] = person.first_free;
+			person.first_free = id_removed;
+			if(int32_t(person.size_used) - 1 == id_removed.index()) {
+				for( ; person.size_used > 0 && person.m__index.vptr()[person.size_used - 1] != person_id(person_id::value_base_t(person.size_used - 1));  --person.size_used) ;
+			}
 			person_remove_all_car_ownership_as_owner(id_removed);
 			person.m_age.vptr()[id_removed.index()] = int32_t{};
-			--person.size_used;
+		}
+		
+		//
+		// container create for person
+		//
+		person_id create_person() {
+			#ifndef DCON_USE_EXCEPTIONS
+			if(!bool(person.first_free)) std::abort();
+			#else
+			if(!bool(person.first_free)) throw dcon::out_of_space{};
+			#endif
+			person_id new_id = person.first_free;
+			person.first_free = person.m__index.vptr()[person.first_free.index()];
+			person.m__index.vptr()[new_id.index()] = new_id;
+			person.size_used = std::max(person.size_used, uint32_t(new_id.index() + 1));
+			return new_id;
 		}
 		
 		//
@@ -2288,49 +2263,35 @@ namespace dcon {
 			#endif
 			const uint32_t old_size = person.size_used;
 			if(new_size < old_size) {
+				person.first_free = person_id();
+				int32_t i = int32_t(100 - 1);
+				for(; i >= int32_t(new_size); --i) {
+					person.m__index.vptr()[i] = person.first_free;
+					person.first_free = person_id(person_id::value_base_t(i));
+				}
+				for(; i >= 0; --i) {
+					if(person.m__index.vptr()[i] != person_id(person_id::value_base_t(i))) {
+						person.m__index.vptr()[i] = person.first_free;
+						person.first_free = person_id(person_id::value_base_t(i));
+					}
+				}
 				std::fill_n(person.m_age.vptr() + new_size, old_size - new_size, int32_t{});
 				car_ownership_resize(0);
 			} else if(new_size > old_size) {
+				person.first_free = person_id();
+				int32_t i = int32_t(100 - 1);
+				for(; i >= int32_t(old_size); --i) {
+					person.m__index.vptr()[i] = person.first_free;
+					person.first_free = person_id(person_id::value_base_t(i));
+				}
+				for(; i >= 0; --i) {
+					if(person.m__index.vptr()[i] != person_id(person_id::value_base_t(i))) {
+						person.m__index.vptr()[i] = person.first_free;
+						person.first_free = person_id(person_id::value_base_t(i));
+					}
+				}
 			}
 			person.size_used = new_size;
-		}
-		
-		//
-		// container create for person
-		//
-		person_id create_person() {
-			person_id new_id(person_id::value_base_t(person.size_used));
-			#ifndef DCON_USE_EXCEPTIONS
-			if(person.size_used >= 100) std::abort();
-			#else
-			if(person.size_used >= 100) throw dcon::out_of_space{};
-			#endif
-			++person.size_used;
-			return new_id;
-		}
-		
-		//
-		// container compactable delete for person
-		//
-		void delete_person(person_id id) {
-			person_id id_removed = id;
-			#ifndef NDEBUG
-			assert(id.index() >= 0);
-			assert(uint32_t(id.index()) < person.size_used );
-			assert(person.size_used != 0);
-			#endif
-			person_id last_id(person_id::value_base_t(person.size_used - 1));
-			if(id_removed == last_id) { pop_back_person(); return; }
-			person_remove_all_car_ownership_as_owner(id_removed);
-			person_for_each_car_ownership_as_owner(last_id, [this, id_removed, last_id](car_ownership_id i) {
-				car_ownership.m_owner.vptr()[i.index()] = id_removed;
-			} );
-			car_ownership.owner_storage.release(car_ownership.m_array_owner.vptr()[id_removed.index()]);
-			car_ownership.m_array_owner.vptr()[id_removed.index()] = std::move(car_ownership.m_array_owner.vptr()[last_id.index()]);
-			car_ownership.m_array_owner.vptr()[last_id.index()] = std::numeric_limits<dcon::stable_mk_2_tag>::max();
-			person.m_age.vptr()[id_removed.index()] = std::move(person.m_age.vptr()[last_id.index()]);
-			person.m_age.vptr()[last_id.index()] = int32_t{};
-			--person.size_used;
 		}
 		
 		//
@@ -2471,7 +2432,7 @@ namespace dcon {
 		DCON_RELEASE_INLINE void for_each_person(T&& func) {
 			for(uint32_t i = 0; i < person.size_used; ++i) {
 				person_id tmp = person_id(person_id::value_base_t(i));
-				func(tmp);
+				if(person.m__index.vptr()[tmp.index()] == tmp) func(tmp);
 			}
 		}
 		friend internal::const_object_iterator_person;
@@ -2616,6 +2577,7 @@ namespace dcon {
 			result.car_wheels = true;
 			result.car_resale_value = true;
 			result.person = true;
+			result.person__index = true;
 			result.person_age = true;
 			result.car_ownership = true;
 			result.car_ownership_owner = true;
@@ -2694,6 +2656,11 @@ namespace dcon {
 				dcon::record_header header(0, "uint32_t", "person", "$size");
 				total_size += header.serialize_size();
 				total_size += sizeof(uint32_t);
+			}
+			if(serialize_selection.person__index) {
+				dcon::record_header iheader(0, "uint8_t", "person", "_index");
+				total_size += iheader.serialize_size();
+				total_size += sizeof(person_id) * person.size_used;
 			}
 			if(serialize_selection.person_age) {
 				dcon::record_header iheader(0, "int32_t", "person", "age");
@@ -2817,6 +2784,12 @@ namespace dcon {
 				header.serialize(output_buffer);
 				*(reinterpret_cast<uint32_t*>(output_buffer)) = person.size_used;
 				output_buffer += sizeof(uint32_t);
+			}
+			if(serialize_selection.person__index) {
+				dcon::record_header header(sizeof(person_id) * person.size_used, "uint8_t", "person", "_index");
+				header.serialize(output_buffer);
+				std::memcpy(reinterpret_cast<person_id*>(output_buffer), person.m__index.vptr(), sizeof(person_id) * person.size_used);
+				output_buffer += sizeof(person_id) * person.size_used;
 			}
 			if(serialize_selection.person_age) {
 				dcon::record_header header(sizeof(int32_t) * person.size_used, "int32_t", "person", "age");
@@ -3419,6 +3392,35 @@ namespace dcon {
 								if(header.is_property("$size") && header.record_size == sizeof(uint32_t)) {
 									person_resize(*(reinterpret_cast<uint32_t const*>(input_buffer)));
 									serialize_selection.person = true;
+									break;
+								}
+								if(header.is_property("_index")) {
+									if(header.is_type("uint8_t")) {
+										std::memcpy(person.m__index.vptr(), reinterpret_cast<uint8_t const*>(input_buffer), std::min(size_t(person.size_used) * sizeof(uint8_t), size_t(header.record_size)));
+										serialize_selection.person__index = true;
+									}
+									else if(header.is_type("uint16_t")) {
+										for(uint32_t i = 0; i < std::min(person.size_used, uint32_t(header.record_size / sizeof(uint16_t))); ++i) {
+											person.m__index.vptr()[i].value = uint8_t(*(reinterpret_cast<uint16_t const*>(input_buffer) + i));
+										}
+										serialize_selection.person__index = true;
+									}
+									else if(header.is_type("uint32_t")) {
+										for(uint32_t i = 0; i < std::min(person.size_used, uint32_t(header.record_size / sizeof(uint32_t))); ++i) {
+											person.m__index.vptr()[i].value = uint8_t(*(reinterpret_cast<uint32_t const*>(input_buffer) + i));
+										}
+										serialize_selection.person__index = true;
+									}
+									if(serialize_selection.person__index == true) {
+										person.first_free = person_id();
+										for(int32_t j = 100 - 1; j >= 0; --j) {
+											if(person.m__index.vptr()[j] != person_id(uint8_t(j))) {
+												person.m__index.vptr()[j] = person.first_free;
+												person.first_free = person_id(uint8_t(j));
+											} else {
+											}
+										}
+									}
 									break;
 								}
 								if(header.is_property("age")) {
@@ -4169,6 +4171,35 @@ namespace dcon {
 									serialize_selection.person = true;
 									break;
 								}
+								if(header.is_property("_index") && mask.person__index) {
+									if(header.is_type("uint8_t")) {
+										std::memcpy(person.m__index.vptr(), reinterpret_cast<uint8_t const*>(input_buffer), std::min(size_t(person.size_used) * sizeof(uint8_t), size_t(header.record_size)));
+										serialize_selection.person__index = true;
+									}
+									else if(header.is_type("uint16_t")) {
+										for(uint32_t i = 0; i < std::min(person.size_used, uint32_t(header.record_size / sizeof(uint16_t))); ++i) {
+											person.m__index.vptr()[i].value = uint8_t(*(reinterpret_cast<uint16_t const*>(input_buffer) + i));
+										}
+										serialize_selection.person__index = true;
+									}
+									else if(header.is_type("uint32_t")) {
+										for(uint32_t i = 0; i < std::min(person.size_used, uint32_t(header.record_size / sizeof(uint32_t))); ++i) {
+											person.m__index.vptr()[i].value = uint8_t(*(reinterpret_cast<uint32_t const*>(input_buffer) + i));
+										}
+										serialize_selection.person__index = true;
+									}
+									if(serialize_selection.person__index == true) {
+										person.first_free = person_id();
+										for(int32_t j = 100 - 1; j >= 0; --j) {
+											if(person.m__index.vptr()[j] != person_id(uint8_t(j))) {
+												person.m__index.vptr()[j] = person.first_free;
+												person.first_free = person_id(uint8_t(j));
+											} else {
+											}
+										}
+									}
+									break;
+								}
 								if(header.is_property("age") && mask.person_age) {
 									if(header.is_type("int32_t")) {
 										std::memcpy(person.m_age.vptr(), reinterpret_cast<int32_t const*>(input_buffer), std::min(size_t(person.size_used) * sizeof(int32_t), size_t(header.record_size)));
@@ -4633,23 +4664,41 @@ namespace dcon {
 		}
 		
 		DCON_RELEASE_INLINE object_iterator_person::object_iterator_person(data_container& c, uint32_t i) noexcept : container(c), index(i) {
+			while(container.person.m__index.vptr()[index] != person_id(person_id::value_base_t(index)) && index < container.person.size_used) {
+				++index;
+			}
 		}
 		DCON_RELEASE_INLINE const_object_iterator_person::const_object_iterator_person(data_container const& c, uint32_t i) noexcept : container(c), index(i) {
+			while(container.person.m__index.vptr()[index] != person_id(person_id::value_base_t(index)) && index < container.person.size_used) {
+				++index;
+			}
 		}
 		DCON_RELEASE_INLINE object_iterator_person& object_iterator_person::operator++() noexcept {
 			++index;
+			while(container.person.m__index.vptr()[index] != person_id(person_id::value_base_t(index)) && index < container.person.size_used) {
+				++index;
+			}
 			return *this;
 		}
 		DCON_RELEASE_INLINE const_object_iterator_person& const_object_iterator_person::operator++() noexcept {
 			++index;
+			while(container.person.m__index.vptr()[index] != person_id(person_id::value_base_t(index)) && index < container.person.size_used) {
+				++index;
+			}
 			return *this;
 		}
 		DCON_RELEASE_INLINE object_iterator_person& object_iterator_person::operator--() noexcept {
 			--index;
+			while(container.person.m__index.vptr()[index] != person_id(person_id::value_base_t(index)) && index < container.person.size_used) {
+				--index;
+			}
 			return *this;
 		}
 		DCON_RELEASE_INLINE const_object_iterator_person& const_object_iterator_person::operator--() noexcept {
 			--index;
+			while(container.person.m__index.vptr()[index] != person_id(person_id::value_base_t(index)) && index < container.person.size_used) {
+				--index;
+			}
 			return *this;
 		}
 		

@@ -233,7 +233,7 @@ inline std::string size_to_tag_type(size_t sz) {
 		return "uint32_t";
 	} else if(sz <= 126) {
 		return "uint8_t";
-	} else if(sz <= std::numeric_limits<int16_t>::max() - 1) {
+	} else if(sz <= size_t(std::numeric_limits<int16_t>::max() - 1)) {
 		return "uint16_t";
 	}
 	return "uint32_t";

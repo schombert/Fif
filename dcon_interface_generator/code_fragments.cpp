@@ -2,27 +2,25 @@
 
 std::string type_to_fif_type(std::string const& tin) {
 	if(tin == "uint32_t")
-		return "i32";
+		return "u32";
 	else if(tin == "int32_t")
 		return "i32";
 	else if(tin == "int16_t")
 		return "i16";
 	else if(tin == "uint16_t")
-		return "i16";
+		return "u16";
 	else if(tin == "int8_t")
 		return "i8";
 	else if(tin == "uint8_t")
-		return "i8";
+		return "u8";
 	else if(tin == "int64_t")
 		return "i64";
 	else if(tin == "uint64_t")
-		return "i64";
+		return "u64";
 	else if(tin == "float")
 		return "f32";
 	else if(tin == "double")
 		return "f64";
-	else if(tin == "int16_t")
-		return "i16";
 	else if(tin == "bool")
 		return "bool";
 	else
@@ -49,8 +47,6 @@ bool known_as_fif_type(std::string const& tin) {
 		return true;
 	else if(tin == "double")
 		return true;
-	else if(tin == "int16_t")
-		return true;
 	else if(tin == "bool")
 		return true;
 	else
@@ -64,7 +60,7 @@ std::string make_id_definition(std::string const& type_name, std::string const& 
 		+ std::string("\":s >") + type_name + " i32 s: 1 + >" + type_to_fif_type(underlying_type) + " make " + type_name + " .ival! ; \"\n"
 		+ std::string("\":s = ") + type_name + " " + type_name + " s: .ival swap .ival = ; \"\n"
 		+ std::string("\":s @ ") + type_name + " s:  ; \"\n"
-		+ std::string("\":s valid? ") + type_name + " s: .ival 0 <> ; \"\n"
+		+ std::string("\":s valid? ") + type_name + " s: .ival >i32 0 <> ; \"\n"
 	;
 }
 
@@ -85,7 +81,7 @@ std::string offset_of_array_member_container(std::string const& object_name, std
 
 	return "\" + std::to_string(" + offset + ") + \"";
 }
-std::string array_member_leading_padding(std::string const& member_type, size_t raw_size, bool is_bitfield) {
+std::string array_member_leading_padding(std::string const& member_type, size_t , bool is_bitfield) {
 	return is_bitfield ? std::string("64") : std::string("\" + std::to_string(") + std::string("sizeof(") + member_type + ") + 64 - (sizeof(" + member_type + ") & 63)" + std::string(") + \"");
 }
 std::string array_member_trailing_padding(std::string const& member_type, size_t raw_size, bool is_bitfield) {

@@ -2312,6 +2312,19 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		container->person_set_age(pb, 80);
 
 		fif::run_fif_interpreter(fif_env,
+			"0 >person_id live? ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 1);
+		CHECK(values.main_type(0) == fif::fif_bool);
+		values.pop_main();
+
+
+		fif::run_fif_interpreter(fif_env,
 			"2 >car_id car_ownership-owned_car @ owner @ age @",
 			values);
 
