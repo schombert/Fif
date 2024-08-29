@@ -2689,7 +2689,7 @@ public:
 		return nullptr;
 	}
 
-	void release_locals() {
+	void delete_locals() const {
 		auto* ws = env.compiler_stack.back()->working_state();
 		for(auto& l : vars) {
 			if(env.dict.type_array[l.second->type].flags != 0) {
@@ -2711,9 +2711,16 @@ public:
 					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 				}
 			}
-			vars.clear();
-			lets.clear();
+		}
+	}
 
+	void release_locals() {
+		delete_locals();
+
+		vars.clear();
+		lets.clear();
+
+		if(auto data_scope = env.compiler_stack.back()->get_lvar_storage(); data_scope) {
 			data_scope->resize(size_t(initial_bank_offset));
 		}
 	}
@@ -3317,6 +3324,7 @@ struct branch_target {
 	bool is_concrete = false;
 
 	inline add_branch_result add_concrete_branch(branch_source&& new_branch, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env);
+	inline add_branch_result add_cb_with_exit_pad(branch_source&& new_branch, locals_holder const& loc, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env);
 	inline add_branch_result add_speculative_branch(state_stack& entry_state, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched);
 	inline void materialize(environment& env); // make blocks, phi nodes
 	inline void finalize(environment& env); // write incoming links
@@ -3367,6 +3375,145 @@ inline add_branch_result branch_target::add_concrete_branch(branch_source&& new_
 		}
 	} else if(env.mode == fif_mode::compiling_llvm) {
 		// nothing to do
+	}
+
+	branches_to_here.emplace_back(std::move(new_branch));
+	return add_branch_result::ok;
+}
+inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new_branch, locals_holder const& loc, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env) {
+	if(!types_on_entry) {
+		types_on_entry = new_branch.stack->copy();
+	} else {
+		if(!stack_types_match(*types_on_entry, *new_branch.stack)) {
+			return add_branch_result::incompatible;
+		}
+	}
+	if(is_concrete) {
+		if(data_stack_touched < ds_touched)
+			return add_branch_result::incompatible;
+		if(return_stack_touched < rs_touched)
+			return add_branch_result::incompatible;
+		for(auto i = locals_altered.size(); i-- > 0;) {
+			if(i > altered_locals.size())
+				return add_branch_result::incompatible;
+			if(locals_altered[i] && !altered_locals[i])
+				return add_branch_result::incompatible;
+		}
+	} else {
+		data_stack_touched = std::max(data_stack_touched, ds_touched);
+		return_stack_touched = std::max(return_stack_touched, rs_touched);
+
+		if(altered_locals.size() < locals_altered.size())
+			altered_locals.resize(locals_altered.size());
+		for(auto i = locals_altered.size(); i-- > 0;) {
+			if(locals_altered[i])
+				altered_locals[i] = true;
+		}
+	}
+
+	if(loc.lets.size() != 0 || loc.vars.size() != 0) {
+		assert(new_branch.write_conditional);
+		if(env.mode == fif_mode::compiling_bytecode) {
+			auto bcode = env.compiler_stack.back()->bytecode_compilation_progress();
+
+			if(new_branch.unconditional_jump) {
+				loc.delete_locals();
+
+				fif_call imm = unconditional_jump;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				bcode->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+				new_branch.jump_bytecode_pos = bcode->size();
+				bcode->push_back(0);
+			} else {
+				size_t forward_jump_pos = 0;
+
+				{
+					fif_call imm = !new_branch.jump_if_true ? reverse_conditional_jump : conditional_jump;
+					uint64_t imm_bytes = 0;
+					memcpy(&imm_bytes, &imm, 8);
+					bcode->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					forward_jump_pos = bcode->size();
+					bcode->push_back(0);
+				}
+				loc.delete_locals();
+				{
+					fif_call imm = unconditional_jump;
+					uint64_t imm_bytes = 0;
+					memcpy(&imm_bytes, &imm, 8);
+					bcode->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+					bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					new_branch.jump_bytecode_pos = bcode->size();
+					bcode->push_back(0);
+				}
+				auto bytecode_location = bcode->size();
+				(*bcode)[forward_jump_pos] = int32_t(bytecode_location - (forward_jump_pos - 2));
+			}
+		} else if(env.mode == fif_mode::compiling_llvm) {
+			auto in_fn = env.compiler_stack.back()->llvm_function();
+
+			auto continuation_branch = new_branch.untaken_block;
+			auto exit_block = LLVMCreateBasicBlockInContext(env.llvm_context, "exit-pad");
+			LLVMAppendExistingBasicBlock(in_fn, exit_block);
+
+			if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
+				auto old_block = *pb;
+				*pb = exit_block;
+
+				LLVMPositionBuilderAtEnd(env.llvm_builder, exit_block);
+				loc.delete_locals();
+
+				LLVMPositionBuilderAtEnd(env.llvm_builder, old_block);
+				if(new_branch.untaken_block) { // conditional jump
+					assert(new_branch.conditional_expression);
+					if(new_branch.jump_if_true)
+						LLVMBuildCondBr(env.llvm_builder, new_branch.conditional_expression, exit_block, new_branch.untaken_block);
+					else
+						LLVMBuildCondBr(env.llvm_builder, new_branch.conditional_expression, new_branch.untaken_block, exit_block);
+				} else {  // unconditional jump
+					LLVMBuildBr(env.llvm_builder, exit_block);
+				}
+
+				new_branch.from_block = exit_block;
+				new_branch.conditional_expression = nullptr;
+				new_branch.unconditional_jump = true;
+				new_branch.untaken_block = nullptr;
+				new_branch.write_conditional = true;
+
+				if(continuation_branch) {
+					*pb = continuation_branch;
+					LLVMPositionBuilderAtEnd(env.llvm_builder, continuation_branch);
+				} else {
+					LLVMPositionBuilderAtEnd(env.llvm_builder, exit_block);
+				}
+			}
+
+		}
+	} else {
+		if(env.mode == fif_mode::compiling_bytecode) {
+			if(new_branch.write_conditional) {
+				auto bcode = env.compiler_stack.back()->bytecode_compilation_progress();
+
+				fif_call imm = new_branch.unconditional_jump ? unconditional_jump : (new_branch.jump_if_true ? reverse_conditional_jump : conditional_jump);
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				bcode->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+				new_branch.jump_bytecode_pos = bcode->size();
+				bcode->push_back(0);
+			}
+		} else if(env.mode == fif_mode::compiling_llvm) {
+			if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
+				if(new_branch.untaken_block) {
+					*pb = new_branch.untaken_block;
+					LLVMPositionBuilderAtEnd(env.llvm_builder, new_branch.untaken_block);
+				} else {
+					// nothing
+				}
+			}
+		}
 	}
 
 	branches_to_here.emplace_back(std::move(new_branch));
@@ -3758,50 +3905,42 @@ class while_loop_scope : public locals_holder {
 public:
 	std::unique_ptr<state_stack> initial_state;
 	std::unique_ptr<state_stack> iworking_state;
-	std::unique_ptr<state_stack> loop_entry_copy;
 
+	std::vector< internal_lvar_data> lvar_store;
+	std::vector<bool> lvar_relet;
+
+	branch_target loop_start;
+	branch_target loop_exit;
+	
 	std::string_view entry_source;
-	size_t loop_entry_point = 0;
-	size_t end_of_loop_branch = 0;
+	fif_mode entry_mode;
+
 	bool phi_pass = false;
 	bool intepreter_skip_body = false;
 	bool saw_conditional = false;
-	bool initial_typechecking_failed = false;
-	LLVMValueRef conditional_expr = nullptr;
-	LLVMBasicBlockRef pre_block = nullptr;
-	LLVMBasicBlockRef entry_block = nullptr;
-	LLVMBasicBlockRef body_block = nullptr;
-	std::vector<LLVMValueRef> phinodes;
+
 
 	while_loop_scope(opaque_compiler_data* p, environment& e, state_stack& entry_state) : locals_holder(p, e) {
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
 		initial_state->min_main_depth = entry_state.min_main_depth;
 		initial_state->min_return_depth = entry_state.min_return_depth;
-		initial_typechecking_failed = typechecking_failed(env.mode);
+		entry_mode = env.mode;
 
 		if(!env.source_stack.empty()) {
 			entry_source = env.source_stack.back();
 		}
-		if(env.mode == fif_mode::compiling_bytecode) {
-			auto bcode = parent->bytecode_compilation_progress();
-			loop_entry_point = bcode->size();
 
-			{
-				fif_call imm2 = enter_scope;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-			}
+		if(typechecking_mode(env.mode)) {
+			if(typechecking_failed(env.mode))
+				return;
+			loop_start.add_speculative_branch(*iworking_state, lvar_relet, 0, 0);
+			return;
+		} else if(env.mode == fif_mode::interpreting) {
+			return;
 		}
-		if(env.mode == fif_mode::compiling_llvm) {
-			phi_pass = true;
-			env.mode = fif_mode::typechecking_lvl_2;
-			if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
-				pre_block = *pb;
-			}
-		}
+		phi_pass = true;
+		env.mode = fif_mode::typechecking_lvl_2;
 	}
 
 	virtual control_structure get_type()override {
@@ -3821,71 +3960,49 @@ public:
 		}
 		saw_conditional = true;
 
-		if(!typechecking_failed(env.mode)) {
+		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+			auto pb = env.compiler_stack.back()->llvm_block();
+
+			if(iworking_state->main_size() == 0) {
+				env.report_error("while loop conditional terminated with an inappropriate value");
+				env.mode = fif_mode::error;
+				return;
+			}
 			if(iworking_state->main_type_back(0) != fif_bool) {
-				if(!typechecking_mode(env.mode)) {
-					env.report_error("while loop conditional expression did not produce a boolean");
-					env.mode = fif_mode::error;
-					return;
-				} else {
-					env.mode = fail_typechecking(env.mode);
-					return;
-				}
+				env.report_error("while loop conditional terminated with an inappropriate value");
+				env.mode = fif_mode::error;
+				return;
+			}
+			
+			auto branch_condition = iworking_state->main_ex_back(0);
+			iworking_state->pop_main();
+
+			LLVMBasicBlockRef continuation = nullptr;
+
+			if(env.mode == fif_mode::compiling_llvm) {
+				auto in_fn = env.compiler_stack.back()->llvm_function();
+				continuation = LLVMCreateBasicBlockInContext(env.llvm_context, "continuation");
+				LLVMAppendExistingBasicBlock(in_fn, continuation);
 			}
 
-			release_locals();
+			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), lvar_store, pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, 0, 0, env);
+		}
 
-			if(env.mode == fif_mode::interpreting) {
-				if(iworking_state->main_data_back(0) == 0) {
-					intepreter_skip_body = true;
-					env.mode = fif_mode::typechecking_lvl1_failed;
-				}
-				iworking_state->pop_main();
-			} else if(env.mode == fif_mode::compiling_bytecode) {
-				auto bcode = parent->bytecode_compilation_progress();
-
-				{
-					fif_call imm2 = leave_scope;
-					uint64_t imm2_bytes = 0;
-					memcpy(&imm2_bytes, &imm2, 8);
-					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-				}
-
-				fif_call imm = conditional_jump;
-				uint64_t imm_bytes = 0;
-				memcpy(&imm_bytes, &imm, 8);
-				bcode->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-				end_of_loop_branch = bcode->size();
-				bcode->push_back(0);
-				iworking_state->pop_main();
-
-				{
-					fif_call imm2 = enter_scope;
-					uint64_t imm2_bytes = 0;
-					memcpy(&imm2_bytes, &imm2, 8);
-					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-				}
-			} else if(env.mode == fif_mode::compiling_llvm) {
-#ifdef USE_LLVM
-				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
-					conditional_expr = iworking_state->main_ex_back(0);
-					iworking_state->pop_main();
-
-					*pb = LLVMCreateBasicBlockInContext(env.llvm_context, "loop_body");
-					body_block = *pb;
-					LLVMAppendExistingBasicBlock(parent->llvm_function(), *pb);
-					LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
-				}
-#endif
-			} else if(typechecking_mode(env.mode)) {
-				iworking_state->pop_main();
-				if(!stack_types_match(*initial_state, *iworking_state)) {
-					env.mode = fail_typechecking(env.mode);
-				}
+		if(!typechecking_failed(env.mode) && typechecking_mode(env.mode)) {
+			if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+				env.mode = fail_typechecking(env.mode);
+				return;
 			}
+			iworking_state->pop_main();
+			loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+			return;
+		} else if(env.mode == fif_mode::interpreting) {
+			if(iworking_state->main_data_back(0) == 0) {
+				intepreter_skip_body = true;
+				env.mode = fif_mode::typechecking_lvl1_failed;
+			}
+			iworking_state->pop_main();
+			return;
 		}
 	}
 	virtual bool finish(environment&) override {
@@ -3893,21 +4010,24 @@ public:
 			env.mode = fif_mode::interpreting;
 			
 			release_locals();
-
 			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
-
-		release_locals();
 
 		if(env.mode == fif_mode::interpreting) {
 			if(!saw_conditional && iworking_state->main_type_back(0) == fif_bool) {
 				if(iworking_state->main_data_back(0) == 0) {
 					iworking_state->pop_main();
+					release_locals();
 					parent->set_working_state(std::move(iworking_state));
 					return true;
 				}
 				iworking_state->pop_main();
+			}
+			if(!saw_conditional && iworking_state->main_type_back(0) != fif_bool) {
+				env.report_error("while loop terminated with an inappropriate conditional");
+				env.mode = fif_mode::error;
+				return true;
 			}
 			saw_conditional = false;
 			if(!env.source_stack.empty())
@@ -3915,60 +4035,69 @@ public:
 			return false;
 		}
 
-		if(env.mode == fif_mode::compiling_bytecode) {
+		auto bcode = parent->bytecode_compilation_progress();
+
+		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+			auto pb = env.compiler_stack.back()->llvm_block();
+
 			if(!saw_conditional) {
-				if(iworking_state->main_type_back(0) == fif_bool) {
-					iworking_state->pop_main();
-				} else {
-					env.report_error("while loop terminated with an appropriate conditional");
+				saw_conditional = true;
+				if(iworking_state->main_size() == 0) {
+					env.report_error("while loop terminated with an inappropriate conditional");
 					env.mode = fif_mode::error;
 					return true;
 				}
+				if(iworking_state->main_type_back(0) != fif_bool) {
+					env.report_error("while loop terminated with an inappropriate conditional");
+					env.mode = fif_mode::error;
+					return true;
+				}
+				auto branch_condition = iworking_state->main_ex_back(0);
+				iworking_state->pop_main();
 
-				auto bcode = parent->bytecode_compilation_progress();
-
-				{
-					fif_call imm2 = leave_scope;
-					uint64_t imm2_bytes = 0;
-					memcpy(&imm2_bytes, &imm2, 8);
-					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				LLVMBasicBlockRef continuation_block = nullptr;
+				if(env.mode == fif_mode::compiling_llvm) {
+					auto in_fn = env.compiler_stack.back()->llvm_function();
+					continuation_block = LLVMCreateBasicBlockInContext(env.llvm_context, "branch-target");
+					LLVMAppendExistingBasicBlock(in_fn, continuation_block);
 				}
 
-				fif_call imm = reverse_conditional_jump;
-				uint64_t imm_bytes = 0;
-				memcpy(&imm_bytes, &imm, 8);
-				bcode->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-				end_of_loop_branch = bcode->size();
-				bcode->push_back(int32_t(int64_t(loop_entry_point) - int64_t(bcode->size() - 2)));
+				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), lvar_store, pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true }, *this,  lvar_relet, 0, 0, env);
 			}
 
-			bool final_types_match = stack_types_match(*initial_state, *iworking_state);
-			if(!final_types_match) {
-				env.report_error("while loop had a net stack effect");
+
+			release_locals();
+			if(env.mode == fif_mode::compiling_bytecode) {
+				fif_call imm2 = leave_scope;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+			}
+
+			
+			auto bmatch = loop_start.add_concrete_branch(branch_source{
+				iworking_state->copy(), lvar_store, pb ? *pb : nullptr, nullptr, nullptr,
+				0, false, true, true },
+				lvar_relet, 0, 0, env);
+
+			if(bmatch != add_branch_result::ok) {
 				env.mode = fif_mode::error;
+				env.report_error("branch types incompatible in while loop");
 				return true;
 			}
 
-			if(saw_conditional) {
-				auto bcode = parent->bytecode_compilation_progress();
+			loop_start.finalize(env);
 
-				{
-					fif_call imm2 = leave_scope;
-					uint64_t imm2_bytes = 0;
-					memcpy(&imm2_bytes, &imm2, 8);
-					bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-					bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-				}
+			loop_exit.materialize(env);
+			loop_exit.finalize(env);
 
-				fif_call imm = unconditional_jump;
-				uint64_t imm_bytes = 0;
-				memcpy(&imm_bytes, &imm, 8);
-				bcode->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-				bcode->push_back(int32_t(int64_t(loop_entry_point) - int64_t(bcode->size() - 2)));
-				(*bcode)[end_of_loop_branch] = int32_t(bcode->size() - (end_of_loop_branch - 2));;
+			if(env.mode == fif_mode::compiling_bytecode) {
+				fif_call imm2 = leave_scope;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
 			}
 
 			iworking_state->min_main_depth = std::min(iworking_state->min_main_depth, initial_state->min_main_depth);
@@ -3976,139 +4105,75 @@ public:
 			parent->set_working_state(std::move(iworking_state));
 
 			return true;
-		} else if(env.mode == fif_mode::compiling_llvm) {
-#ifdef USE_LLVM
-			if(!saw_conditional) {
-				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
-					conditional_expr = iworking_state->main_ex_back(0);
-					iworking_state->pop_main();
-
-					*pb = LLVMCreateBasicBlockInContext(env.llvm_context, "loop_body");
-					body_block = *pb;
-					LLVMAppendExistingBasicBlock(parent->llvm_function(), *pb);
-					LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
-				}
-			}
-
-			bool final_types_match = stack_types_match(*initial_state, *iworking_state);
-			if(!final_types_match) {
-				env.report_error("while loop had a net stack effect");
-				env.mode = fif_mode::error;
-				return true;
-			}
-
-			if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
-				auto in_block = *pb;
-				LLVMBuildBr(env.llvm_builder, entry_block);
-
-				*pb = LLVMCreateBasicBlockInContext(env.llvm_context, "post_loop");
-				LLVMAppendExistingBasicBlock(parent->llvm_function(), *pb);
-
-				LLVMPositionBuilderAtEnd(env.llvm_builder, entry_block);
-				LLVMBuildCondBr(env.llvm_builder, conditional_expr, body_block, *pb);
-
-				LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
-
-				/*
-				set phi inputs in entry block
-				*/
-				uint32_t node_index = 0;
-				for(auto i = iworking_state->main_size(); i-- > iworking_state->min_main_depth; ) {
-					if(phinodes[node_index] == iworking_state->main_ex(i)) { // phi node unchanged
-						LLVMValueRef inc_vals[1] = { initial_state->main_ex(i) };
-						LLVMBasicBlockRef inc_blocks[1] = { pre_block };
-						LLVMAddIncoming(phinodes[node_index], inc_vals, inc_blocks, 1);
-					} else { 
-						LLVMValueRef inc_vals[2] = { iworking_state->main_ex(i), initial_state->main_ex(i) };
-						LLVMBasicBlockRef inc_blocks[2] = { in_block, pre_block };
-						LLVMAddIncoming(phinodes[node_index], inc_vals, inc_blocks, 2);
-					}
-					++node_index;
-				}
-				for(auto i = iworking_state->return_size(); i-- > iworking_state->min_return_depth; ) {
-					if(phinodes[node_index] == iworking_state->return_ex(i)) { // phi node unchanged
-						LLVMValueRef inc_vals[1] = { initial_state->return_ex(i) };
-						LLVMBasicBlockRef inc_blocks[1] = { pre_block };
-						LLVMAddIncoming(phinodes[node_index], inc_vals, inc_blocks, 1);
-					} else {
-						LLVMValueRef inc_vals[2] = { iworking_state->return_ex(i), initial_state->return_ex(i) };
-						LLVMBasicBlockRef inc_blocks[2] = { in_block, pre_block };
-						LLVMAddIncoming(phinodes[node_index], inc_vals, inc_blocks, 2);
-					}
-					++node_index;
-				}
-			}
-
-			loop_entry_copy->min_main_depth = std::min(iworking_state->min_main_depth, initial_state->min_main_depth);
-			loop_entry_copy->min_return_depth = std::min(iworking_state->min_return_depth, initial_state->min_return_depth);
-			parent->set_working_state(std::move(loop_entry_copy));
-
-			return true;
-#endif
 		} else if(env.mode == fif_mode::typechecking_lvl_2 && phi_pass == true) {
-#ifdef USE_LLVM
 			phi_pass = false;
 			if(!saw_conditional) {
 				iworking_state->pop_main();
 			}
 
+			env.mode = entry_mode;
 
-			if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
-				*pb = LLVMCreateBasicBlockInContext(env.llvm_context, "while_entry");
-				entry_block = *pb;
-				LLVMAppendExistingBasicBlock(parent->llvm_function(), *pb);
+			loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 
-				LLVMBuildBr(env.llvm_builder, entry_block);
-				LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
+			lvar_relet.clear();
+			iworking_state = initial_state->copy();
 
-				/*
-				build entry phi_nodes
-				*/
-				for(auto i = iworking_state->main_size(); i-- > iworking_state->min_main_depth; ) {
-					phinodes.push_back(LLVMBuildPhi(env.llvm_builder, env.dict.type_array[iworking_state->main_type(i)].llvm_type, ""));
-					iworking_state->set_main_ex(i, phinodes.back());
-				}
-				for(auto i = iworking_state->return_size(); i-- > iworking_state->min_return_depth; ) {
-					phinodes.push_back(LLVMBuildPhi(env.llvm_builder, env.dict.type_array[iworking_state->return_type(i)].llvm_type, ""));
-					iworking_state->set_return_ex(i, phinodes.back());
-				}
+			auto pb = env.compiler_stack.back()->llvm_block();
+			auto bmatch = loop_start.add_concrete_branch(branch_source{
+					iworking_state->copy(), lvar_store, pb ? *pb : nullptr,  nullptr,  nullptr,
+					0, false, true, true }, 
+				lvar_relet, 0, 0, env);
+			
+			if(bmatch != add_branch_result::ok) {
+				env.mode = fif_mode::error;
+				env.report_error("branch types incompatible in while loop");
+				return true;
 			}
 
-			loop_entry_copy = iworking_state->copy();
+			loop_start.materialize(env);
+
+			auto bcode = parent->bytecode_compilation_progress();
+			if(env.mode == fif_mode::compiling_bytecode) {
+				fif_call imm2 = enter_scope;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+			}
+
 			saw_conditional = false;
-			env.mode = fif_mode::compiling_llvm;
+			
 			if(!env.source_stack.empty())	
 				env.source_stack.back() = entry_source;
-#endif
+
 			return false;
 		} else if(typechecking_mode(env.mode)) {
-			if(!saw_conditional) {
-				if(iworking_state->main_type_back(0) != fif_bool) {
-					env.mode = reset_typechecking(env.mode);
-					if(initial_typechecking_failed || env.mode != fif_mode::typechecking_lvl_1)
-						env.mode = fail_typechecking(env.mode);
-
+			if(!saw_conditional && !typechecking_failed(env.mode)) {
+				if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+					env.mode = fail_typechecking(env.mode);
 					return true;
 				}
 				iworking_state->pop_main();
+				loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 			}
-			bool final_types_match = stack_types_match(*initial_state, *iworking_state);
-			if(!final_types_match) {
-				env.mode = reset_typechecking(env.mode);
-				if(initial_typechecking_failed || env.mode != fif_mode::typechecking_lvl_1)
-					env.mode = fail_typechecking(env.mode);
-
+			if(env.mode == fif_mode::typechecking_lvl1_failed && entry_mode == fif_mode::typechecking_lvl_1 && loop_exit.types_on_entry) { // reset to after conditional on assumption body will TC later
+				env.mode = entry_mode;
+				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
+				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
+				parent->set_working_state(std::move(loop_exit.types_on_entry));
 				return true;
 			}
-			if(!typechecking_failed(env.mode)) {
-				iworking_state->min_main_depth = std::min(iworking_state->min_main_depth, initial_state->min_main_depth);
-				iworking_state->min_return_depth = std::min(iworking_state->min_return_depth, initial_state->min_return_depth);
-				parent->set_working_state(std::move(iworking_state));
-			} else if(env.mode == fif_mode::typechecking_lvl1_failed) {
-				env.mode = reset_typechecking(env.mode);
+
+			if(typechecking_failed(env.mode) || !loop_exit.types_on_entry || loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+				env.mode = fail_typechecking(env.mode);
+				return true;
 			}
 
+			loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
+			loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
+			parent->set_working_state(std::move(loop_exit.types_on_entry));
 			return true;
+
 		}
 		return true;
 	}
