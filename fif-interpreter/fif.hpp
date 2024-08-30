@@ -692,6 +692,9 @@ public:
 	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
 		return parent ? parent->create_let(name, type, data, expression) : nullptr;
 	}
+	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) {
+		 if(parent) parent->re_let(index, data, expression);
+	}
 	virtual std::vector<int32_t>* type_substitutions() {
 		return parent ? parent->type_substitutions() : nullptr;
 	}
@@ -2793,6 +2796,10 @@ public:
 	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
 		return &lvar_store;
 	}
+	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+		lvar_store[index].data = data;
+		lvar_store[index].expression = expression;
+	}
 	virtual std::vector<int32_t>* type_substitutions() override {
 		return &type_subs;
 	}
@@ -3029,6 +3036,10 @@ public:
 	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
 		return &lvar_store;
 	}
+	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+		lvar_store[index].data = data;
+		lvar_store[index].expression = expression;
+	}
 };
 inline int32_t* call_function(state_stack& s, int32_t* p, environment* env) {
 	int32_t* jump_target = nullptr;
@@ -3135,6 +3146,10 @@ public:
 	}
 	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
 		return &lvar_store;
+	}
+	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+		lvar_store[index].data = data;
+		lvar_store[index].expression = expression;
 	}
 	virtual control_structure get_type() override {
 		return control_structure::none;
@@ -3577,9 +3592,9 @@ inline void branch_target::materialize(environment& env) {
 				new_state->set_return_ex_back(i, node);
 			}
 			auto l = env.compiler_stack.back()->get_lvar_storage();
+			assert(l);
 			for(uint32_t i = 0; i < altered_locals.size(); ++i) {
-				if(altered_locals[i]) {
-					assert(l && i < l->size());
+				if(altered_locals[i] && i < l->size()) {
 					auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[l->at(i).type].llvm_type, "auto-l-phi");
 					phi_nodes.push_back(node);
 					l->at(i).expression = node;
@@ -3669,8 +3684,8 @@ class conditional_scope : public locals_holder {
 public:
 	std::unique_ptr<state_stack> iworking_state;
 	std::unique_ptr<state_stack> initial_state;
+	std::vector< internal_lvar_data> entry_locals_state;
 
-	std::vector< internal_lvar_data> lvar_store;
 	std::vector<bool> lvar_relet;
 
 	branch_target scope_end;
@@ -3690,6 +3705,7 @@ public:
 			env.mode = fif_mode::error;
 		}
 		entry_mode = env.mode;
+		entry_locals_state = *(parent->get_lvar_storage());
 		if(env.mode == fif_mode::interpreting) {
 			if(entry_state.main_data_back(0) != 0) {
 				interpreter_first_branch = true;
@@ -3736,8 +3752,12 @@ public:
 
 		iworking_state = entry_state.copy();
 		initial_state = entry_state.copy();
-		if(auto lp = parent->get_lvar_storage(); lp)
-			lvar_store = *lp;
+	}
+	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+		if(lvar_relet.size() <= uint32_t(index))
+			lvar_relet.resize(uint32_t(index) + 1);
+		lvar_relet[index] = true;
+		if(parent) parent->re_let(index, data, expression);
 	}
 	void commit_first_branch(environment&) {
 		if(else_target.is_concrete) {
@@ -3770,14 +3790,13 @@ public:
 
 		auto pb = env.compiler_stack.back()->llvm_block();
 
-		scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), lvar_store, pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet, 
+		scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
 			uint32_t(iworking_state->main_size()- iworking_state->min_main_depth),
 			uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
 
 		iworking_state = initial_state->copy();
-		if(auto lp = parent->get_lvar_storage(); lp)
-			lvar_store = *lp;
 		lvar_relet.clear();
+		*(parent->get_lvar_storage()) = entry_locals_state;
 
 		else_target.materialize(env);
 
@@ -3819,10 +3838,6 @@ public:
 
 		if(env.mode == fif_mode::interpreting) {
 			parent->set_working_state(std::move(iworking_state));
-			if(auto lp = parent->get_lvar_storage(); lp) {
-				lvar_store.resize(lp->size());
-				*lp = std::move(lvar_store);
-			}
 			return true;
 		}
 
@@ -3838,7 +3853,7 @@ public:
 		auto pb = env.compiler_stack.back()->llvm_block();
 
 		if(!else_target.is_concrete) {
-			scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), lvar_store, pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
+			scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
 				uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
 				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
 
@@ -3849,16 +3864,15 @@ public:
 			}
 
 			iworking_state = initial_state->copy();
-			if(auto lp = parent->get_lvar_storage(); lp)
-				lvar_store = *lp;
 			lvar_relet.clear();
+			*(parent->get_lvar_storage()) = entry_locals_state;
 
 			else_target.materialize(env);
 		}
 		else_target.finalize(env);
 
-		auto branch_valid = scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), lvar_store, pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
-			uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
+		auto branch_valid = scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true },
+			lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
 			uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
 
 		scope_end.materialize(env);
@@ -3906,7 +3920,6 @@ public:
 	std::unique_ptr<state_stack> initial_state;
 	std::unique_ptr<state_stack> iworking_state;
 
-	std::vector< internal_lvar_data> lvar_store;
 	std::vector<bool> lvar_relet;
 
 	branch_target loop_start;
@@ -3942,7 +3955,12 @@ public:
 		phi_pass = true;
 		env.mode = fif_mode::typechecking_lvl_2;
 	}
-
+	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+		if(lvar_relet.size() <= uint32_t(index))
+			lvar_relet.resize(uint32_t(index) + 1);
+		lvar_relet[index] = true;
+		if(parent) parent->re_let(index, data, expression);
+	}
 	virtual control_structure get_type()override {
 		return control_structure::str_while_loop;
 	}
@@ -3985,7 +4003,7 @@ public:
 				LLVMAppendExistingBasicBlock(in_fn, continuation);
 			}
 
-			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), lvar_store, pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, 0, 0, env);
+			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, 0, 0, env);
 		}
 
 		if(!typechecking_failed(env.mode) && typechecking_mode(env.mode)) {
@@ -4062,7 +4080,7 @@ public:
 					LLVMAppendExistingBasicBlock(in_fn, continuation_block);
 				}
 
-				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), lvar_store, pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true }, *this,  lvar_relet, 0, 0, env);
+				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true }, *this,  lvar_relet, 0, 0, env);
 			}
 
 
@@ -4077,7 +4095,7 @@ public:
 
 			
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-				iworking_state->copy(), lvar_store, pb ? *pb : nullptr, nullptr, nullptr,
+				iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr,
 				0, false, true, true },
 				lvar_relet, 0, 0, env);
 
@@ -4120,7 +4138,7 @@ public:
 
 			auto pb = env.compiler_stack.back()->llvm_block();
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-					iworking_state->copy(), lvar_store, pb ? *pb : nullptr,  nullptr,  nullptr,
+					iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : nullptr,  nullptr,  nullptr,
 					0, false, true, true }, 
 				lvar_relet, 0, 0, env);
 			
@@ -4184,7 +4202,6 @@ public:
 	std::unique_ptr<state_stack> initial_state;
 	std::unique_ptr<state_stack> iworking_state;
 
-	std::vector< internal_lvar_data> lvar_store;
 	std::vector<bool> lvar_relet;
 
 	branch_target loop_start;
@@ -4219,7 +4236,12 @@ public:
 		phi_pass = true;
 		env.mode = fif_mode::typechecking_lvl_2;
 	}
-
+	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+		if(lvar_relet.size() <= uint32_t(index))
+			lvar_relet.resize(uint32_t(index) + 1);
+		lvar_relet[index] = true;
+		if(parent) parent->re_let(index, data, expression);
+	}
 	virtual control_structure get_type() override {
 		return control_structure::str_do_loop;
 	}
@@ -4283,7 +4305,7 @@ public:
 			}
 
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-				iworking_state->copy(), lvar_store, pb ? *pb : end_block, expr, loop_exit.block_location,
+				iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : end_block, expr, loop_exit.block_location,
 				0, false, false, true },
 				lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
 
@@ -4320,7 +4342,7 @@ public:
 
 			auto pb = env.compiler_stack.back()->llvm_block();
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-				iworking_state->copy(), lvar_store, pb ? *pb : nullptr, nullptr, nullptr,
+				iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr,
 				0, false, true, true },
 				lvar_relet, 0, 0, env);
 

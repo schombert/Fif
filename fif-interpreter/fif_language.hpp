@@ -1852,6 +1852,66 @@ inline int32_t* free_buffer(fif::state_stack& s, int32_t* p, fif::environment* e
 	return p + 2;
 }
 
+inline int32_t* do_relet_creation(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	int32_t index = *(p + 2);
+
+	e->compiler_stack.back()->re_let(index, s.main_data_back(0), nullptr);
+	s.pop_main();
+
+	return p + 3;
+}
+
+inline int32_t* create_relet(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->source_stack.empty()) {
+		e->report_error("let was unable to read the declaration name");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+	auto name = read_token(e->source_stack.back(), *e);
+
+	if(e->mode == fif_mode::interpreting || (typechecking_mode(e->mode) && !typechecking_failed(e->mode))) {
+		auto l = e->compiler_stack.back()->get_let(std::string{ name.content });
+		if(!l) {
+			e->report_error("could not find a let with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		} else {
+			e->compiler_stack.back()->re_let(l->bank_offset, s.main_data_back(0), nullptr);
+		}
+	} else if(e->mode == fif_mode::compiling_llvm) {
+		auto l = e->compiler_stack.back()->get_let(std::string{ name.content });
+		if(!l) {
+			e->report_error("could not find a let with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		} else {
+			e->compiler_stack.back()->re_let(l->bank_offset, 0, s.main_ex_back(0));
+		}
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto l = e->compiler_stack.back()->get_let(std::string{ name.content });
+		if(!l) {
+			e->report_error("could not find a let with that name");
+			e->mode = fif_mode::error;
+			return nullptr;
+		}
+		e->compiler_stack.back()->re_let(l->bank_offset, 0, 0);
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		if(compile_bytes) {
+			fif_call imm = do_relet_creation;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			compile_bytes->push_back(l->bank_offset);
+		}
+	}
+
+	if(!typechecking_failed(e->mode)) {
+		s.pop_main();
+	}
+	return p + 2;
+}
+
 inline int32_t* do_let_creation(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	char* string_ptr = nullptr;
 	memcpy(&string_ptr, p + 2, 8);
@@ -4625,6 +4685,7 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "buf-add", impl_index, { fif_opaque_ptr, fif_i8, -1, fif_opaque_ptr });
 
 	add_precompiled(fif_env, "let", create_let, { -2 }, true);
+	add_precompiled(fif_env, "->", create_relet, { -2 }, true);
 	add_precompiled(fif_env, "var", create_var, { -2 }, true);
 	add_precompiled(fif_env, "(", create_params, { }, true);
 	add_precompiled(fif_env, "global", create_global_impl, { fif_type });
