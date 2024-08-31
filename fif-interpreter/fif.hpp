@@ -4133,7 +4133,6 @@ public:
 
 			loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 
-			lvar_relet.clear();
 			iworking_state = initial_state->copy();
 
 			auto pb = env.compiler_stack.back()->llvm_block();
@@ -4337,7 +4336,6 @@ public:
 
 			loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 
-			lvar_relet.clear();
 			iworking_state = initial_state->copy();
 
 			auto pb = env.compiler_stack.back()->llvm_block();
