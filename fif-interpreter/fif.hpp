@@ -415,6 +415,7 @@ struct interpreted_word_instance {
 	int32_t stack_types_start = 0;
 	int32_t stack_types_count = 0;
 	int32_t typechecking_level = 0;
+	uint8_t exit_point_count = 0;
 	bool being_compiled = false;
 	bool llvm_compilation_finished = false;
 	bool is_imported_function = false;
@@ -692,8 +693,8 @@ public:
 	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
 		return parent ? parent->create_let(name, type, data, expression) : nullptr;
 	}
-	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) {
-		 if(parent) parent->re_let(index, data, expression);
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) {
+		 return parent ? parent->re_let(index, type, data, expression) : true;
 	}
 	virtual std::vector<int32_t>* type_substitutions() {
 		return parent ? parent->type_substitutions() : nullptr;
@@ -709,43 +710,88 @@ public:
 	std::unique_ptr<opaque_compiler_data> data;
 };
 
-enum class fif_mode {
-	interpreting = 0,
-	compiling_bytecode = 1,
-	compiling_llvm = 2,
-	terminated = 3,
-	error = 4,
-	typechecking_lvl_1 = 5,
-	typechecking_lvl_2 = 6,
-	typechecking_lvl_3 = 7,
-	typechecking_lvl1_failed = 8,
-	typechecking_lvl2_failed = 9,
-	typechecking_lvl3_failed = 10
+enum class fif_mode : uint16_t {
+	primary_fn_mask			= 0x007,
+	interpreting					= 0x000,
+	compiling_bytecode			= 0x001,
+	compiling_llvm				= 0x002,
+	terminated					= 0x003,
+	error_base					= 0x004,
+	error						= 0x01C,
+	typechecking				= 0x005,
+	compilation_masked		= 0x010,
+	failure						= 0x008,
+	typecheck_provisional		= 0x020,
+	typecheck_recursion		= 0x040,
+	tc_level_mask				= 0xF00,
+	tc_level_1					= 0x105,
+	tc_level_2					= 0x205,
+	tc_level_3					= 0x305
 };
 
 inline bool non_immediate_mode(fif_mode m) {
-	return m != fif_mode::error && m != fif_mode::terminated && m != fif_mode::interpreting;
+	auto pf_mode = uint16_t(m) & uint16_t(fif_mode::primary_fn_mask);
+	return pf_mode == uint16_t(fif_mode::compiling_bytecode) || pf_mode == uint16_t(fif_mode::compiling_llvm);
+}
+inline fif_mode base_mode(fif_mode m) {
+	return fif_mode(uint16_t(m) & uint16_t(fif_mode::primary_fn_mask));
 }
 inline bool typechecking_mode(fif_mode m) {
-	return m == fif_mode::typechecking_lvl_1 || m == fif_mode::typechecking_lvl_2 || m == fif_mode::typechecking_lvl_3
-		|| m == fif_mode::typechecking_lvl1_failed || m == fif_mode::typechecking_lvl2_failed || m == fif_mode::typechecking_lvl3_failed;
+	return base_mode(m) == fif_mode::typechecking;
 }
-inline bool typechecking_failed(fif_mode m) {
-	return m == fif_mode::typechecking_lvl1_failed || m == fif_mode::typechecking_lvl2_failed || m == fif_mode::typechecking_lvl3_failed;
+inline bool failed(fif_mode m) {
+	return  (uint16_t(m) & uint16_t(fif_mode::failure)) != 0;
 }
-inline fif_mode reset_typechecking(fif_mode m) {
-	if(m == fif_mode::typechecking_lvl1_failed)
-		return fif_mode::typechecking_lvl_1;
-	return m;
+inline bool provisional_success(fif_mode m) {
+	return  (uint16_t(m) & uint16_t(fif_mode::typecheck_provisional)) != 0;
+}
+inline bool recursive(fif_mode m) {
+	return  (uint16_t(m) & uint16_t(fif_mode::typecheck_recursion)) != 0;
+}
+inline bool skip_compilation(fif_mode m) {
+	return (uint16_t(m) & uint16_t(fif_mode::compilation_masked)) != 0;
+}
+inline int32_t typechecking_level(fif_mode m) {
+	return int32_t((uint16_t(fif_mode::tc_level_mask) & uint16_t(m)) >> 8);
+}
+inline fif_mode surpress_branch(fif_mode m) {
+	return fif_mode(uint16_t(m) | uint16_t(fif_mode::compilation_masked));
+}
+inline fif_mode fail_mode(fif_mode m) {
+	return fif_mode(uint16_t(m) | uint16_t(fif_mode::failure) | uint16_t(fif_mode::compilation_masked));
+}
+inline fif_mode make_provisional(fif_mode m) {
+	return fif_mode(uint16_t(m) | uint16_t(fif_mode::typecheck_provisional));
+}
+inline fif_mode make_recursive(fif_mode m) {
+	return fif_mode(uint16_t(m) | uint16_t(fif_mode::compilation_masked) | uint16_t(fif_mode::typecheck_recursion));
+}
+
+inline fif_mode merge_modes(fif_mode a, fif_mode b) {
+	auto ma = uint16_t(a);
+	auto mb = uint16_t(b);
+	auto i = ma | mb;
+	if((uint16_t(fif_mode::typecheck_recursion) & ma) == 0 && (uint16_t(fif_mode::compilation_masked) & ma) == 0) {
+		i &= ~uint16_t(fif_mode::typecheck_recursion);
+		i &= ~uint16_t(fif_mode::compilation_masked);
+	}
+	if((uint16_t(fif_mode::typecheck_recursion) & mb) == 0 && (uint16_t(fif_mode::compilation_masked) & mb) == 0) {
+		i &= ~uint16_t(fif_mode::typecheck_recursion);
+		i &= ~uint16_t(fif_mode::compilation_masked);
+	}
+	if((uint16_t(fif_mode::typecheck_recursion) & ma) == 0 || (uint16_t(fif_mode::typecheck_recursion) & mb) == 0) {
+		i &= ~uint16_t(fif_mode::typecheck_recursion);
+	}
+	if((uint16_t(fif_mode::compilation_masked) & ma) == 0 || (uint16_t(fif_mode::compilation_masked) & mb) == 0) {
+		i &= ~uint16_t(fif_mode::compilation_masked);
+	}
+	return fif_mode(i);
 }
 inline fif_mode fail_typechecking(fif_mode m) {
-	if(m == fif_mode::typechecking_lvl_1)
-		return fif_mode::typechecking_lvl1_failed;
-	if(m == fif_mode::typechecking_lvl_2)
-		return fif_mode::typechecking_lvl2_failed;
-	if(m == fif_mode::typechecking_lvl_3)
-		return fif_mode::typechecking_lvl3_failed;
-	return m;
+	auto mv = uint16_t(m);
+	mv |= uint16_t(fif_mode::failure);
+	mv |= uint16_t(fif_mode::compilation_masked);
+	return fif_mode(mv);
 }
 struct import_item {
 	std::string name;
@@ -803,7 +849,7 @@ public:
 		if(auto it = string_constants.find(data); it != string_constants.end()) {
 			return std::string_view{ it->get() };
 		}
-		std::unique_ptr<char[]> temp = std::unique_ptr<char[]>(new char[data.length() + 1 ]);
+		std::unique_ptr<char[]> temp = std::unique_ptr<char[]>(new char[data.length() + 1]);
 		memcpy(temp.get(), data.data(), data.length());
 		temp.get()[data.length()] = 0;
 		auto data_ptr = temp.get();
@@ -2177,7 +2223,7 @@ inline int32_t* immediate_bool(state_stack& s, int32_t* p, environment*) {
 	return p + 3;
 }
 inline void do_immediate_i32(state_stack& s, int32_t value, environment* e) {
-	if(typechecking_failed(e->mode))
+	if(skip_compilation(e->mode))
 		return;
 
 	auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
@@ -2204,7 +2250,7 @@ inline int32_t* immediate_type(state_stack& s, int32_t* p, environment*) {
 	return p + 3;
 }
 inline void do_immediate_type(state_stack& s, int32_t value, environment* e) {
-	if(typechecking_failed(e->mode))
+	if(skip_compilation(e->mode))
 		return;
 
 	auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
@@ -2225,7 +2271,7 @@ inline void do_immediate_type(state_stack& s, int32_t value, environment* e) {
 	s.push_back_main(fif_type, value, val);
 }
 inline void do_immediate_bool(state_stack& s, bool value, environment* e) {
-	if(typechecking_failed(e->mode))
+	if(skip_compilation(e->mode))
 		return;
 
 	auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
@@ -2246,7 +2292,7 @@ inline void do_immediate_bool(state_stack& s, bool value, environment* e) {
 	s.push_back_main(fif_bool, int64_t(value), val);
 }
 inline void do_immediate_f32(state_stack& s, float value, environment* e) {
-	if(typechecking_failed(e->mode))
+	if(skip_compilation(e->mode))
 		return;
 
 	int32_t v4 = 0;
@@ -2741,6 +2787,7 @@ public:
 	LLVMBasicBlockRef current_block = nullptr;
 	int32_t for_word = -1;
 	int32_t for_instance = -1;
+	fif_mode entry_mode;
 	
 
 
@@ -2748,6 +2795,7 @@ public:
 		
 		initial_state = entry_state.copy();
 		iworking_state = entry_state.copy();
+		entry_mode = env.mode;
 
 		if(for_word == -1) {
 			env.report_error("attempted to compile a function for an anonymous word");
@@ -2796,9 +2844,13 @@ public:
 	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
 		return &lvar_store;
 	}
-	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
+		if(lvar_store[index].type != type)
+			return false;
+
 		lvar_store[index].data = data;
 		lvar_store[index].expression = expression;
+		return true;
 	}
 	virtual std::vector<int32_t>* type_substitutions() override {
 		return &type_subs;
@@ -2840,7 +2892,11 @@ public:
 		assert(stack_consumed >= 0);
 		assert(rstack_consumed >= 0);
 
-		if(env.mode == fif_mode::typechecking_lvl_1) {
+		if(recursive(env.mode)) {
+			env.mode = fail_mode(env.mode);
+		}
+
+		if(typechecking_level(entry_mode) == 1 && !failed(env.mode)) {
 			word& w = env.dict.word_array[for_word];
 
 			interpreted_word_instance temp;
@@ -2880,7 +2936,7 @@ public:
 				}
 			}
 			temp.stack_types_count = int32_t(env.dict.all_stack_types.size()) - temp.stack_types_start;
-			temp.typechecking_level = 1;
+			temp.typechecking_level = provisional_success(env.mode) ? 1 : 3;
 
 			if(for_instance == -1) {
 				w.instances.push_back(int32_t(env.dict.all_instances.size()));
@@ -2890,7 +2946,7 @@ public:
 			}
 
 			env.dict.word_array[for_word].being_typechecked = false;
-		} else if(env.mode == fif_mode::typechecking_lvl_2) {
+		} else if(typechecking_level(entry_mode) == 2 && !failed(env.mode)) {
 			if(for_instance == -1) {
 				env.report_error("tried to level 2 typecheck a word without an instance");
 				env.mode = fif_mode::error;
@@ -2906,42 +2962,51 @@ public:
 				env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), revised_description.begin(), revised_description.end());
 			}
 
-			wi.typechecking_level = std::max(wi.typechecking_level, 2);
+			wi.typechecking_level = std::max(wi.typechecking_level, provisional_success(env.mode) ? 2 : 3);
 			env.dict.word_array[for_word].being_typechecked = false;
-		} else if(env.mode == fif_mode::typechecking_lvl_3) {
+		} else if(typechecking_level(entry_mode) == 3 && !failed(env.mode)) {
 			// no alterations -- handled explicitly by invoking lvl 3
 			env.dict.word_array[for_word].being_typechecked = false;
-		} else if(env.mode == fif_mode::compiling_bytecode) {
+		} else if(base_mode(entry_mode) == fif_mode::compiling_bytecode) {
 			if(for_instance == -1) {
 				env.report_error("tried to compile a word without an instance");
 				env.mode = fif_mode::error;
 				return true;
 			}
-
-			fif_call imm = function_return;
-			uint64_t imm_bytes = 0;
-			memcpy(&imm_bytes, &imm, 8);
-			compiled_bytes.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-			compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			if(!skip_compilation(env.mode)) {
+				fif_call imm = function_return;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				compiled_bytes.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
 
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			wi.compiled_bytecode = std::move(compiled_bytes);
 
 			if(for_instance != -1)
 				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
-		} else if(env.mode == fif_mode::compiling_llvm) {
+		} else if(base_mode(entry_mode) == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 			if(for_instance == -1) {
 				env.report_error("tried to compile a word without an instance");
 				env.mode = fif_mode::error;
 				return true;
 			}
-
-			release_locals(); 
+			if(!skip_compilation(env.mode))
+				release_locals(); 
 
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
-			wi.llvm_parameter_permutation = llvm_make_function_return(env, existing_description, initial_parameters);
+			if(!skip_compilation(env.mode)) {
+				wi.exit_point_count++;
+				if(wi.exit_point_count == 1) {
+					wi.llvm_parameter_permutation = llvm_make_function_return(env, existing_description, initial_parameters);
+				} else {
+					llvm_make_function_return(env, existing_description, initial_parameters);
+					wi.llvm_parameter_permutation.clear();
+				}
+			}
 			wi.llvm_compilation_finished = true;
 
 			if(LLVMVerifyFunction(wi.llvm_function, LLVMVerifierFailureAction::LLVMPrintMessageAction)) {
@@ -2959,7 +3024,7 @@ public:
 			if(for_instance != -1)
 				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
 #endif
-		} else if(typechecking_failed(env.mode)) {
+		} else if(typechecking_mode(entry_mode)) {
 			env.dict.word_array[for_word].being_typechecked = false;
 			return true;
 		} else {
@@ -3036,9 +3101,13 @@ public:
 	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
 		return &lvar_store;
 	}
-	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
+		if(lvar_store[index].type != type)
+			return false;
+
 		lvar_store[index].data = data;
 		lvar_store[index].expression = expression;
+		return true;
 	}
 };
 inline int32_t* call_function(state_stack& s, int32_t* p, environment* env) {
@@ -3147,9 +3216,12 @@ public:
 	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
 		return &lvar_store;
 	}
-	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
+		if(lvar_store[index].type != type)
+			return false;
 		lvar_store[index].data = data;
 		lvar_store[index].expression = expression;
+		return true;
 	}
 	virtual control_structure get_type() override {
 		return control_structure::none;
@@ -3695,9 +3767,10 @@ public:
 	uint32_t entry_rs_depth = 0;
 
 	fif_mode entry_mode;
+	fif_mode first_branch_end_mode;
 	bool interpreter_first_branch = false;
 	bool interpreter_second_branch = false;
-	bool typechecking_failed_on_first_branch = false;
+	bool typechecking_provisional_on_first_branch = false;
 
 	conditional_scope(opaque_compiler_data* p, environment& e, state_stack& entry_state) : locals_holder(p, e) {	
 		if(entry_state.main_size() == 0 || entry_state.main_type_back(0) != fif_bool) {
@@ -3713,7 +3786,7 @@ public:
 			} else {
 				interpreter_first_branch = false;
 				interpreter_second_branch = true;
-				env.mode = fif_mode::typechecking_lvl1_failed;
+				env.mode = surpress_branch(env.mode);
 			}
 			entry_state.pop_main();
 		} else if(env.mode == fif_mode::compiling_llvm) {
@@ -3742,7 +3815,7 @@ public:
 			memcpy(&imm2_bytes, &imm2, 8);
 			bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
 			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-		} else if(!typechecking_failed(env.mode)) {
+		} else if(!skip_compilation(env.mode)) {
 			entry_state.pop_main();
 			else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, 0, 0, env);
 		}
@@ -3753,11 +3826,11 @@ public:
 		iworking_state = entry_state.copy();
 		initial_state = entry_state.copy();
 	}
-	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
 		if(lvar_relet.size() <= uint32_t(index))
 			lvar_relet.resize(uint32_t(index) + 1);
 		lvar_relet[index] = true;
-		if(parent) parent->re_let(index, data, expression);
+		return parent ? parent->re_let(index, type, data, expression) : true;
 	}
 	void commit_first_branch(environment&) {
 		if(else_target.is_concrete) {
@@ -3766,16 +3839,16 @@ public:
 			return;
 		}
 
-		if(interpreter_second_branch && env.mode == fif_mode::typechecking_lvl1_failed) {
-			env.mode = fif_mode::interpreting;
+		if(interpreter_second_branch && !failed(env.mode)) {
+			env.mode = entry_mode;
 			return;
 		} else if(interpreter_first_branch) {
 			release_locals();
-			env.mode = fif_mode::typechecking_lvl1_failed;
+			env.mode = surpress_branch(env.mode);
 			return;
 		}
 		
-		if(!typechecking_mode(env.mode)) {
+		if(!typechecking_mode(env.mode) && !skip_compilation(env.mode)) {
 			release_locals();
 		}
 
@@ -3790,9 +3863,11 @@ public:
 
 		auto pb = env.compiler_stack.back()->llvm_block();
 
-		scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
-			uint32_t(iworking_state->main_size()- iworking_state->min_main_depth),
-			uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+		if(!recursive(env.mode)) {
+			scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
+				uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
+				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+		}
 
 		iworking_state = initial_state->copy();
 		lvar_relet.clear();
@@ -3809,14 +3884,7 @@ public:
 			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
 		}
 
-		
-		// not interpreted mode
-		if(typechecking_failed(env.mode)) {
-			typechecking_failed_on_first_branch = true;
-			if(!typechecking_failed(entry_mode))
-				env.mode = entry_mode;
-		}
-		
+		first_branch_end_mode = env.mode;
 	}
 	virtual control_structure get_type()override {
 		return control_structure::str_if;
@@ -3857,11 +3925,9 @@ public:
 				uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
 				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
 
-			if(typechecking_failed(env.mode)) {
-				typechecking_failed_on_first_branch = true;
-				if(!typechecking_failed(entry_mode))
-					env.mode = entry_mode;
-			}
+			first_branch_end_mode = env.mode;
+			if(typechecking_mode(env.mode))
+				env.mode = entry_mode;
 
 			iworking_state = initial_state->copy();
 			lvar_relet.clear();
@@ -3871,45 +3937,27 @@ public:
 		}
 		else_target.finalize(env);
 
-		auto branch_valid = scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true },
-			lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
-			uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
-
+		if(!recursive(env.mode)) {
+			auto branch_valid = scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true },
+				lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
+				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+			if(branch_valid != add_branch_result::ok) {
+				env.mode = fail_mode(env.mode);
+			}
+		}
 		scope_end.materialize(env);
 		scope_end.finalize(env);
 
-		if(!typechecking_failed(env.mode) && !typechecking_failed_on_first_branch && !typechecking_failed(entry_mode) && branch_valid != add_branch_result::ok) {
-			env.mode = fif_mode::error;
-			env.report_error("conditional branches incompatible");
-			return true;
-		}
-		if(typechecking_failed(entry_mode)) {
-			env.mode = entry_mode;
-			return true;
-		}
-		if(typechecking_failed_on_first_branch && typechecking_failed(env.mode)) {
-			env.mode = fail_typechecking(entry_mode);
-			return true;
-		}
-
+		if(!recursive(first_branch_end_mode))
+			env.mode = merge_modes(env.mode, first_branch_end_mode);
+		
 		iworking_state->min_main_depth = std::min(uint32_t(iworking_state->main_size()) - scope_end.data_stack_touched, entry_ds_depth);
 		iworking_state->min_return_depth = std::min(uint32_t(iworking_state->return_size()) - scope_end.return_stack_touched, entry_rs_depth);
-
-		if(typechecking_mode(entry_mode)) {
-			if(typechecking_failed_on_first_branch) {
-				// keep using state from second branch
-				env.mode = entry_mode;
-			} else if(typechecking_failed(env.mode)) {
-				iworking_state = std::move(scope_end.types_on_entry);
-				env.mode = entry_mode;
-			} // else: both passed
-		}
 
 		iworking_state->min_main_depth = std::min(uint32_t(iworking_state->main_size()) - scope_end.data_stack_touched, entry_ds_depth);
 		iworking_state->min_return_depth = std::min(uint32_t(iworking_state->return_size()) - scope_end.return_stack_touched, entry_rs_depth);
 
 		parent->set_working_state(std::move(iworking_state));
-		env.mode = entry_mode;
 
 		return true;
 	}
@@ -3927,6 +3975,7 @@ public:
 	
 	std::string_view entry_source;
 	fif_mode entry_mode;
+	fif_mode condition_mode;
 
 	bool phi_pass = false;
 	bool intepreter_skip_body = false;
@@ -3945,7 +3994,7 @@ public:
 		}
 
 		if(typechecking_mode(env.mode)) {
-			if(typechecking_failed(env.mode))
+			if(failed(env.mode))
 				return;
 			loop_start.add_speculative_branch(*iworking_state, lvar_relet, 0, 0);
 			return;
@@ -3953,13 +4002,13 @@ public:
 			return;
 		}
 		phi_pass = true;
-		env.mode = fif_mode::typechecking_lvl_2;
+		env.mode = fif_mode::tc_level_2;
 	}
-	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
 		if(lvar_relet.size() <= uint32_t(index))
 			lvar_relet.resize(uint32_t(index) + 1);
 		lvar_relet[index] = true;
-		if(parent) parent->re_let(index, data, expression);
+		return parent ? parent->re_let(index, type, data, expression) : true;
 	}
 	virtual control_structure get_type()override {
 		return control_structure::str_while_loop;
@@ -3977,6 +4026,7 @@ public:
 			return;
 		}
 		saw_conditional = true;
+		condition_mode = env.mode;
 
 		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
@@ -4006,7 +4056,7 @@ public:
 			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, 0, 0, env);
 		}
 
-		if(!typechecking_failed(env.mode) && typechecking_mode(env.mode)) {
+		if(!failed(env.mode) && typechecking_mode(env.mode)) {
 			if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
 				env.mode = fail_typechecking(env.mode);
 				return;
@@ -4017,14 +4067,14 @@ public:
 		} else if(env.mode == fif_mode::interpreting) {
 			if(iworking_state->main_data_back(0) == 0) {
 				intepreter_skip_body = true;
-				env.mode = fif_mode::typechecking_lvl1_failed;
+				env.mode = surpress_branch(env.mode);
 			}
 			iworking_state->pop_main();
 			return;
 		}
 	}
 	virtual bool finish(environment&) override {
-		if(env.mode == fif_mode::typechecking_lvl1_failed && intepreter_skip_body) {
+		if(entry_mode == fif_mode::interpreting && intepreter_skip_body) {
 			env.mode = fif_mode::interpreting;
 			
 			release_locals();
@@ -4123,7 +4173,7 @@ public:
 			parent->set_working_state(std::move(iworking_state));
 
 			return true;
-		} else if(env.mode == fif_mode::typechecking_lvl_2 && phi_pass == true) {
+		} else if(typechecking_level(env.mode) == 2 && phi_pass == true) {
 			phi_pass = false;
 			if(!saw_conditional) {
 				iworking_state->pop_main();
@@ -4165,26 +4215,25 @@ public:
 
 			return false;
 		} else if(typechecking_mode(env.mode)) {
-			if(!saw_conditional && !typechecking_failed(env.mode)) {
-				if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
-					env.mode = fail_typechecking(env.mode);
-					return true;
+			if(!saw_conditional) {
+				condition_mode = env.mode;
+				if(!failed(env.mode)) {
+					if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+						env.mode = fail_typechecking(env.mode);
+						return true;
+					}
+					iworking_state->pop_main();
+					loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 				}
-				iworking_state->pop_main();
-				loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 			}
-			if(env.mode == fif_mode::typechecking_lvl1_failed && entry_mode == fif_mode::typechecking_lvl_1 && loop_exit.types_on_entry) { // reset to after conditional on assumption body will TC later
-				env.mode = entry_mode;
-				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
-				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
-				parent->set_working_state(std::move(loop_exit.types_on_entry));
-				return true;
-			}
-
-			if(typechecking_failed(env.mode) || !loop_exit.types_on_entry || loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+			
+			if(failed(env.mode) || (!recursive(env.mode) &&  loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok)) {
 				env.mode = fail_typechecking(env.mode);
 				return true;
 			}
+
+			if(recursive(env.mode))
+				env.mode = merge_modes(env.mode, condition_mode);
 
 			loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
 			loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
@@ -4223,7 +4272,7 @@ public:
 		}
 		
 		if(typechecking_mode(env.mode)) {
-			if(typechecking_failed(env.mode))
+			if(failed(env.mode))
 				return;
 			loop_start.add_speculative_branch(*iworking_state, lvar_relet, 0, 0);
 			return;
@@ -4233,13 +4282,13 @@ public:
 
 		
 		phi_pass = true;
-		env.mode = fif_mode::typechecking_lvl_2;
+		env.mode = fif_mode::tc_level_2;
 	}
-	virtual void re_let(int32_t index, int64_t data, LLVMValueRef expression) override {
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
 		if(lvar_relet.size() <= uint32_t(index))
 			lvar_relet.resize(uint32_t(index) + 1);
 		lvar_relet[index] = true;
-		if(parent) parent->re_let(index, data, expression);
+		return parent ? parent->re_let(index, type, data, expression) : true;
 	}
 	virtual control_structure get_type() override {
 		return control_structure::str_do_loop;
@@ -4327,7 +4376,7 @@ public:
 			parent->set_working_state(std::move(iworking_state));
 
 			return true;
-		} else if(env.mode == fif_mode::typechecking_lvl_2 && phi_pass == true) {
+		} else if(typechecking_level(env.mode) == 2 && phi_pass == true) {
 			phi_pass = false;
 
 			iworking_state->pop_main(); // remove conditional bool
@@ -4365,7 +4414,7 @@ public:
 				env.source_stack.back() = entry_source;
 
 			return false;
-		} else if(typechecking_mode(env.mode) && !typechecking_failed(env.mode)) {
+		} else if(typechecking_mode(env.mode) && !failed(env.mode)) {
 			if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
 				env.mode = fail_typechecking(env.mode);
 				return true;
@@ -4549,16 +4598,16 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 			match.substitution_version = word_index;
 
 			if(!match.matched) {
-				if(typechecking_failed(env.mode)) {
+				if(failed(env.mode)) {
 					// ignore match failure and pass on through
 					return word_match_result{ false, 0, 0, 0, 0 };
-				} else if(env.mode == fif_mode::typechecking_lvl_1 || env.mode == fif_mode::typechecking_lvl_2) {
+				} else if(typechecking_level(env.mode) == 1 || typechecking_level(env.mode) == 2) {
 					if(env.dict.word_array[w].being_typechecked) { // already being typechecked -- mark as un checkable recursive branch
-						env.mode = fail_typechecking(env.mode);
+						env.mode = make_recursive(env.mode);
 					} else if(env.dict.word_array[w].source.length() > 0) { // try to typecheck word as level 1
 						env.dict.word_array[w].being_typechecked = true;
 
-						switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_1);
+						switch_compiler_stack_mode(env, fif_mode::tc_level_1);
 
 						env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 						auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, -1);
@@ -4575,7 +4624,9 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 						restore_compiler_stack_mode(env);
 
 						if(match.matched) {
-							std::get<interpreted_word_instance>(env.dict.all_instances[match.word_index]).typechecking_level = 1;
+							if(std::get<interpreted_word_instance>(env.dict.all_instances[match.word_index]).typechecking_level < 3) {
+								env.mode = make_provisional(env.mode);
+							}
 							return match;
 						} else {
 							env.mode = fail_typechecking(env.mode);
@@ -4583,7 +4634,7 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 						}
 					}
 				} else if(env.dict.word_array[w].source.length() > 0) { // either compiling or interpreting or level 3 typecheck-- switch to typechecking to get a type definition
-					switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_1);
+					switch_compiler_stack_mode(env, fif_mode::tc_level_1);
 					env.dict.word_array[w].being_typechecked = true;
 
 					env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
@@ -4623,7 +4674,7 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 	if(wi.typechecking_level == 1) {
 		// perform level 2 typechecking
 
-		switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_2);
+		switch_compiler_stack_mode(env, fif_mode::tc_level_2);
 
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, word_index);
@@ -4633,17 +4684,15 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 		run_to_function_end(env);
 		env.source_stack.pop_back();
 
-		bool failed = typechecking_failed(env.mode);
+		bool fc = failed(env.mode);
 
 		restore_compiler_stack_mode(env);
 
-		if(failed) {
+		if(fc) {
 			env.report_error("level 2 typecheck failed");
 			env.mode = fif_mode::error;
 			return false;
 		}
-
-		wi.typechecking_level = 2;
 	}
 
 	if(wi.typechecking_level == 2) {
@@ -4652,7 +4701,7 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 		env.compiler_stack.emplace_back(std::make_unique< typecheck3_record_holder>(env.compiler_stack.back().get(), env));
 		auto record_holder = static_cast<typecheck3_record_holder*>(env.compiler_stack.back().get());
 
-		switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_3);
+		switch_compiler_stack_mode(env, fif_mode::tc_level_3);
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, word_index);
 		fnscope->type_subs = tsubs;
@@ -4661,11 +4710,11 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 		run_to_function_end(env);
 		env.source_stack.pop_back();
 
-		bool failed = typechecking_failed(env.mode);
+		bool fc = failed(env.mode);
 
 		restore_compiler_stack_mode(env);
 
-		if(failed) {
+		if(fc) {
 			env.report_error("level 3 typecheck failed");
 			env.mode = fif_mode::error;
 			return false;
@@ -4683,16 +4732,16 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 			r.rstack_consumed = std::max(c.rstack, erb->second.rstack_consumed);
 
 			record_holder->tr.insert_or_assign((uint64_t(w) << 32) | uint64_t(word_index), r);
-			} else {
-				typecheck_3_record r;
-				r.stack_height_added_at = int32_t(current_type_state.main_size());
-				r.rstack_height_added_at = int32_t(current_type_state.return_size());
+		} else {
+			typecheck_3_record r;
+			r.stack_height_added_at = int32_t(current_type_state.main_size());
+			r.rstack_height_added_at = int32_t(current_type_state.return_size());
 
-				auto c = get_stack_consumption(w, word_index, env);
-				r.stack_consumed = c.stack;
-				r.rstack_consumed = c.rstack;
+			auto c = get_stack_consumption(w, word_index, env);
+			r.stack_consumed = c.stack;
+			r.rstack_consumed = c.rstack;
 
-				record_holder->tr.insert_or_assign((uint64_t(w) << 32) | uint64_t(word_index), r);
+			record_holder->tr.insert_or_assign((uint64_t(w) << 32) | uint64_t(word_index), r);
 		}
 
 		/*
@@ -4865,7 +4914,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		w = match.substitution_version;
 
 		if(!match.matched) {
-			if(typechecking_failed(env.mode)) {
+			if(failed(env.mode) || skip_compilation(env.mode)) {
 				return;
 			} else { // critical failure
 				env.report_error("could not match word to stack types");
@@ -4894,16 +4943,14 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		// level 2 typechecking -- should be able to trace through every branch to produce an accurate stack picture for all known words present in the definition
 		//
 
-		if(env.mode == fif_mode::typechecking_lvl_1 || env.mode == fif_mode::typechecking_lvl1_failed
-			|| env.mode == fif_mode::typechecking_lvl_2 || env.mode == fif_mode::typechecking_lvl2_failed) {
-
+		if(typechecking_level(env.mode) == 1 || typechecking_level(env.mode) == 2) {
 			if(std::holds_alternative<interpreted_word_instance>(*wi)) {
-				if(!typechecking_failed(env.mode)) {
+				if(!failed(env.mode) && !skip_compilation(env.mode)) {
 					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(*wi).stack_types_start, size_t(std::get<interpreted_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
 			} else if(std::holds_alternative<compiled_word_instance>(*wi)) {
 				// no special logic, compiled words assumed to always typecheck
-				if(!typechecking_failed(env.mode)) {
+				if(!failed(env.mode) && !skip_compilation(env.mode)) {
 					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(*wi).stack_types_start, size_t(std::get<compiled_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
 			}
@@ -4914,9 +4961,9 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		// level 3 typechecking -- recursively determine the minimum stack position of all dependencies
 		//
 
-		if(env.mode == fif_mode::typechecking_lvl_3 || env.mode == fif_mode::typechecking_lvl3_failed) {
+		if(typechecking_level(env.mode) == 3) {
 			if(std::holds_alternative<interpreted_word_instance>(*wi)) {
-				if(!typechecking_failed(env.mode)) {
+				if(!failed(env.mode) && !skip_compilation(env.mode)) {
 					// add typecheck info
 					if(std::get<interpreted_word_instance>(*wi).typechecking_level < 3) {
 						// this word also hasn't been compiled yet
@@ -4941,7 +4988,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 							}
 
 							if(std::get<interpreted_word_instance>(*wi).typechecking_level < 2) {
-								switch_compiler_stack_mode(env, fif_mode::typechecking_lvl_2);
+								switch_compiler_stack_mode(env, fif_mode::tc_level_2);
 
 								env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 								auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, *ws, w, match.word_index);
@@ -4951,20 +4998,19 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 								run_to_function_end(env);
 								env.source_stack.pop_back();
 
-								bool failed = typechecking_failed(env.mode);
+								bool fc = failed(env.mode);
 								restore_compiler_stack_mode(env);
 
-								if(failed) {
+								if(fc) {
 									env.report_error("level 2 typecheck failed");
 									env.mode = fif_mode::error;
 									return;
 								}
 
 								wi = &(env.dict.all_instances[match.word_index]);
-								std::get<interpreted_word_instance>(*wi).typechecking_level = 2;
 							}
 
-							env.mode = fif_mode::typechecking_lvl_3;
+							env.mode = fif_mode::tc_level_3;
 							if(auto erb = dep.find((uint64_t(w) << 32) | uint64_t(match.word_index)); erb != dep.end()) {
 								typecheck_3_record r;
 								r.stack_height_added_at = int32_t(ws->main_size());
@@ -4992,7 +5038,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(*wi).stack_types_start, size_t(std::get<interpreted_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
 			} else if(std::holds_alternative<compiled_word_instance>(*wi)) {
-				if(!typechecking_failed(env.mode)) {
+				if(!failed(env.mode) && !skip_compilation(env.mode)) {
 					// no special logic, compiled words assumed to always typecheck
 					apply_stack_description(std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<compiled_word_instance>(*wi).stack_types_start, size_t(std::get<compiled_word_instance>(*wi).stack_types_count)), *ws, env);
 				}
@@ -5000,6 +5046,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 
 			return;
 		}
+
 		if(env.mode == fif_mode::interpreting || env.mode == fif_mode::compiling_llvm || env.mode == fif_mode::compiling_bytecode) {
 			if(!compile_word(w, match.word_index, *ws, env.mode != fif_mode::compiling_llvm ? fif_mode::compiling_bytecode : fif_mode::compiling_llvm, env, called_tsub_types)) {
 				env.report_error("failed to compile word");
@@ -5066,7 +5113,9 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 			}
 		}
 	} else if(auto let = env.compiler_stack.back()->get_let(content_string); word.is_string == false && let && local_storage && local_storage && local_storage->size() > size_t(let->bank_offset)) {
-		if(typechecking_mode(env.mode)) {
+		if(skip_compilation(env.mode)) {
+
+		} else if(typechecking_mode(env.mode)) {
 			ws->push_back_main(local_storage->at(let->bank_offset).type, 0, nullptr);
 		} else if(env.mode == fif_mode::compiling_llvm) {
 			ws->push_back_main(local_storage->at(let->bank_offset).type, 0, local_storage->at(let->bank_offset).expression);
@@ -5090,7 +5139,9 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		std::vector<int32_t> subs;
 		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
 
-		if(typechecking_mode(env.mode)) {
+		if(skip_compilation(env.mode)) {
+
+		} else if(typechecking_mode(env.mode)) {
 			ws->push_back_main(mem_type.type, 0, 0);
 		} else if(env.mode == fif_mode::compiling_llvm) {
 			ws->push_back_main(mem_type.type, 0, var->alloc);
@@ -5122,7 +5173,9 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		std::vector<int32_t> subs;
 		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
 
-		if(typechecking_mode(env.mode)) {
+		if(skip_compilation(env.mode)) {
+
+		} else if(typechecking_mode(env.mode)) {
 			ws->push_back_main(mem_type.type, 0, 0);
 		} else if(env.mode == fif_mode::compiling_llvm) {
 			ws->push_back_main(mem_type.type, 0, varb->alloc);
