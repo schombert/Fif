@@ -1910,7 +1910,8 @@ inline int32_t* create_relet(fif::state_stack& s, int32_t* p, fif::environment* 
 			e->mode = fif_mode::error;
 			return nullptr;
 		} else {
-			if(!e->compiler_stack.back()->re_let(l, s.main_type_back(0), 0, nullptr))
+			auto cv = e->compiler_stack.back()->get_lvar_storage(l); // prevent typechecking from changing stored values
+			if(!e->compiler_stack.back()->re_let(l, cv->type, cv->data, cv->expression))
 				e->mode = fail_typechecking(e->mode);
 		}
 	} else if(e->mode == fif_mode::interpreting) {
