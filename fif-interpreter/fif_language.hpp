@@ -623,6 +623,7 @@ inline int32_t* lex_scope_end(fif::state_stack& s, int32_t* p, fif::environment*
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::lexical_scope) {
 		e->report_error("lexical scope ended in incorrect context");
 		e->mode = fif::fif_mode::error;
+		return nullptr;
 	} else {
 		e->compiler_stack.back()->finish(*e);
 		e->compiler_stack.pop_back();
@@ -638,6 +639,7 @@ inline int32_t* fif_else(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_if) {
 		e->report_error("invalid use of else");
 		e->mode = fif::fif_mode::error;
+		return nullptr;
 	} else {
 		fif::conditional_scope* c = static_cast<fif::conditional_scope*>(e->compiler_stack.back().get());
 		c->commit_first_branch(*e);
@@ -648,6 +650,7 @@ inline int32_t* fif_then(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_if) {
 		e->report_error("invalid use of then/end-if");
 		e->mode = fif::fif_mode::error;
+		return nullptr;
 	} else {
 		if(e->compiler_stack.back()->finish(*e))
 			e->compiler_stack.pop_back();
@@ -663,6 +666,7 @@ inline int32_t* fif_loop(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_while_loop) {
 		e->report_error("invalid use of loop");
 		e->mode = fif::fif_mode::error;
+		return nullptr;
 	} else {
 		fif::while_loop_scope* c = static_cast<fif::while_loop_scope*>(e->compiler_stack.back().get());
 		c->end_condition(*e);
@@ -673,6 +677,7 @@ inline int32_t* fif_end_while(fif::state_stack& s, int32_t* p, fif::environment*
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_while_loop) {
 		e->report_error("invalid use of end-while");
 		e->mode = fif::fif_mode::error;
+		return nullptr;
 	} else {
 		if(e->compiler_stack.back()->finish(*e))
 			e->compiler_stack.pop_back();
@@ -687,9 +692,10 @@ inline int32_t* fif_until(fif::state_stack& s, int32_t* p, fif::environment* e) 
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_do_loop) {
 		e->report_error("invalid use of until");
 		e->mode = fif::fif_mode::error;
+		return nullptr;
 	} else {
 		fif::do_loop_scope* c = static_cast<fif::do_loop_scope*>(e->compiler_stack.back().get());
-		c->at_until(*e);
+		c->until_statement(*e);
 	}
 	return p + 2;
 }
@@ -697,11 +703,39 @@ inline int32_t* fif_end_do(fif::state_stack& s, int32_t* p, fif::environment* e)
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_do_loop) {
 		e->report_error("invalid use of end-do");
 		e->mode = fif::fif_mode::error;
+		return nullptr;
 	} else {
 		if(e->compiler_stack.back()->finish(*e))
 			e->compiler_stack.pop_back();
 	}
 	return p + 2;
+}
+inline int32_t* fif_break(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->compiler_stack.empty()) {
+		e->report_error("invalid use of break");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	} else {
+		auto* s_top = e->compiler_stack.back().get();
+		while(s_top) {
+			if(s_top->get_type() == fif::control_structure::str_do_loop) {
+				fif::do_loop_scope* c = static_cast<fif::do_loop_scope*>(s_top);
+				c->add_break();
+				return p + 2;
+			} else if(s_top->get_type() == fif::control_structure::str_while_loop) {
+				fif::while_loop_scope* c = static_cast<fif::while_loop_scope*>(s_top);
+				c->add_break();
+				return p + 2;
+			}
+			if(s_top->get_type() == control_structure::mode_switch)
+				s_top = static_cast<mode_switch_scope*>(s_top)->interpreted_link;
+			else
+				s_top = s_top->parent;
+		}
+	}
+	e->report_error("break not used within a do or while loop");
+	e->mode = fif::fif_mode::error;
+	return nullptr;
 }
 inline int32_t* from_r(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
@@ -1870,41 +1904,41 @@ inline int32_t* create_relet(fif::state_stack& s, int32_t* p, fif::environment* 
 	auto name = read_token(e->source_stack.back(), *e);
 
 	if(typechecking_mode(e->mode) && !skip_compilation(e->mode)) {
-		auto l = e->compiler_stack.back()->get_let(std::string{ name.content });
-		if(!l) {
+		auto l = e->compiler_stack.back()->get_var(std::string{ name.content });
+		if(l == -1 || e->compiler_stack.back()->get_lvar_storage(l)->is_stack_variable == true) {
 			e->report_error("could not find a let with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		} else {
-			if(!e->compiler_stack.back()->re_let(l->bank_offset, s.main_type_back(0), 0, nullptr))
+			if(!e->compiler_stack.back()->re_let(l, s.main_type_back(0), 0, nullptr))
 				e->mode = fail_typechecking(e->mode);
 		}
 	} else if(e->mode == fif_mode::interpreting) {
-		auto l = e->compiler_stack.back()->get_let(std::string{ name.content });
-		if(!l) {
+		auto l = e->compiler_stack.back()->get_var(std::string{ name.content });
+		if(l == -1 || e->compiler_stack.back()->get_lvar_storage(l)->is_stack_variable == true) {
 			e->report_error("could not find a let with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		} else {
-			e->compiler_stack.back()->re_let(l->bank_offset, s.main_type_back(0), s.main_data_back(0), nullptr);
+			e->compiler_stack.back()->re_let(l, s.main_type_back(0), s.main_data_back(0), nullptr);
 		}
 	} else if(e->mode == fif_mode::compiling_llvm) {
-		auto l = e->compiler_stack.back()->get_let(std::string{ name.content });
-		if(!l) {
+		auto l = e->compiler_stack.back()->get_var(std::string{ name.content });
+		if(l == -1 || e->compiler_stack.back()->get_lvar_storage(l)->is_stack_variable == true) {
 			e->report_error("could not find a let with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		} else {
-			e->compiler_stack.back()->re_let(l->bank_offset, s.main_type_back(0), 0, s.main_ex_back(0));
+			e->compiler_stack.back()->re_let(l, s.main_type_back(0), 0, s.main_ex_back(0));
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
-		auto l = e->compiler_stack.back()->get_let(std::string{ name.content });
-		if(!l) {
+		auto l = e->compiler_stack.back()->get_var(std::string{ name.content });
+		if(l == -1 || e->compiler_stack.back()->get_lvar_storage(l)->is_stack_variable == true) {
 			e->report_error("could not find a let with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
-		e->compiler_stack.back()->re_let(l->bank_offset, s.main_type_back(0), 0, 0);
+		e->compiler_stack.back()->re_let(l, s.main_type_back(0), 0, 0);
 		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 		if(compile_bytes) {
 			fif_call imm = do_relet_creation;
@@ -1912,7 +1946,7 @@ inline int32_t* create_relet(fif::state_stack& s, int32_t* p, fif::environment* 
 			memcpy(&imm_bytes, &imm, 8);
 			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-			compile_bytes->push_back(l->bank_offset);
+			compile_bytes->push_back(l);
 		}
 	}
 
@@ -1923,17 +1957,19 @@ inline int32_t* create_relet(fif::state_stack& s, int32_t* p, fif::environment* 
 }
 
 inline int32_t* do_let_creation(fif::state_stack& s, int32_t* p, fif::environment* e) {
-	char* string_ptr = nullptr;
-	memcpy(&string_ptr, p + 2, 8);
+	auto index = *(p + 2);
 
-	auto l = e->compiler_stack.back()->create_let(std::string{ string_ptr }, s.main_type_back(0), s.main_data_back(0), nullptr);
+	auto l = e->compiler_stack.back()->get_lvar_storage(index);
 	if(!l) {
-		e->report_error("could not create a let with that name");
+		e->report_error("could not create a var with that name");
 		e->mode = fif_mode::error;
 		return nullptr;
 	}
+	l->data = s.main_data_back(0);
+	l->type = s.main_type_back(0);
+	l->is_stack_variable = false;
 	s.pop_main();
-	return p + 4;
+	return p + 3;
 }
 
 inline int32_t* create_let(fif::state_stack& s, int32_t* p, fif::environment* e) {
@@ -1946,21 +1982,21 @@ inline int32_t* create_let(fif::state_stack& s, int32_t* p, fif::environment* e)
 
 	if(e->mode == fif_mode::interpreting || (typechecking_mode(e->mode) && !skip_compilation(e->mode))) {
 		auto l = e->compiler_stack.back()->create_let(std::string{ name.content }, s.main_type_back(0), s.main_data_back(0), nullptr);
-		if(!l) {
+		if(l == -1) {
 			e->report_error("could not create a let with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
 	} else if(e->mode == fif_mode::compiling_llvm) {
 		auto l = e->compiler_stack.back()->create_let(std::string{ name.content }, s.main_type_back(0), 0, s.main_ex_back(0));
-		if(!l) {
+		if(l == -1) {
 			e->report_error("could not create a let with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto l = e->compiler_stack.back()->create_let(std::string{ name.content }, s.main_type_back(0), 0, 0);
-		if(!l) {
+		if(l == -1) {
 			e->report_error("could not create a let with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
@@ -1972,13 +2008,7 @@ inline int32_t* create_let(fif::state_stack& s, int32_t* p, fif::environment* e)
 			memcpy(&imm_bytes, &imm, 8);
 			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-
-			auto string_constant = e->get_string_constant(name.content);
-			char const* cptr = string_constant.data();
-			uint64_t let_addr = 0;
-			memcpy(&let_addr, &cptr, 8);
-			compile_bytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
-			compile_bytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+			compile_bytes->push_back(l);
 		}
 	}
 
@@ -2006,21 +2036,21 @@ inline int32_t* create_params(fif::state_stack& s, int32_t* p, fif::environment*
 		names.pop_back();
 		if(e->mode == fif_mode::interpreting || (typechecking_mode(e->mode) && !skip_compilation(e->mode))) {
 			auto l = e->compiler_stack.back()->create_let(std::string{ n.content }, s.main_type_back(0), s.main_data_back(0), nullptr);
-			if(!l) {
+			if(l == -1) {
 				e->report_error("could not create a let with that name");
 				e->mode = fif_mode::error;
 				return nullptr;
 			}
 		} else if(e->mode == fif_mode::compiling_llvm) {
 			auto l = e->compiler_stack.back()->create_let(std::string{ n.content }, s.main_type_back(0), 0, s.main_ex_back(0));
-			if(!l) {
+			if(l == -1) {
 				e->report_error("could not create a let with that name");
 				e->mode = fif_mode::error;
 				return nullptr;
 			}
 		} else if(e->mode == fif_mode::compiling_bytecode) {
 			auto l = e->compiler_stack.back()->create_let(std::string{ n.content }, s.main_type_back(0), 0, 0);
-			if(!l) {
+			if(l == -1) {
 				e->report_error("could not create a let with that name");
 				e->mode = fif_mode::error;
 				return nullptr;
@@ -2032,13 +2062,7 @@ inline int32_t* create_params(fif::state_stack& s, int32_t* p, fif::environment*
 				memcpy(&imm_bytes, &imm, 8);
 				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-
-				auto string_constant = e->get_string_constant(n.content);
-				char const* cptr = string_constant.data();
-				uint64_t let_addr = 0;
-				memcpy(&let_addr, &cptr, 8);
-				compile_bytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
-				compile_bytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+				compile_bytes->push_back(l);
 			}
 		}
 
@@ -2050,18 +2074,19 @@ inline int32_t* create_params(fif::state_stack& s, int32_t* p, fif::environment*
 }
 
 inline int32_t* do_var_creation(fif::state_stack& s, int32_t* p, fif::environment* e) {
-	char* string_ptr = nullptr;
-	memcpy(&string_ptr, p + 2, 8);
+	auto index = *(p + 2);
 
-	auto l = e->compiler_stack.back()->create_var(std::string{ string_ptr }, s.main_type_back(0));
+	auto l = e->compiler_stack.back()->get_lvar_storage(index);
 	if(!l) {
 		e->report_error("could not create a var with that name");
 		e->mode = fif_mode::error;
 		return nullptr;
 	}
 	l->data = s.main_data_back(0);
+	l->type = s.main_type_back(0);
+	l->is_stack_variable = true;
 	s.pop_main();
-	return p + 4;
+	return p + 3;
 }
 
 inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e) {
@@ -2074,25 +2099,25 @@ inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e)
 
 	if(e->mode == fif_mode::interpreting || (typechecking_mode(e->mode) && !skip_compilation(e->mode))) {
 		auto l = e->compiler_stack.back()->create_var(std::string{ name.content }, s.main_type_back(0));
-		if(!l) {
+		if(l == -1) {
 			e->report_error("could not create a var with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
-		l->data = s.main_data_back(0);
+		e->compiler_stack.back()->get_lvar_storage(l)->data = s.main_data_back(0);
 	} else if(e->mode == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		auto l = e->compiler_stack.back()->create_var(std::string{ name.content }, s.main_type_back(0));
-		if(!l) {
+		if(l == -1) {
 			e->report_error("could not create a var with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
-		LLVMBuildStore(e->llvm_builder, s.main_ex_back(0), l->alloc);
+		LLVMBuildStore(e->llvm_builder, s.main_ex_back(0), e->compiler_stack.back()->get_lvar_storage(l)->expression);
 #endif
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto l = e->compiler_stack.back()->create_var(std::string{ name.content }, s.main_type_back(0));
-		if(!l) {
+		if(l == -1) {
 			e->report_error("could not create a var with that name");
 			e->mode = fif_mode::error;
 			return nullptr;
@@ -2104,13 +2129,7 @@ inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e)
 			memcpy(&imm_bytes, &imm, 8);
 			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-
-			auto string_constant = e->get_string_constant(name.content);
-			char const* cptr = string_constant.data();
-			uint64_t let_addr = 0;
-			memcpy(&let_addr, &cptr, 8);
-			compile_bytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
-			compile_bytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
+			compile_bytes->push_back(l);
 		}
 	}
 
@@ -4665,6 +4684,7 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "do", fif_do, { }, true);
 	add_precompiled(fif_env, "until", fif_until, { }, true);
 	add_precompiled(fif_env, "end-do", fif_end_do, { fif::fif_bool }, true);
+	add_precompiled(fif_env, "break", fif_break, { }, true);
 
 	add_precompiled(fif_env, ">r", to_r, { -2, -1, -1, -1, -2 });
 	add_precompiled(fif_env, "r>", from_r, { -1, -2, -1, -2 });

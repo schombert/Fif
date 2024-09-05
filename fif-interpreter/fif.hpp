@@ -629,24 +629,16 @@ struct typecheck_3_record {
 	int32_t rstack_consumed = 0;
 };
 
-struct var_data {
-	int64_t data; // only in interpreter mode -- first so that we can treat the address as the data addres
-	LLVMValueRef alloc; // only in llvm mode
-	int32_t type;
-};
 struct internal_lvar_data {
 	int64_t data = 0; // only in interpreter mode
 	LLVMValueRef expression = nullptr; // only in llvm mode
 	int32_t type = 0;
+	bool is_stack_variable = false;
 };
-struct let_data {
-	int32_t bank_offset = 0;
-};
-
 class opaque_compiler_data {
-protected:
-	opaque_compiler_data* parent = nullptr;
 public:
+	opaque_compiler_data* parent = nullptr;
+
 	opaque_compiler_data(opaque_compiler_data* parent) : parent(parent) { }
 
 	virtual ~opaque_compiler_data() = default;
@@ -681,27 +673,37 @@ public:
 	virtual bool finish(environment& env) {
 		return true;
 	}
-	virtual var_data* get_var(std::string const& name) {
-		return parent ? parent->get_var(name) : nullptr;
+	virtual int32_t get_var(std::string const& name) {
+		return parent ? parent->get_var(name) : -1;
 	}
-	virtual let_data* get_let(std::string const& name) {
-		return parent ? parent->get_let(name) : nullptr;
+	virtual int32_t create_var(std::string const& name, int32_t type) {
+		return parent ? parent->create_var(name, type) : -1;
 	}
-	virtual var_data* create_var(std::string const& name, int32_t type) {
-		return parent ? parent->create_var(name, type) : nullptr;
-	}
-	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
-		return parent ? parent->create_let(name, type, data, expression) : nullptr;
+	virtual int32_t create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
+		return parent ? parent->create_let(name, type, data, expression) : -1;
 	}
 	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) {
-		 return parent ? parent->re_let(index, type, data, expression) : true;
+		return parent ? parent->re_let(index, type, data, expression) : true;
 	}
 	virtual std::vector<int32_t>* type_substitutions() {
 		return parent ? parent->type_substitutions() : nullptr;
 	}
-	virtual std::vector< internal_lvar_data>* get_lvar_storage() {
-		return parent ? parent->get_lvar_storage() : nullptr;
+	virtual internal_lvar_data* get_lvar_storage(int32_t offset) {
+		return parent ? parent->get_lvar_storage(offset) : nullptr;
 	}
+	virtual void resize_lvar_storage(int32_t sz) {
+		if(parent) parent->resize_lvar_storage(sz);
+	}
+	virtual std::vector< internal_lvar_data> copy_lvar_storage() {
+		return parent ? parent->copy_lvar_storage() : std::vector< internal_lvar_data>{ };
+	}
+	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) {
+		if(parent) parent->set_lvar_storage(v);
+	}
+	virtual int32_t size_lvar_storage() {
+		return parent ? parent->size_lvar_storage() : 0;
+	}
+	virtual void delete_locals() const { }
 };
 
 
@@ -712,12 +714,12 @@ public:
 
 enum class fif_mode : uint16_t {
 	primary_fn_mask			= 0x007,
-	interpreting					= 0x000,
-	compiling_bytecode			= 0x001,
-	compiling_llvm				= 0x002,
-	terminated					= 0x003,
-	error_base					= 0x004,
-	error						= 0x01C,
+	interpreting					= 0x001,
+	compiling_bytecode			= 0x002,
+	compiling_llvm				= 0x003,
+	terminated					= 0x004,
+	error_base					= 0x005,
+	error						= 0x01D,
 	typechecking				= 0x005,
 	compilation_masked		= 0x010,
 	failure						= 0x008,
@@ -771,6 +773,10 @@ inline fif_mode merge_modes(fif_mode a, fif_mode b) {
 	auto ma = uint16_t(a);
 	auto mb = uint16_t(b);
 	auto i = ma | mb;
+	
+	if(failed(a) && failed(b))
+		return fif_mode(i);
+
 	if((uint16_t(fif_mode::typecheck_recursion) & ma) == 0 && (uint16_t(fif_mode::compilation_masked) & ma) == 0) {
 		i &= ~uint16_t(fif_mode::typecheck_recursion);
 		i &= ~uint16_t(fif_mode::compilation_masked);
@@ -860,7 +866,7 @@ public:
 
 class compiler_globals_layer : public opaque_compiler_data {
 public:
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> global_vars;
+	ankerl::unordered_dense::map<std::string, std::unique_ptr<internal_lvar_data>> global_vars;
 	environment& env;
 	compiler_globals_layer(opaque_compiler_data* p, environment& env) : opaque_compiler_data(p), env(env) {
 	}
@@ -869,25 +875,25 @@ public:
 		return control_structure::globals;
 	}
 
-	var_data* get_global_var(std::string const& name) {
+	internal_lvar_data* get_global_var(std::string const& name) {
 		if(auto it = global_vars.find(name); it != global_vars.end()) {
 			return it->second.get();
 		}
 		return nullptr;
 	}
-	var_data* create_global_var(std::string const& name, int32_t type) {
+	internal_lvar_data* create_global_var(std::string const& name, int32_t type) {
 		if(auto it = global_vars.find(name); it != global_vars.end()) {
 			if(it->second->type == type)
 				return it->second.get();
 			else
 				return nullptr;
 		}
-		auto added = global_vars.insert_or_assign(name, std::make_unique<var_data>());
+		auto added = global_vars.insert_or_assign(name, std::make_unique<internal_lvar_data>());
 		added.first->second->type = type;
 		added.first->second->data = 0;
 #ifdef USE_LLVM
-		added.first->second->alloc = LLVMAddGlobal(env.llvm_module, env.dict.type_array[type].llvm_type, name.c_str());
-		LLVMSetInitializer(added.first->second->alloc, env.dict.type_array[type].zero_constant(env.llvm_context, type, &env));
+		added.first->second->expression = LLVMAddGlobal(env.llvm_module, env.dict.type_array[type].llvm_type, name.c_str());
+		LLVMSetInitializer(added.first->second->expression, env.dict.type_array[type].zero_constant(env.llvm_context, type, &env));
 #endif
 		return added.first->second.get();
 	}
@@ -2671,92 +2677,72 @@ inline bool compare_stack_description(std::span<const int32_t> a, std::span<cons
 
 class locals_holder : public opaque_compiler_data {
 public:
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<var_data>> vars;
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<let_data>> lets;
+	ankerl::unordered_dense::map<std::string, int32_t> vars;
 	environment& env;
 	const bool llvm_mode;
 	int32_t initial_bank_offset = 0;
 
 	locals_holder(opaque_compiler_data* p, environment& env) : opaque_compiler_data(p), env(env), llvm_mode(env.mode == fif_mode::compiling_llvm) {
-		auto data_scope = env.compiler_stack.back()->get_lvar_storage();
-		if(data_scope) {
-			initial_bank_offset = int32_t(data_scope->size());
-		}
+		initial_bank_offset = env.compiler_stack.back()->size_lvar_storage();
 	}
 
-	virtual var_data* get_var(std::string const& name)override {
+	virtual int32_t get_var(std::string const& name)override {
 		if(auto it = vars.find(name); it != vars.end()) {
-			return it->second.get();
+			return it->second;
 		}
-		return parent ? parent->get_var(name) : nullptr;
+		return parent ? parent->get_var(name) : -1;
 	}
-	virtual var_data* create_var(std::string const& name, int32_t type)override {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
+	virtual int32_t create_var(std::string const& name, int32_t type) override {
 		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
+			return -1;
 		}
+		
+		auto new_pos = env.compiler_stack.back()->size_lvar_storage();
+		env.compiler_stack.back()->resize_lvar_storage(new_pos + 1);
+		auto data_ptr = env.compiler_stack.back()->get_lvar_storage(new_pos);
 
-		auto added = vars.insert_or_assign(name, std::make_unique<var_data>());
-		added.first->second->type = type;
-		added.first->second->data = 0;
+		vars.insert_or_assign(name, new_pos);
+		data_ptr->is_stack_variable = true;
+		data_ptr->type = type;
+		data_ptr->data = 0;
 #ifdef USE_LLVM
-		added.first->second->alloc = llvm_mode ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
+		data_ptr->expression = llvm_mode ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
 #endif
-		return added.first->second.get();
+		return new_pos;
 	}
-	virtual let_data* get_let(std::string const& name) override {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return it->second.get();
-		}
-		return parent ? parent->get_let(name) : nullptr;
-	}
-	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression)override {
-		if(auto it = lets.find(name); it != lets.end()) {
-			return nullptr;
-		}
+	virtual int32_t create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) override {
 		if(auto it = vars.find(name); it != vars.end()) {
-			return nullptr;
-		}
-		auto data_scope = env.compiler_stack.back()->get_lvar_storage();
-		if(!data_scope) {
-			if(!typechecking_mode(env.mode)) {
-				env.mode = fif_mode::error;
-				env.report_error("attempted to create a let assignment without backing storage");
-			}
-			return nullptr;
+			return -1;
 		}
 
-		auto added = lets.insert_or_assign(name, std::make_unique<let_data>());
-		added.first->second->bank_offset = int32_t(data_scope->size());
-		data_scope->push_back(internal_lvar_data{ data, expression, type} );
+		auto new_pos = env.compiler_stack.back()->size_lvar_storage();
+		env.compiler_stack.back()->resize_lvar_storage(new_pos + 1);
+		auto data_ptr = env.compiler_stack.back()->get_lvar_storage(new_pos);
 
-		if(auto it = lets.find(name); it != lets.end()) {
-			return  it->second.get();
-		}
-		return nullptr;
+		vars.insert_or_assign(name, new_pos);
+		data_ptr->is_stack_variable = false;
+		data_ptr->type = type;
+		data_ptr->data = data;
+		data_ptr->expression = expression;
+
+		return new_pos;
 	}
 
-	void delete_locals() const {
+	virtual void delete_locals() const override {
 		auto* ws = env.compiler_stack.back()->working_state();
 		for(auto& l : vars) {
-			if(env.dict.type_array[l.second->type].flags != 0) {
+			auto data_ptr = env.compiler_stack.back()->get_lvar_storage(l.second);
+			if(env.dict.type_array[data_ptr->type].flags != 0) {
+				if(data_ptr->is_stack_variable) {
 #ifdef USE_LLVM
-				auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[l.second->type].llvm_type, l.second->alloc, "");
+					auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[data_ptr->type].llvm_type, data_ptr->expression, "");
 #else
-				void* iresult = nullptr;
+					void* iresult = nullptr;
 #endif
-				ws->push_back_main(l.second->type, l.second->data, iresult);
-				execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-			}
-		}
-		auto data_scope = env.compiler_stack.back()->get_lvar_storage();
-		if(data_scope) {
-
-			for(auto& l : lets) {
-				if(env.dict.type_array[data_scope->at(l.second->bank_offset).type].flags != 0) {
-					ws->push_back_main(data_scope->at(l.second->bank_offset).type, data_scope->at(l.second->bank_offset).data, data_scope->at(l.second->bank_offset).expression);
+					ws->push_back_main(data_ptr->type, data_ptr->data, iresult);
+					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				} else {
+					ws->push_back_main(data_ptr->type, data_ptr->data, data_ptr->expression);
 					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 				}
 			}
@@ -2765,15 +2751,13 @@ public:
 
 	void release_locals() {
 		delete_locals();
-
 		vars.clear();
-		lets.clear();
-
-		if(auto data_scope = env.compiler_stack.back()->get_lvar_storage(); data_scope) {
-			data_scope->resize(size_t(initial_bank_offset));
-		}
+		env.compiler_stack.back()->resize_lvar_storage(initial_bank_offset);
 	}
 };
+
+
+inline int32_t* enter_function(state_stack& s, int32_t* p, environment* env);
 
 class function_scope : public locals_holder {
 public:
@@ -2785,8 +2769,10 @@ public:
 	std::vector< internal_lvar_data> lvar_store;
 	LLVMValueRef llvm_fn = nullptr;
 	LLVMBasicBlockRef current_block = nullptr;
+	size_t locals_size_position = 0;
 	int32_t for_word = -1;
 	int32_t for_instance = -1;
+	int32_t max_locals_size = 0;
 	fif_mode entry_mode;
 	
 
@@ -2810,7 +2796,15 @@ public:
 				assert(for_instance != -1);
 				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = true;
 			}
-
+			if(env.mode == fif_mode::compiling_bytecode) {
+				fif_call imm2 = enter_function;
+				uint64_t imm2_bytes = 0;
+				memcpy(&imm2_bytes, &imm2, 8);
+				compiled_bytes.push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+				compiled_bytes.push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+				locals_size_position = compiled_bytes.size();
+				compiled_bytes.push_back(0);
+			}
 			if(env.mode == fif_mode::compiling_llvm) {
 				assert(for_instance != -1);
 				auto fn_desc = std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_start, std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_count);
@@ -2841,8 +2835,22 @@ public:
 			}
 		
 	}
-	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
-		return &lvar_store;
+	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
+		return &(lvar_store[offset]);
+	}
+	virtual void resize_lvar_storage(int32_t sz) override {
+		max_locals_size = std::max(max_locals_size, sz);
+		if(sz > 0)
+			lvar_store.resize(uint32_t(sz));
+	}
+	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
+		return lvar_store;
+	}
+	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
+		lvar_store = v;
+	}
+	virtual int32_t size_lvar_storage() override {
+		return int32_t(lvar_store.size());
 	}
 	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
 		if(lvar_store[index].type != type)
@@ -2973,6 +2981,9 @@ public:
 				env.mode = fif_mode::error;
 				return true;
 			}
+
+			compiled_bytes[locals_size_position] = max_locals_size;
+			
 			if(!skip_compilation(env.mode)) {
 				fif_call imm = function_return;
 				uint64_t imm_bytes = 0;
@@ -3036,27 +3047,10 @@ public:
 	}
 };
 
-inline int32_t* leave_scope(state_stack& s, int32_t* p, environment* env) {
-	env->compiler_stack.back()->finish(*env);
-	env->compiler_stack.pop_back();
-	return p + 2;
-}
-
-inline int32_t* enter_scope(state_stack& s, int32_t* p, environment* env);
-
 class lexical_scope : public locals_holder {
 public:
 	lexical_scope(opaque_compiler_data* p, environment& e) : locals_holder(p, e) {
 
-		if(env.mode == fif_mode::compiling_bytecode) {
-			auto bcode = parent->bytecode_compilation_progress();
-
-			fif_call imm2 = enter_scope;
-			uint64_t imm2_bytes = 0;
-			memcpy(&imm2_bytes, &imm2, 8);
-			bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-		}
 	}
 
 	virtual control_structure get_type()override {
@@ -3067,20 +3061,9 @@ public:
 		if(typechecking_mode(env.mode)) {
 			return true;
 		}
+		if(!skip_compilation(env.mode))
+			release_locals();
 
-		release_locals();
-
-		if(env.mode == fif_mode::compiling_bytecode) {
-			auto bcode = parent->bytecode_compilation_progress();
-
-			{
-				fif_call imm2 = leave_scope;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-			}
-		}
 		return true;
 	}
 };
@@ -3098,8 +3081,22 @@ public:
 	virtual control_structure get_type() override {
 		return control_structure::function;
 	}
-	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
-		return &lvar_store;
+	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
+		return &(lvar_store[offset]);
+	}
+	virtual void resize_lvar_storage(int32_t sz) override {
+		if(sz > 0 && uint32_t(sz) > lvar_store.size())
+			lvar_store.resize(uint32_t(sz));
+	}
+	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
+		return lvar_store;
+	}
+	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
+		for(auto sz = v.size(); sz-->0;)
+			lvar_store[sz] = v[sz];
+	}
+	virtual int32_t size_lvar_storage() override {
+		return int32_t(lvar_store.size());
 	}
 	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
 		if(lvar_store[index].type != type)
@@ -3127,9 +3124,9 @@ inline int32_t* call_function_indirect(state_stack& s, int32_t* p, environment* 
 	env->compiler_stack.pop_back();
 	return p + 3;
 }
-inline int32_t* enter_scope(state_stack& s, int32_t* p, environment* env) {
-	env->compiler_stack.push_back(std::make_unique<lexical_scope>(env->compiler_stack.back().get(), *env));
-	return p + 2;
+inline int32_t* enter_function(state_stack& s, int32_t* p, environment* env) {
+	env->compiler_stack.back()->resize_lvar_storage(*(p + 2));
+	return p + 3;
 }
 
 class mode_switch_scope : public opaque_compiler_data {
@@ -3170,17 +3167,26 @@ public:
 	virtual state_stack* working_state() override {
 		return interpreted_link ? interpreted_link->working_state() : nullptr;
 	}
-	virtual var_data* get_var(std::string const& name) override {
-		return interpreted_link ? interpreted_link->get_var(name) : nullptr;
+	virtual int32_t get_var(std::string const& name) override {
+		return interpreted_link ? interpreted_link->get_var(name) : -1;
 	}
-	virtual var_data* create_var(std::string const& name, int32_t type) override {
-		return interpreted_link ? interpreted_link->create_var(name, type) : nullptr;
+	virtual int32_t create_var(std::string const& name, int32_t type) override {
+		return interpreted_link ? interpreted_link->create_var(name, type) : -1;
 	}
-	virtual let_data* get_let(std::string const& name) override {
-		return interpreted_link ? interpreted_link->get_let(name) : nullptr;
+	virtual int32_t create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression)override {
+		return interpreted_link ? interpreted_link->create_let(name, type, data, expression) : -1;
 	}
-	virtual let_data* create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression)override {
-		return interpreted_link ? interpreted_link->create_let(name, type, data, expression) : nullptr;
+	virtual internal_lvar_data* get_lvar_storage(int32_t offset) {
+		return interpreted_link ? interpreted_link->get_lvar_storage(offset) : nullptr;
+	}
+	virtual void resize_lvar_storage(int32_t sz) {
+		if(interpreted_link) interpreted_link->resize_lvar_storage(sz);
+	}
+	virtual std::vector< internal_lvar_data> copy_lvar_storage() {
+		return interpreted_link ? interpreted_link->copy_lvar_storage() : std::vector< internal_lvar_data>{ };
+	}
+	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
+		if(interpreted_link) interpreted_link->set_lvar_storage(v);
 	}
 	virtual void set_working_state(std::unique_ptr<state_stack> p)override {
 		if(interpreted_link)
@@ -3213,9 +3219,25 @@ public:
 
 	outer_interpreter(environment& env) : locals_holder(nullptr, env), interpreter_state(std::make_unique<interpreter_stack>()) {
 	}
-	virtual std::vector< internal_lvar_data>* get_lvar_storage() override {
-		return &lvar_store;
+
+	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
+		return &(lvar_store[offset]);
 	}
+	virtual void resize_lvar_storage(int32_t sz) override {
+		if(sz > 0)
+			lvar_store.resize(uint32_t(sz));
+	}
+	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
+		return lvar_store;
+	}
+	virtual int32_t size_lvar_storage() override {
+		return int32_t(lvar_store.size());
+	}
+
+	virtual int32_t create_var(std::string const& name, int32_t type) override {
+		return -1;
+	}
+
 	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
 		if(lvar_store[index].type != type)
 			return false;
@@ -3468,6 +3490,19 @@ inline add_branch_result branch_target::add_concrete_branch(branch_source&& new_
 	return add_branch_result::ok;
 }
 inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new_branch, locals_holder const& loc, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env) {
+
+	auto burrow_down_delete = [&]() { 
+		auto* s_top = env.compiler_stack.back().get();
+		while(s_top != &loc) {
+			s_top->delete_locals();
+			if(s_top->get_type() == control_structure::mode_switch) 
+				s_top = static_cast<mode_switch_scope*>(s_top)->interpreted_link;
+			else
+				s_top = s_top->parent;
+		}
+		loc.delete_locals();
+	};
+
 	if(!types_on_entry) {
 		types_on_entry = new_branch.stack->copy();
 	} else {
@@ -3498,13 +3533,13 @@ inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new
 		}
 	}
 
-	if(loc.lets.size() != 0 || loc.vars.size() != 0) {
+	if(loc.vars.size() != 0) {
 		assert(new_branch.write_conditional);
 		if(env.mode == fif_mode::compiling_bytecode) {
 			auto bcode = env.compiler_stack.back()->bytecode_compilation_progress();
 
 			if(new_branch.unconditional_jump) {
-				loc.delete_locals();
+				burrow_down_delete();
 
 				fif_call imm = unconditional_jump;
 				uint64_t imm_bytes = 0;
@@ -3525,7 +3560,7 @@ inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new
 					forward_jump_pos = bcode->size();
 					bcode->push_back(0);
 				}
-				loc.delete_locals();
+				burrow_down_delete();
 				{
 					fif_call imm = unconditional_jump;
 					uint64_t imm_bytes = 0;
@@ -3550,7 +3585,7 @@ inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new
 				*pb = exit_block;
 
 				LLVMPositionBuilderAtEnd(env.llvm_builder, exit_block);
-				loc.delete_locals();
+				burrow_down_delete();
 
 				LLVMPositionBuilderAtEnd(env.llvm_builder, old_block);
 				if(new_branch.untaken_block) { // conditional jump
@@ -3663,13 +3698,12 @@ inline void branch_target::materialize(environment& env) {
 				phi_nodes.push_back(node);
 				new_state->set_return_ex_back(i, node);
 			}
-			auto l = env.compiler_stack.back()->get_lvar_storage();
-			assert(l);
+			auto lsz = env.compiler_stack.back()->size_lvar_storage();
 			for(uint32_t i = 0; i < altered_locals.size(); ++i) {
-				if(altered_locals[i] && i < l->size()) {
-					auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[l->at(i).type].llvm_type, "auto-l-phi");
+				if(altered_locals[i] && i < uint32_t(lsz)) {
+					auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[env.compiler_stack.back()->get_lvar_storage(int32_t(i))->type].llvm_type, "auto-l-phi");
 					phi_nodes.push_back(node);
-					l->at(i).expression = node;
+					env.compiler_stack.back()->get_lvar_storage(int32_t(i))->expression = node;
 				}
 			}
 			env.compiler_stack.back()->set_working_state(std::move(new_state));
@@ -3733,7 +3767,6 @@ inline void branch_target::finalize(environment& env) {
 				}
 				LLVMAddIncoming(phi_nodes[data_stack_touched + i], inc_vals.data(), inc_blocks.data(), uint32_t(branches_to_here.size()));
 			}
-			auto l = env.compiler_stack.back()->get_lvar_storage();
 			uint32_t j = 0;
 			for(uint32_t i = 0; i < altered_locals.size(); ++i) {
 				if(altered_locals[i]) {
@@ -3778,7 +3811,7 @@ public:
 			env.mode = fif_mode::error;
 		}
 		entry_mode = env.mode;
-		entry_locals_state = *(parent->get_lvar_storage());
+		entry_locals_state = env.compiler_stack.back()->copy_lvar_storage();
 		if(env.mode == fif_mode::interpreting) {
 			if(entry_state.main_data_back(0) != 0) {
 				interpreter_first_branch = true;
@@ -3806,15 +3839,7 @@ public:
 #endif
 		} else if(env.mode == fif_mode::compiling_bytecode) {
 			entry_state.pop_main();
-
 			else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, 0, 0, env);
-
-			auto bcode = parent->bytecode_compilation_progress();
-			fif_call imm2 = enter_scope;
-			uint64_t imm2_bytes = 0;
-			memcpy(&imm2_bytes, &imm2, 8);
-			bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
 		} else if(!skip_compilation(env.mode)) {
 			entry_state.pop_main();
 			else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, 0, 0, env);
@@ -3852,39 +3877,22 @@ public:
 			release_locals();
 		}
 
-		if(env.mode == fif_mode::compiling_bytecode) {
-			auto bcode = parent->bytecode_compilation_progress();
-			fif_call imm2 = leave_scope;
-			uint64_t imm2_bytes = 0;
-			memcpy(&imm2_bytes, &imm2, 8);
-			bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-		}
-
 		auto pb = env.compiler_stack.back()->llvm_block();
 
-		if(!recursive(env.mode)) {
-			scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
+		if(!skip_compilation(env.mode)) {
+			scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
 				uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
 				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
 		}
 
 		iworking_state = initial_state->copy();
 		lvar_relet.clear();
-		*(parent->get_lvar_storage()) = entry_locals_state;
+		env.compiler_stack.back()->set_lvar_storage(entry_locals_state);
 
 		else_target.materialize(env);
 
-		if(env.mode == fif_mode::compiling_bytecode) {
-			auto bcode = parent->bytecode_compilation_progress();
-			fif_call imm2 = enter_scope;
-			uint64_t imm2_bytes = 0;
-			memcpy(&imm2_bytes, &imm2, 8);
-			bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-		}
-
 		first_branch_end_mode = env.mode;
+		env.mode = entry_mode;
 	}
 	virtual control_structure get_type()override {
 		return control_structure::str_if;
@@ -3896,7 +3904,7 @@ public:
 		iworking_state = std::move(p);
 	}
 	virtual bool finish(environment&)override {
-		if(!typechecking_mode(env.mode)) {
+		if(!typechecking_mode(env.mode) && !skip_compilation(env.mode)) {
 			release_locals();
 		}
 
@@ -3909,36 +3917,28 @@ public:
 			return true;
 		}
 
-		if(env.mode == fif_mode::compiling_bytecode) {
-			auto bcode = parent->bytecode_compilation_progress();
-			fif_call imm2 = leave_scope;
-			uint64_t imm2_bytes = 0;
-			memcpy(&imm2_bytes, &imm2, 8);
-			bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-			bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-		}
-
 		auto pb = env.compiler_stack.back()->llvm_block();
 
 		if(!else_target.is_concrete) {
-			scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
-				uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
-				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+			if(!skip_compilation(env.mode)) {
+				scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
+					uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
+					uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+			}
 
 			first_branch_end_mode = env.mode;
-			if(typechecking_mode(env.mode))
-				env.mode = entry_mode;
+			env.mode = entry_mode;
 
 			iworking_state = initial_state->copy();
 			lvar_relet.clear();
-			*(parent->get_lvar_storage()) = entry_locals_state;
+			env.compiler_stack.back()->set_lvar_storage(entry_locals_state);
 
 			else_target.materialize(env);
 		}
 		else_target.finalize(env);
 
-		if(!recursive(env.mode)) {
-			auto branch_valid = scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true },
+		if(!skip_compilation(env.mode)) {
+			auto branch_valid = scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true },
 				lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
 				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
 			if(branch_valid != add_branch_result::ok) {
@@ -3948,8 +3948,7 @@ public:
 		scope_end.materialize(env);
 		scope_end.finalize(env);
 
-		if(!recursive(first_branch_end_mode))
-			env.mode = merge_modes(env.mode, first_branch_end_mode);
+		env.mode = merge_modes(env.mode, first_branch_end_mode);
 		
 		iworking_state->min_main_depth = std::min(uint32_t(iworking_state->main_size()) - scope_end.data_stack_touched, entry_ds_depth);
 		iworking_state->min_return_depth = std::min(uint32_t(iworking_state->return_size()) - scope_end.return_stack_touched, entry_rs_depth);
@@ -3975,7 +3974,7 @@ public:
 	
 	std::string_view entry_source;
 	fif_mode entry_mode;
-	fif_mode condition_mode;
+	fif_mode condition_mode = fif_mode(0);
 
 	bool phi_pass = false;
 	bool intepreter_skip_body = false;
@@ -4019,6 +4018,30 @@ public:
 	virtual void set_working_state(std::unique_ptr<state_stack> p) override {
 		iworking_state = std::move(p);
 	}
+	void add_break() {
+		if(condition_mode == fif_mode(0))
+			condition_mode = env.mode;
+		else
+			condition_mode = merge_modes(env.mode, condition_mode);
+
+		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+			auto pb = env.compiler_stack.back()->llvm_block();
+			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, 0, 0, env);
+			env.mode = surpress_branch(env.mode);
+		}
+
+		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
+			if(loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+				env.mode = fail_typechecking(env.mode);
+			}
+			env.mode = surpress_branch(env.mode);
+			return;
+		} else if(env.mode == fif_mode::interpreting) {
+			intepreter_skip_body = true;
+			env.mode = surpress_branch(env.mode);
+			return;
+		}
+	}
 	void end_condition(environment&) {
 		if(saw_conditional) {
 			env.report_error("multiple conditions in while loop");
@@ -4026,7 +4049,11 @@ public:
 			return;
 		}
 		saw_conditional = true;
-		condition_mode = env.mode;
+
+		if(condition_mode == fif_mode(0))
+			condition_mode = env.mode;
+		else
+			condition_mode = merge_modes(env.mode, condition_mode);
 
 		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
@@ -4053,16 +4080,18 @@ public:
 				LLVMAppendExistingBasicBlock(in_fn, continuation);
 			}
 
-			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, 0, 0, env);
+			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, 0, 0, env);
 		}
 
-		if(!failed(env.mode) && typechecking_mode(env.mode)) {
+		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
 			if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
 				env.mode = fail_typechecking(env.mode);
 				return;
 			}
 			iworking_state->pop_main();
-			loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+			if(loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+				env.mode = fail_typechecking(env.mode);
+			}
 			return;
 		} else if(env.mode == fif_mode::interpreting) {
 			if(iworking_state->main_data_back(0) == 0) {
@@ -4105,10 +4134,10 @@ public:
 
 		auto bcode = parent->bytecode_compilation_progress();
 
-		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+		if(base_mode(env.mode) == fif_mode::compiling_bytecode || base_mode(env.mode) == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
 
-			if(!saw_conditional) {
+			if(!saw_conditional && !skip_compilation(env.mode)) {
 				saw_conditional = true;
 				if(iworking_state->main_size() == 0) {
 					env.report_error("while loop terminated with an inappropriate conditional");
@@ -4130,29 +4159,23 @@ public:
 					LLVMAppendExistingBasicBlock(in_fn, continuation_block);
 				}
 
-				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), *(parent->get_lvar_storage()), pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true }, *this,  lvar_relet, 0, 0, env);
+				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true }, *this,  lvar_relet, 0, 0, env);
 			}
 
 
-			release_locals();
-			if(env.mode == fif_mode::compiling_bytecode) {
-				fif_call imm2 = leave_scope;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-			}
+			if(!skip_compilation(env.mode)) {
+				release_locals();
+				
+				auto bmatch = loop_start.add_concrete_branch(branch_source{
+					iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
+					0, false, true, true },
+					lvar_relet, 0, 0, env);
 
-			
-			auto bmatch = loop_start.add_concrete_branch(branch_source{
-				iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr,
-				0, false, true, true },
-				lvar_relet, 0, 0, env);
-
-			if(bmatch != add_branch_result::ok) {
-				env.mode = fif_mode::error;
-				env.report_error("branch types incompatible in while loop");
-				return true;
+				if(bmatch != add_branch_result::ok) {
+					env.mode = fif_mode::error;
+					env.report_error("branch types incompatible in while loop");
+					return true;
+				}
 			}
 
 			loop_start.finalize(env);
@@ -4160,13 +4183,8 @@ public:
 			loop_exit.materialize(env);
 			loop_exit.finalize(env);
 
-			if(env.mode == fif_mode::compiling_bytecode) {
-				fif_call imm2 = leave_scope;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-			}
+			if(condition_mode != fif_mode(0))
+				env.mode = merge_modes(env.mode, condition_mode);
 
 			iworking_state->min_main_depth = std::min(iworking_state->min_main_depth, initial_state->min_main_depth);
 			iworking_state->min_return_depth = std::min(iworking_state->min_return_depth, initial_state->min_return_depth);
@@ -4180,6 +4198,7 @@ public:
 			}
 
 			env.mode = entry_mode;
+			condition_mode = fif_mode(0);
 
 			loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 
@@ -4187,7 +4206,7 @@ public:
 
 			auto pb = env.compiler_stack.back()->llvm_block();
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-					iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : nullptr,  nullptr,  nullptr,
+					iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr,  nullptr,  nullptr,
 					0, false, true, true }, 
 				lvar_relet, 0, 0, env);
 			
@@ -4199,15 +4218,6 @@ public:
 
 			loop_start.materialize(env);
 
-			auto bcode = parent->bytecode_compilation_progress();
-			if(env.mode == fif_mode::compiling_bytecode) {
-				fif_call imm2 = enter_scope;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-			}
-
 			saw_conditional = false;
 			
 			if(!env.source_stack.empty())	
@@ -4216,8 +4226,12 @@ public:
 			return false;
 		} else if(typechecking_mode(env.mode)) {
 			if(!saw_conditional) {
-				condition_mode = env.mode;
-				if(!failed(env.mode)) {
+				if(condition_mode == fif_mode(0))
+					condition_mode = env.mode;
+				else
+					condition_mode = merge_modes(env.mode, condition_mode);
+
+				if(!skip_compilation(env.mode)) {
 					if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
 						env.mode = fail_typechecking(env.mode);
 						return true;
@@ -4227,17 +4241,21 @@ public:
 				}
 			}
 			
-			if(failed(env.mode) || (!recursive(env.mode) &&  loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok)) {
+			if(failed(env.mode) || (!recursive(env.mode) && !skip_compilation(env.mode) && loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok)) {
 				env.mode = fail_typechecking(env.mode);
 				return true;
 			}
 
-			if(recursive(env.mode))
+			if(recursive(env.mode) && condition_mode != fif_mode(0))
 				env.mode = merge_modes(env.mode, condition_mode);
 
-			loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
-			loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
-			parent->set_working_state(std::move(loop_exit.types_on_entry));
+			if(loop_exit.types_on_entry) {
+				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, iworking_state->min_main_depth);
+				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, iworking_state->min_return_depth);
+				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
+				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
+				parent->set_working_state(std::move(loop_exit.types_on_entry));
+			}
 			return true;
 
 		}
@@ -4257,8 +4275,10 @@ public:
 
 	std::string_view entry_source;
 	fif_mode entry_mode;
+	fif_mode condition_mode = fif_mode(0);
 
 	bool phi_pass = false;
+	bool intepreter_skip_body = false;
 
 	do_loop_scope(opaque_compiler_data* p, environment& e, state_stack& entry_state) : locals_holder(p, e) {
 		initial_state = entry_state.copy();
@@ -4270,7 +4290,7 @@ public:
 		if(!env.source_stack.empty()) {
 			entry_source = env.source_stack.back();
 		}
-		
+
 		if(typechecking_mode(env.mode)) {
 			if(failed(env.mode))
 				return;
@@ -4279,8 +4299,6 @@ public:
 		} else if(env.mode == fif_mode::interpreting) {
 			return;
 		}
-
-		
 		phi_pass = true;
 		env.mode = fif_mode::tc_level_2;
 	}
@@ -4290,7 +4308,7 @@ public:
 		lvar_relet[index] = true;
 		return parent ? parent->re_let(index, type, data, expression) : true;
 	}
-	virtual control_structure get_type() override {
+	virtual control_structure get_type()override {
 		return control_structure::str_do_loop;
 	}
 	virtual state_stack* working_state() override {
@@ -4299,77 +4317,112 @@ public:
 	virtual void set_working_state(std::unique_ptr<state_stack> p) override {
 		iworking_state = std::move(p);
 	}
-	void at_until(environment&) {
-		// don't actually need to do anything here ...
+	void add_break() {
+		if(condition_mode == fif_mode(0))
+			condition_mode = env.mode;
+		else
+			condition_mode = merge_modes(env.mode, condition_mode);
+
+		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+			auto pb = env.compiler_stack.back()->llvm_block();
+			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, 0, 0, env);
+			env.mode = surpress_branch(env.mode);
+		}
+
+		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
+			if(loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+				env.mode = fail_typechecking(env.mode);
+			}
+			env.mode = surpress_branch(env.mode);
+			return;
+		} else if(env.mode == fif_mode::interpreting) {
+			intepreter_skip_body = true;
+			env.mode = surpress_branch(env.mode);
+			return;
+		}
 	}
-	virtual bool finish(environment&)override {
-		release_locals();
+	void until_statement(environment&) {
+		// does nothing
+	}
+	virtual bool finish(environment&) override {
+		if(entry_mode == fif_mode::interpreting && intepreter_skip_body) {
+			env.mode = fif_mode::interpreting;
+
+			release_locals();
+			parent->set_working_state(std::move(iworking_state));
+			return true;
+		}
 
 		if(env.mode == fif_mode::interpreting) {
 			if(iworking_state->main_size() > 0 && iworking_state->main_type_back(0) == fif_bool) {
 				if(iworking_state->main_data_back(0) != 0) {
 					iworking_state->pop_main();
-
+					release_locals();
 					parent->set_working_state(std::move(iworking_state));
 					return true;
 				}
 				iworking_state->pop_main();
+			} else {
+				env.report_error("do loop terminated with an inappropriate conditional");
+				env.mode = fif_mode::error;
+				return true;
 			}
 			if(!env.source_stack.empty())
 				env.source_stack.back() = entry_source;
 			return false;
 		}
 
-		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
-			LLVMValueRef expr = nullptr;
-			if(iworking_state->main_size() > 0 && iworking_state->main_type_back(0) == fif_bool) {
-				expr = iworking_state->main_ex_back(0);
-				iworking_state->pop_main();
-			} else {
-				env.report_error("do loop not terminated with an appropriate conditional");
-				env.mode = fif_mode::error;
-				return true;
-			}
+		auto bcode = parent->bytecode_compilation_progress();
 
-			auto bcode = parent->bytecode_compilation_progress();
-			if(env.mode == fif_mode::compiling_bytecode) {
-				fif_call imm2 = leave_scope;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-			}
-			
-			// add branch back
+		if(base_mode(env.mode) == fif_mode::compiling_bytecode || base_mode(env.mode) == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
-			auto end_block = pb ? *pb : nullptr;
 
-			loop_exit.add_speculative_branch(*iworking_state, std::vector<bool>{}, 0, 0);
-			loop_exit.materialize(env);
+			if(!skip_compilation(env.mode)) {
+				if(iworking_state->main_size() == 0) {
+					env.report_error("while loop terminated with an inappropriate conditional");
+					env.mode = fif_mode::error;
+					return true;
+				}
+				if(iworking_state->main_type_back(0) != fif_bool) {
+					env.report_error("while loop terminated with an inappropriate conditional");
+					env.mode = fif_mode::error;
+					return true;
+				}
+				auto branch_condition = iworking_state->main_ex_back(0);
+				iworking_state->pop_main();
 
-			if(pb) {
-				*pb = end_block;
-				LLVMPositionBuilderAtEnd(env.llvm_builder, end_block);
-			}
+				LLVMBasicBlockRef continuation_block = nullptr;
+				if(env.mode == fif_mode::compiling_llvm) {
+					auto in_fn = env.compiler_stack.back()->llvm_function();
+					continuation_block = LLVMCreateBasicBlockInContext(env.llvm_context, "branch-target");
+					LLVMAppendExistingBasicBlock(in_fn, continuation_block);
+				}
 
-			auto bmatch = loop_start.add_concrete_branch(branch_source{
-				iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : end_block, expr, loop_exit.block_location,
-				0, false, false, true },
-				lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, true, false, true }, *this, lvar_relet, 0, 0, env);
 
-			if(bmatch != add_branch_result::ok) {
-				env.mode = fif_mode::error;
-				env.report_error("branch types incompatible in do loop");
-				return true;
+
+				release_locals();
+
+				auto bmatch = loop_start.add_concrete_branch(branch_source{
+					iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
+					0, false, true, true },
+					lvar_relet, 0, 0, env);
+
+				if(bmatch != add_branch_result::ok) {
+					env.mode = fif_mode::error;
+					env.report_error("branch types incompatible in while loop");
+					return true;
+				}
 			}
 
 			loop_start.finalize(env);
+
+			loop_exit.materialize(env);
 			loop_exit.finalize(env);
 
-			if(pb) {
-				*pb = loop_exit.block_location;
-				LLVMPositionBuilderAtEnd(env.llvm_builder, loop_exit.block_location);
-			}
+			if(condition_mode != fif_mode(0))
+				env.mode = merge_modes(env.mode, condition_mode);
+
 
 			iworking_state->min_main_depth = std::min(iworking_state->min_main_depth, initial_state->min_main_depth);
 			iworking_state->min_return_depth = std::min(iworking_state->min_return_depth, initial_state->min_return_depth);
@@ -4378,10 +4431,10 @@ public:
 			return true;
 		} else if(typechecking_level(env.mode) == 2 && phi_pass == true) {
 			phi_pass = false;
-
-			iworking_state->pop_main(); // remove conditional bool
+			iworking_state->pop_main();
 
 			env.mode = entry_mode;
+			condition_mode = fif_mode(0);
 
 			loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
 
@@ -4389,46 +4442,55 @@ public:
 
 			auto pb = env.compiler_stack.back()->llvm_block();
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-				iworking_state->copy(), * (parent->get_lvar_storage()), pb ? *pb : nullptr, nullptr, nullptr,
+				iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
 				0, false, true, true },
 				lvar_relet, 0, 0, env);
 
 			if(bmatch != add_branch_result::ok) {
 				env.mode = fif_mode::error;
-				env.report_error("branch types incompatible in do loop");
+				env.report_error("branch types incompatible in while loop");
 				return true;
 			}
 
 			loop_start.materialize(env);
 
-			auto bcode = parent->bytecode_compilation_progress();
-			if(env.mode == fif_mode::compiling_bytecode) {
-				fif_call imm2 = enter_scope;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				bcode->push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				bcode->push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-			}
-
 			if(!env.source_stack.empty())
 				env.source_stack.back() = entry_source;
 
 			return false;
-		} else if(typechecking_mode(env.mode) && !failed(env.mode)) {
-			if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+		} else if(typechecking_mode(env.mode)) {
+			if(condition_mode == fif_mode(0))
+				condition_mode = env.mode;
+			else
+				condition_mode = merge_modes(env.mode, condition_mode);
+
+			if(!skip_compilation(env.mode)) {
+				if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+					env.mode = fail_typechecking(env.mode);
+					return true;
+				}
+				iworking_state->pop_main();
+				loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+			}
+			
+			if(failed(env.mode) || (!recursive(env.mode) && !skip_compilation(env.mode) && loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok)) {
 				env.mode = fail_typechecking(env.mode);
 				return true;
 			}
-			iworking_state->pop_main();
 
-			auto bresult = loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+			if(recursive(env.mode) && condition_mode != fif_mode(0))
+				env.mode = merge_modes(env.mode, condition_mode);
 
-			if(bresult != add_branch_result::ok) {
-				env.mode = fail_typechecking(env.mode);
+			if(loop_exit.types_on_entry) {
+				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, iworking_state->min_main_depth);
+				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, iworking_state->min_return_depth);
+				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
+				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
+				parent->set_working_state(std::move(loop_exit.types_on_entry));
 			}
 			return true;
-		}
 
+		}
 		return true;
 	}
 };
@@ -4822,7 +4884,7 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 	return true;
 }
 
-inline var_data* get_global_var(environment& env, std::string const& name) {
+inline internal_lvar_data* get_global_var(environment& env, std::string const& name) {
 	for(auto& p : env.compiler_stack) {
 		if(p->get_type() == control_structure::globals)
 			return static_cast<compiler_globals_layer*>(p.get())->get_global_var(name);
@@ -4831,36 +4893,32 @@ inline var_data* get_global_var(environment& env, std::string const& name) {
 }
 
 inline int32_t* immediate_local(state_stack& s, int32_t* p, environment* e) {
-	char* name = 0;
-	memcpy(&name, p + 2, 8);
-
-	var_data* l = e->compiler_stack.back()->get_var(std::string(name));
+	int32_t index = *(p + 2);
+	int32_t type = *(p + 3);
+	auto* l = e->compiler_stack.back()->get_lvar_storage(index);
 	if(!l) {
 		e->report_error("unable to find local var");
 		return nullptr;
 	}
-	int32_t type = 0;
-	memcpy(&type, p + 4, 4);
 	s.push_back_main(type, (int64_t)l, nullptr);
-	return p + 5;
+	return p + 4;
 }
 
 inline int32_t* immediate_let(state_stack& s, int32_t* p, environment* e) {
 	auto index = *(p + 2);
-	auto ds = e->compiler_stack.back()->get_lvar_storage();
-	if(!ds || ds->size() <= size_t(index)) {
+	auto ds = e->compiler_stack.back()->get_lvar_storage(index);
+	if(!ds) {
 		e->report_error("unable to find local let");
 		return nullptr;
 	}
-
-	s.push_back_main(ds->at(index).type, ds->at(index).data, nullptr);
+	s.push_back_main(ds->type, ds->data, nullptr);
 	return p + 3;
 }
 
 inline int32_t* immediate_global(state_stack& s, int32_t* p, environment* e) {
 	char* name = 0;
 	memcpy(&name, p + 2, 8);
-	var_data* v = get_global_var(*e, std::string(name));
+	auto* v = get_global_var(*e, std::string(name));
 	if(!v) {
 		e->report_error("unable to find global");
 		return nullptr;
@@ -4882,7 +4940,6 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 	// TODO: string constant case
 
 	auto content_string = std::string{ word.content };
-	auto local_storage = env.compiler_stack.back()->get_lvar_storage();
 
 	if(is_integer(word.content.data(), word.content.data() + word.content.length())) {
 		do_immediate_i32(*ws, parse_int(word.content), &env);
@@ -5112,61 +5169,57 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 				}
 			}
 		}
-	} else if(auto let = env.compiler_stack.back()->get_let(content_string); word.is_string == false && let && local_storage && local_storage && local_storage->size() > size_t(let->bank_offset)) {
-		if(skip_compilation(env.mode)) {
+	} else if(auto var = env.compiler_stack.back()->get_var(content_string); word.is_string == false && var != -1) {
+		auto vdata = env.compiler_stack.back()->get_lvar_storage(var);
+		if(vdata->is_stack_variable) {
+			int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), vdata->type, -1 };
+			std::vector<int32_t> subs;
+			auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
 
-		} else if(typechecking_mode(env.mode)) {
-			ws->push_back_main(local_storage->at(let->bank_offset).type, 0, nullptr);
-		} else if(env.mode == fif_mode::compiling_llvm) {
-			ws->push_back_main(local_storage->at(let->bank_offset).type, 0, local_storage->at(let->bank_offset).expression);
-		} else if(env.mode == fif_mode::interpreting) {
-			ws->push_back_main(local_storage->at(let->bank_offset).type, local_storage->at(let->bank_offset).data, nullptr);
-		} else if(env.mode == fif_mode::compiling_bytecode) {
-			// implement let
-			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
-			if(cbytes) {
-				fif_call imm = immediate_let;
-				uint64_t imm_bytes = 0;
-				memcpy(&imm_bytes, &imm, 8);
-				cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-				cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-				cbytes->push_back(let->bank_offset);
+			if(skip_compilation(env.mode)) {
+
+			} else if(typechecking_mode(env.mode)) {
+				ws->push_back_main(mem_type.type, 0, 0);
+			} else if(env.mode == fif_mode::compiling_llvm) {
+				ws->push_back_main(mem_type.type, 0, vdata->expression);
+			} else if(env.mode == fif_mode::interpreting) {
+				ws->push_back_main(mem_type.type, (int64_t)(vdata), 0);
+			} else if(env.mode == fif_mode::compiling_bytecode) {
+				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+				if(cbytes) {
+					fif_call imm = immediate_local;
+					uint64_t imm_bytes = 0;
+					memcpy(&imm_bytes, &imm, 8);
+					cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+					cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+
+					cbytes->push_back(var); // index
+					cbytes->push_back(mem_type.type);
+				}
+				ws->push_back_main(mem_type.type, 0, 0);
 			}
-			ws->push_back_main(local_storage->at(let->bank_offset).type, 0, 0);
-		}
-	} else if(auto var = env.compiler_stack.back()->get_var(content_string); word.is_string == false && var) {
-		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), var->type, -1 };
-		std::vector<int32_t> subs;
-		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
+		} else {
+			if(skip_compilation(env.mode)) {
 
-		if(skip_compilation(env.mode)) {
-
-		} else if(typechecking_mode(env.mode)) {
-			ws->push_back_main(mem_type.type, 0, 0);
-		} else if(env.mode == fif_mode::compiling_llvm) {
-			ws->push_back_main(mem_type.type, 0, var->alloc);
-		} else if(env.mode == fif_mode::interpreting) {
-			ws->push_back_main(mem_type.type, (int64_t)(var), 0);
-		} else if(env.mode == fif_mode::compiling_bytecode) {
-			// implement let
-			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
-			if(cbytes) {
-				fif_call imm = immediate_local;
-				uint64_t imm_bytes = 0;
-				memcpy(&imm_bytes, &imm, 8);
-				cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-				cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-
-				auto string_constant = env.get_string_constant(word.content);
-				char const* cptr = string_constant.data();
-				uint64_t let_addr = 0;
-				memcpy(&let_addr, &cptr, 8);
-				cbytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
-				cbytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
-
-				cbytes->push_back(mem_type.type);
+			} else if(typechecking_mode(env.mode)) {
+				ws->push_back_main(vdata->type, 0, nullptr);
+			} else if(env.mode == fif_mode::compiling_llvm) {
+				ws->push_back_main(vdata->type, 0, vdata->expression);
+			} else if(env.mode == fif_mode::interpreting) {
+				ws->push_back_main(vdata->type, vdata->data, nullptr);
+			} else if(env.mode == fif_mode::compiling_bytecode) {
+				// implement let
+				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+				if(cbytes) {
+					fif_call imm = immediate_let;
+					uint64_t imm_bytes = 0;
+					memcpy(&imm_bytes, &imm, 8);
+					cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+					cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					cbytes->push_back(var);
+				}
+				ws->push_back_main(vdata->type, 0, 0);
 			}
-			ws->push_back_main(mem_type.type, 0, 0);
 		}
 	} else if(auto varb = get_global_var(env, content_string); word.is_string == false && varb) {
 		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), varb->type, -1 };
@@ -5178,7 +5231,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		} else if(typechecking_mode(env.mode)) {
 			ws->push_back_main(mem_type.type, 0, 0);
 		} else if(env.mode == fif_mode::compiling_llvm) {
-			ws->push_back_main(mem_type.type, 0, varb->alloc);
+			ws->push_back_main(mem_type.type, 0, varb->expression);
 		} else if(env.mode == fif_mode::interpreting) {
 			ws->push_back_main(mem_type.type, (int64_t)(varb), 0);
 		} else if(env.mode == fif_mode::compiling_bytecode) {
