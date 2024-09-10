@@ -737,6 +737,41 @@ inline int32_t* fif_break(fif::state_stack& s, int32_t* p, fif::environment* e) 
 	e->mode = fif::fif_mode::error;
 	return nullptr;
 }
+inline int32_t* fif_return(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->compiler_stack.empty()) {
+		e->report_error("invalid use of return");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	} else {
+		auto* s_top = e->compiler_stack.back().get();
+		while(s_top) {
+			if(s_top->get_type() == fif::control_structure::function) {
+				fif::function_scope* c = static_cast<fif::function_scope*>(s_top);
+				c->add_return();
+				return p + 2;
+			} else if(s_top->get_type() == fif::control_structure::rt_function) {
+				auto saved_fn = s_top;
+				s_top = e->compiler_stack.back().get();
+				while(s_top != saved_fn) {
+					s_top->delete_locals();
+					if(s_top->get_type() == control_structure::mode_switch)
+						s_top = static_cast<mode_switch_scope*>(s_top)->interpreted_link;
+					else
+						s_top = s_top->parent;
+				}
+				saved_fn->delete_locals();
+				return nullptr;
+			}
+			if(s_top->get_type() == control_structure::mode_switch)
+				s_top = static_cast<mode_switch_scope*>(s_top)->interpreted_link;
+			else
+				s_top = s_top->parent;
+		}
+	}
+	e->report_error("return not used within a function");
+	e->mode = fif::fif_mode::error;
+	return nullptr;
+}
 inline int32_t* from_r(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 		auto type_a = s.return_type_back(0);
@@ -4686,6 +4721,7 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "until", fif_until, { }, true);
 	add_precompiled(fif_env, "end-do", fif_end_do, { fif::fif_bool }, true);
 	add_precompiled(fif_env, "break", fif_break, { }, true);
+	add_precompiled(fif_env, "return", fif_return, { }, true);
 
 	add_precompiled(fif_env, ">r", to_r, { -2, -1, -1, -1, -2 });
 	add_precompiled(fif_env, "r>", from_r, { -1, -2, -1, -2 });

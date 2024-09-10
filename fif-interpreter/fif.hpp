@@ -137,7 +137,9 @@ public:
 	virtual void push_back_main(int32_t type, int64_t data, LLVMValueRef expr) = 0;
 	virtual void push_back_return(int32_t type, int64_t data, LLVMValueRef expr) = 0;
 	virtual std::unique_ptr< state_stack> copy() const = 0;
+	virtual std::unique_ptr<state_stack> new_copy() const = 0;
 	virtual void resize(size_t main_sz, size_t return_sz) = 0;
+	virtual void trim_to(size_t main_sz, size_t return_sz) = 0;
 
 	size_t main_size() const {
 		return main_types.size();
@@ -201,6 +203,19 @@ public:
 		return_exs.resize(return_sz);
 		main_types.resize(main_sz);
 		main_exs.resize(main_sz);
+	}
+	virtual void trim_to(size_t main_sz, size_t return_sz) override {
+		if(return_types.size() > return_sz) {
+			min_return_depth = size_t(std::max(int64_t(min_return_depth) - int64_t(return_types.size() - return_sz), int64_t(0)));
+			return_types.erase(return_types.begin(), return_types.begin() + (return_types.size() - return_sz));
+			return_exs.erase(return_exs.begin(), return_exs.begin() + (return_exs.size() - return_sz));
+			
+		}
+		if(main_types.size() > main_sz) {
+			min_main_depth = size_t(std::max(int64_t(min_main_depth) - int64_t(main_types.size() - main_sz), int64_t(0)));
+			main_types.erase(main_types.begin(), main_types.begin() + (main_types.size() - main_sz));
+			main_exs.erase(main_exs.begin(), main_exs.begin() + (main_exs.size() - main_sz));
+		}
 	}
 	virtual int64_t main_data(size_t index) const  override {
 		return 0;
@@ -290,6 +305,9 @@ public:
 		return_types.push_back(type);
 	}
 	virtual std::unique_ptr<state_stack> copy() const override {
+		return std::make_unique<llvm_stack>(*this);
+	}
+	virtual std::unique_ptr<state_stack> new_copy() const override {
 		auto temp_new = std::make_unique<llvm_stack>(*this);
 		temp_new->min_main_depth = main_types.size();
 		temp_new->min_return_depth = return_types.size();
@@ -316,6 +334,16 @@ public:
 		min_main_depth = std::min(min_main_depth, main_sz);
 		return_types.resize(return_sz);
 		main_types.resize(main_sz);
+	}
+	virtual void trim_to(size_t main_sz, size_t return_sz) override {
+		if(return_types.size() > return_sz) {
+			min_return_depth = size_t(std::max(int64_t(min_return_depth) - int64_t(return_types.size() - return_sz), int64_t(0)));
+			return_types.erase(return_types.begin(), return_types.begin() + (return_types.size() - return_sz));
+		}
+		if(main_types.size() > main_sz) {
+			min_main_depth = size_t(std::max(int64_t(min_main_depth) - int64_t(main_types.size() - main_sz), int64_t(0)));
+			main_types.erase(main_types.begin(), main_types.begin() + (main_types.size() - main_sz));
+		}
 	}
 	virtual int64_t main_data(size_t index) const override {
 		return 0;
@@ -395,6 +423,9 @@ public:
 		return_types.push_back(type);
 	}
 	virtual std::unique_ptr<state_stack> copy() const override {
+		return std::make_unique<type_stack>(*this);
+	}
+	virtual std::unique_ptr<state_stack> new_copy() const override {
 		auto temp_new = std::make_unique<type_stack>(*this);
 		temp_new->min_main_depth = main_types.size();
 		temp_new->min_return_depth = return_types.size();
@@ -415,7 +446,6 @@ struct interpreted_word_instance {
 	int32_t stack_types_start = 0;
 	int32_t stack_types_count = 0;
 	int32_t typechecking_level = 0;
-	uint8_t exit_point_count = 0;
 	bool being_compiled = false;
 	bool llvm_compilation_finished = false;
 	bool is_imported_function = false;
@@ -617,7 +647,7 @@ public:
 
 
 enum class control_structure : uint8_t {
-	none, function, str_if, str_while_loop, str_do_loop, mode_switch, globals, lexical_scope
+	none, function, str_if, str_while_loop, str_do_loop, mode_switch, globals, lexical_scope, rt_function
 };
 
 class compiler_state;
@@ -720,15 +750,15 @@ enum class fif_mode : uint16_t {
 	terminated					= 0x004,
 	error_base					= 0x005,
 	error						= 0x01D,
-	typechecking				= 0x005,
+	typechecking				= 0x006,
 	compilation_masked		= 0x010,
 	failure						= 0x008,
 	typecheck_provisional		= 0x020,
 	typecheck_recursion		= 0x040,
 	tc_level_mask				= 0xF00,
-	tc_level_1					= 0x105,
-	tc_level_2					= 0x205,
-	tc_level_3					= 0x305
+	tc_level_1					= 0x106,
+	tc_level_2					= 0x206,
+	tc_level_3					= 0x306
 };
 
 inline bool non_immediate_mode(fif_mode m) {
@@ -960,6 +990,18 @@ public:
 		main_types.resize(main_sz);
 		main_datas.resize(main_sz);
 	}
+	virtual void trim_to(size_t main_sz, size_t return_sz) override {
+		if(return_types.size() > return_sz) {
+			min_return_depth = size_t(std::max(int64_t(min_return_depth) - int64_t(return_types.size() - return_sz), int64_t(0)));
+			return_types.erase(return_types.begin(), return_types.begin() + (return_types.size() - return_sz));
+			return_datas.erase(return_datas.begin(), return_datas.begin() + (return_datas.size() - return_sz));
+		}
+		if(main_types.size() > main_sz) {
+			min_main_depth = size_t(std::max(int64_t(min_main_depth) - int64_t(main_types.size() - main_sz), int64_t(0)));
+			main_types.erase(main_types.begin(), main_types.begin() + (main_types.size() - main_sz));
+			main_datas.erase(main_datas.begin(), main_datas.begin() + (main_datas.size() - main_sz));
+		}
+	}
 	virtual int64_t main_data(size_t index) const override {
 		return main_datas[index];
 	}
@@ -1051,6 +1093,9 @@ public:
 		return_types.push_back(type);
 	}
 	virtual std::unique_ptr<state_stack> copy() const override {
+		return std::make_unique< interpreter_stack>(*this);
+	}
+	virtual std::unique_ptr<state_stack> new_copy() const override {
 		auto temp_new = std::make_unique< interpreter_stack>(*this);
 		temp_new->min_main_depth = main_types.size();
 		temp_new->min_return_depth = return_types.size();
@@ -2441,6 +2486,8 @@ inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, sta
 		++match_position;
 		//++ret_added;
 	}
+
+	ws.trim_to(size_t(consumed_stack_cells), size_t(consumed_rstack_cells));
 }
 
 struct brief_fn_return {
@@ -2518,7 +2565,7 @@ inline std::vector<int32_t> llvm_make_function_return(environment& env, std::spa
 
 	for(int32_t i = rsummary.num_stack_values - 1; i >= 0; --i) {
 		for(int32_t j = 0; uint32_t(j) < initial_parameters.size(); ++j) {
-			if(initial_parameters[j] == env.compiler_stack.back()->working_state()->main_ex_back(i)) {
+			if(env.compiler_stack.back()->working_state()->main_size() > uint32_t(j) && initial_parameters[j] == env.compiler_stack.back()->working_state()->main_ex_back(i)) {
 				permutation[pinsert_index] = j;
 				break;
 			}
@@ -2527,7 +2574,7 @@ inline std::vector<int32_t> llvm_make_function_return(environment& env, std::spa
 	}
 	for(int32_t i = rsummary.num_rstack_values - 1; i >= 0; --i) {
 		for(int32_t j = 0; uint32_t(j) < initial_parameters.size(); ++j) {
-			if(initial_parameters[j] == env.compiler_stack.back()->working_state()->return_ex_back(i)) {
+			if(env.compiler_stack.back()->working_state()->return_size() > uint32_t(j) && initial_parameters[j] == env.compiler_stack.back()->working_state()->return_ex_back(i)) {
 				permutation[pinsert_index] = j;
 				break;
 			}
@@ -2759,294 +2806,6 @@ public:
 
 inline int32_t* enter_function(state_stack& s, int32_t* p, environment* env);
 
-class function_scope : public locals_holder {
-public:
-	std::unique_ptr<state_stack> initial_state;
-	std::unique_ptr<state_stack> iworking_state;
-	std::vector<int32_t> compiled_bytes;
-	std::vector<int32_t> type_subs;
-	std::vector< LLVMValueRef> initial_parameters;
-	std::vector< internal_lvar_data> lvar_store;
-	LLVMValueRef llvm_fn = nullptr;
-	LLVMBasicBlockRef current_block = nullptr;
-	size_t locals_size_position = 0;
-	int32_t for_word = -1;
-	int32_t for_instance = -1;
-	int32_t max_locals_size = 0;
-	fif_mode entry_mode;
-	
-
-
-	function_scope(opaque_compiler_data* p, environment& e, state_stack& entry_state, int32_t for_word, int32_t for_instance) : locals_holder(p, e), for_word(for_word), for_instance(for_instance) {
-		
-		initial_state = entry_state.copy();
-		iworking_state = entry_state.copy();
-		entry_mode = env.mode;
-
-		if(for_word == -1) {
-			env.report_error("attempted to compile a function for an anonymous word");
-			env.mode = fif_mode::error;
-			return;
-		}
-
-		
-			if(typechecking_mode(env.mode))
-				env.dict.word_array[for_word].being_typechecked = true;
-			else if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
-				assert(for_instance != -1);
-				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = true;
-			}
-			if(env.mode == fif_mode::compiling_bytecode) {
-				fif_call imm2 = enter_function;
-				uint64_t imm2_bytes = 0;
-				memcpy(&imm2_bytes, &imm2, 8);
-				compiled_bytes.push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
-				compiled_bytes.push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
-				locals_size_position = compiled_bytes.size();
-				compiled_bytes.push_back(0);
-			}
-			if(env.mode == fif_mode::compiling_llvm) {
-				assert(for_instance != -1);
-				auto fn_desc = std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_start, std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_count);
-
-#ifdef USE_LLVM
-				if(!std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function) {
-					auto fn_string_name = word_name_from_id(for_word, env) + "#" + std::to_string(for_instance);
-					auto fn_type = llvm_function_type_from_desc(env, fn_desc);
-					std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function = LLVMAddFunction(env.llvm_module, fn_string_name.c_str(), fn_type);
-				}
-#endif
-				auto compiled_fn = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function;
-				llvm_fn = compiled_fn;
-
-#ifdef USE_LLVM
-				if(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).is_imported_function)
-					LLVMSetFunctionCallConv(compiled_fn, NATIVE_CC);
-				else
-					LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMFastCallConv);
-
-				LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMPrivateLinkage);
-				auto entry_block = LLVMAppendBasicBlockInContext(env.llvm_context, compiled_fn, "fn_entry_point");
-				LLVMPositionBuilderAtEnd(env.llvm_builder, entry_block);
-				llvm_make_function_parameters(env, compiled_fn, *iworking_state, fn_desc, initial_parameters);
-
-				current_block = entry_block;
-#endif
-			}
-		
-	}
-	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
-		return &(lvar_store[offset]);
-	}
-	virtual void resize_lvar_storage(int32_t sz) override {
-		max_locals_size = std::max(max_locals_size, sz);
-		if(sz > 0)
-			lvar_store.resize(uint32_t(sz));
-	}
-	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
-		return lvar_store;
-	}
-	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
-		lvar_store = v;
-	}
-	virtual int32_t size_lvar_storage() override {
-		return int32_t(lvar_store.size());
-	}
-	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
-		if(lvar_store[index].type != type)
-			return false;
-
-		lvar_store[index].data = data;
-		lvar_store[index].expression = expression;
-		return true;
-	}
-	virtual std::vector<int32_t>* type_substitutions() override {
-		return &type_subs;
-	}
-	virtual control_structure get_type()override {
-		return control_structure::function;
-	}
-	virtual LLVMValueRef llvm_function()override {
-		return llvm_fn;
-	}
-	virtual LLVMBasicBlockRef* llvm_block() override {
-		return &current_block;
-	}
-	virtual int32_t word_id()override {
-		return for_word;
-	}
-	virtual int32_t instance_id()override {
-		return for_instance;
-	}
-	virtual std::vector<int32_t>* bytecode_compilation_progress()override {
-		return &compiled_bytes;
-	}
-	virtual ankerl::unordered_dense::map<uint64_t, typecheck_3_record>* typecheck_record()override {
-		return parent ? parent->typecheck_record() : nullptr;
-	}
-	virtual state_stack* working_state()override {
-		return iworking_state.get();
-	}
-	virtual void set_working_state(std::unique_ptr<state_stack> p) override {
-		iworking_state = std::move(p);
-	}
-	virtual bool finish(environment&)override {
-		int32_t stack_consumed = int32_t(initial_state->main_size()) - int32_t(iworking_state->min_main_depth);
-		int32_t rstack_consumed = int32_t(initial_state->return_size()) - int32_t(iworking_state->min_return_depth);
-		int32_t stack_added = int32_t(iworking_state->main_size()) - int32_t(iworking_state->min_main_depth);
-		int32_t rstack_added = int32_t(iworking_state->return_size()) - int32_t(iworking_state->min_return_depth);
-		assert(stack_added >= 0);
-		assert(rstack_added >= 0);
-		assert(stack_consumed >= 0);
-		assert(rstack_consumed >= 0);
-
-		if(recursive(env.mode)) {
-			env.mode = fail_mode(env.mode);
-		}
-
-		if(typechecking_level(entry_mode) == 1 && !failed(env.mode)) {
-			word& w = env.dict.word_array[for_word];
-
-			interpreted_word_instance temp;
-			auto& current_stack = *iworking_state;
-
-			temp.stack_types_start = int32_t(env.dict.all_stack_types.size());
-			{
-				for(int32_t i = 0; i < stack_consumed; ++i) {
-					env.dict.all_stack_types.push_back(initial_state->main_type_back(i));
-				}
-			}
-			int32_t skipped = 0;
-			if(stack_added > 0) {
-				env.dict.all_stack_types.push_back(-1);
-				for(int32_t i = 1; i <= stack_added; ++i) {
-					env.dict.all_stack_types.push_back(current_stack.main_type_back(stack_added - i));
-				}
-			} else {
-				++skipped;
-			}
-			if(rstack_consumed > 0) {
-				for(; skipped > 0; --skipped)
-					env.dict.all_stack_types.push_back(-1);
-				env.dict.all_stack_types.push_back(-1);
-				for(int32_t i = 0; i < rstack_consumed; ++i) {
-					env.dict.all_stack_types.push_back(initial_state->return_type_back(i));
-				}
-			} else {
-				++skipped;
-			}
-			if(rstack_added > 0) {
-				for(; skipped > 0; --skipped)
-					env.dict.all_stack_types.push_back(-1);
-				env.dict.all_stack_types.push_back(-1);
-				for(int32_t i = 1; i <= rstack_added; ++i) {
-					env.dict.all_stack_types.push_back(current_stack.return_type_back(rstack_added - i));
-				}
-			}
-			temp.stack_types_count = int32_t(env.dict.all_stack_types.size()) - temp.stack_types_start;
-			temp.typechecking_level = provisional_success(env.mode) ? 1 : 3;
-
-			if(for_instance == -1) {
-				w.instances.push_back(int32_t(env.dict.all_instances.size()));
-				env.dict.all_instances.push_back(std::move(temp));
-			} else if(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).typechecking_level == 0) {
-				env.dict.all_instances[for_instance] = std::move(temp);
-			}
-
-			env.dict.word_array[for_word].being_typechecked = false;
-		} else if(typechecking_level(entry_mode) == 2 && !failed(env.mode)) {
-			if(for_instance == -1) {
-				env.report_error("tried to level 2 typecheck a word without an instance");
-				env.mode = fif_mode::error;
-				return true;
-			}
-			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
-			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
-			auto revised_description = expand_stack_description(*initial_state, existing_description, stack_consumed, rstack_consumed);
-
-			if(!compare_stack_description(existing_description, std::span<const int32_t>(revised_description.data(), revised_description.size()))) {
-				wi.stack_types_start = int32_t(env.dict.all_stack_types.size());
-				wi.stack_types_count = int32_t(revised_description.size());
-				env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), revised_description.begin(), revised_description.end());
-			}
-
-			wi.typechecking_level = std::max(wi.typechecking_level, provisional_success(env.mode) ? 2 : 3);
-			env.dict.word_array[for_word].being_typechecked = false;
-		} else if(typechecking_level(entry_mode) == 3 && !failed(env.mode)) {
-			// no alterations -- handled explicitly by invoking lvl 3
-			env.dict.word_array[for_word].being_typechecked = false;
-		} else if(base_mode(entry_mode) == fif_mode::compiling_bytecode) {
-			if(for_instance == -1) {
-				env.report_error("tried to compile a word without an instance");
-				env.mode = fif_mode::error;
-				return true;
-			}
-
-			compiled_bytes[locals_size_position] = max_locals_size;
-			
-			if(!skip_compilation(env.mode)) {
-				fif_call imm = function_return;
-				uint64_t imm_bytes = 0;
-				memcpy(&imm_bytes, &imm, 8);
-				compiled_bytes.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-				compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-			}
-
-			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
-			wi.compiled_bytecode = std::move(compiled_bytes);
-
-			if(for_instance != -1)
-				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
-		} else if(base_mode(entry_mode) == fif_mode::compiling_llvm) {
-#ifdef USE_LLVM
-			if(for_instance == -1) {
-				env.report_error("tried to compile a word without an instance");
-				env.mode = fif_mode::error;
-				return true;
-			}
-			if(!skip_compilation(env.mode))
-				release_locals(); 
-
-			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
-			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
-			if(!skip_compilation(env.mode)) {
-				wi.exit_point_count++;
-				if(wi.exit_point_count == 1) {
-					wi.llvm_parameter_permutation = llvm_make_function_return(env, existing_description, initial_parameters);
-				} else {
-					llvm_make_function_return(env, existing_description, initial_parameters);
-					wi.llvm_parameter_permutation.clear();
-				}
-			}
-			wi.llvm_compilation_finished = true;
-
-			if(LLVMVerifyFunction(wi.llvm_function, LLVMVerifierFailureAction::LLVMPrintMessageAction)) {
-
-				std::string mod_contents = LLVMPrintModuleToString(env.llvm_module);
-
-				char* message = nullptr;
-				LLVMVerifyModule(env.llvm_module, LLVMReturnStatusAction, &message);
-
-				env.report_error("LLVM verification of function failed");
-				env.mode = fif_mode::error;
-				return true;
-			}
-
-			if(for_instance != -1)
-				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
-#endif
-		} else if(typechecking_mode(entry_mode)) {
-			env.dict.word_array[for_word].being_typechecked = false;
-			return true;
-		} else {
-			env.report_error("reached end of compilation in unexpected mode");
-			env.mode = fif_mode::error;
-			return true;
-		}
-		return true;
-	}
-};
-
 class lexical_scope : public locals_holder {
 public:
 	lexical_scope(opaque_compiler_data* p, environment& e) : locals_holder(p, e) {
@@ -3079,7 +2838,7 @@ public:
 		return true;
 	}
 	virtual control_structure get_type() override {
-		return control_structure::function;
+		return control_structure::rt_function;
 	}
 	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
 		return &(lvar_store[offset]);
@@ -3428,30 +3187,28 @@ struct branch_target {
 	size_t bytecode_location = 0;
 	LLVMBasicBlockRef block_location = nullptr;
 
-	uint32_t data_stack_touched = 0;
-	uint32_t return_stack_touched = 0;
 	bool is_concrete = false;
 
-	inline add_branch_result add_concrete_branch(branch_source&& new_branch, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env);
-	inline add_branch_result add_cb_with_exit_pad(branch_source&& new_branch, locals_holder const& loc, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env);
-	inline add_branch_result add_speculative_branch(state_stack& entry_state, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched);
+	inline add_branch_result add_concrete_branch(branch_source&& new_branch, std::vector<bool> const& locals_altered, environment& env);
+	inline add_branch_result add_cb_with_exit_pad(branch_source&& new_branch, locals_holder const& loc, std::vector<bool> const& locals_altered, environment& env);
+	inline add_branch_result add_speculative_branch(state_stack& entry_state, std::vector<bool> const& locals_altered);
 	inline void materialize(environment& env); // make blocks, phi nodes
 	inline void finalize(environment& env); // write incoming links
 };
 
-inline add_branch_result branch_target::add_concrete_branch(branch_source&& new_branch, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env) {
-	if(!types_on_entry) {
+inline add_branch_result branch_target::add_concrete_branch(branch_source&& new_branch, std::vector<bool> const& locals_altered, environment& env) {
+	assert(!branches_to_here.empty() || !types_on_entry || (types_on_entry->main_size() == new_branch.stack->main_size() && types_on_entry->return_size() == new_branch.stack->return_size()));
+
+	if(!types_on_entry || branches_to_here.empty()) {
 		types_on_entry = new_branch.stack->copy();
 	} else {
 		if(!stack_types_match(*types_on_entry, *new_branch.stack)) {
 			return add_branch_result::incompatible;
 		}
+		types_on_entry->min_main_depth = std::min(types_on_entry->min_main_depth, new_branch.stack->min_main_depth);
+		types_on_entry->min_return_depth = std::min(types_on_entry->min_return_depth, new_branch.stack->min_return_depth);
 	}
 	if(is_concrete) {
-		if(data_stack_touched < ds_touched)
-			return add_branch_result::incompatible;
-		if(return_stack_touched < rs_touched)
-			return add_branch_result::incompatible;
 		for(auto i = locals_altered.size(); i-- > 0;) {
 			if(i > altered_locals.size())
 				return add_branch_result::incompatible;
@@ -3459,9 +3216,6 @@ inline add_branch_result branch_target::add_concrete_branch(branch_source&& new_
 				return add_branch_result::incompatible;
 		}
 	} else {
-		data_stack_touched = std::max(data_stack_touched, ds_touched);
-		return_stack_touched = std::max(return_stack_touched, rs_touched);
-
 		if(altered_locals.size() < locals_altered.size())
 			altered_locals.resize(locals_altered.size());
 		for(auto i = locals_altered.size(); i-- > 0;) {
@@ -3489,7 +3243,8 @@ inline add_branch_result branch_target::add_concrete_branch(branch_source&& new_
 	branches_to_here.emplace_back(std::move(new_branch));
 	return add_branch_result::ok;
 }
-inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new_branch, locals_holder const& loc, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched, environment& env) {
+inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new_branch, locals_holder const& loc, std::vector<bool> const& locals_altered, environment& env) {
+	assert(!branches_to_here.empty() || !types_on_entry || (types_on_entry->main_size() == new_branch.stack->main_size() && types_on_entry->return_size() == new_branch.stack->return_size()));
 
 	auto burrow_down_delete = [&]() { 
 		auto* s_top = env.compiler_stack.back().get();
@@ -3503,18 +3258,16 @@ inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new
 		loc.delete_locals();
 	};
 
-	if(!types_on_entry) {
+	if(!types_on_entry || branches_to_here.empty()) {
 		types_on_entry = new_branch.stack->copy();
 	} else {
 		if(!stack_types_match(*types_on_entry, *new_branch.stack)) {
 			return add_branch_result::incompatible;
 		}
+		types_on_entry->min_main_depth = std::min(types_on_entry->min_main_depth, new_branch.stack->min_main_depth);
+		types_on_entry->min_return_depth = std::min(types_on_entry->min_return_depth, new_branch.stack->min_return_depth);
 	}
 	if(is_concrete) {
-		if(data_stack_touched < ds_touched)
-			return add_branch_result::incompatible;
-		if(return_stack_touched < rs_touched)
-			return add_branch_result::incompatible;
 		for(auto i = locals_altered.size(); i-- > 0;) {
 			if(i > altered_locals.size())
 				return add_branch_result::incompatible;
@@ -3522,8 +3275,6 @@ inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new
 				return add_branch_result::incompatible;
 		}
 	} else {
-		data_stack_touched = std::max(data_stack_touched, ds_touched);
-		return_stack_touched = std::max(return_stack_touched, rs_touched);
 
 		if(altered_locals.size() < locals_altered.size())
 			altered_locals.resize(locals_altered.size());
@@ -3641,7 +3392,7 @@ inline add_branch_result branch_target::add_cb_with_exit_pad(branch_source&& new
 	branches_to_here.emplace_back(std::move(new_branch));
 	return add_branch_result::ok;
 }
-inline add_branch_result branch_target::add_speculative_branch(state_stack& entry_state, std::vector<bool> const& locals_altered, uint32_t ds_touched, uint32_t rs_touched) {
+inline add_branch_result branch_target::add_speculative_branch(state_stack& entry_state, std::vector<bool> const& locals_altered) {
 	if(!types_on_entry) {
 		types_on_entry = entry_state.copy();
 	} else {
@@ -3650,10 +3401,6 @@ inline add_branch_result branch_target::add_speculative_branch(state_stack& entr
 		}
 	}
 	if(is_concrete) {
-		if(data_stack_touched < ds_touched)
-			return add_branch_result::incompatible;
-		if(return_stack_touched < rs_touched)
-			return add_branch_result::incompatible;
 		for(auto i = locals_altered.size(); i-- > 0;) {
 			if(i > altered_locals.size())
 				return add_branch_result::incompatible;
@@ -3661,9 +3408,6 @@ inline add_branch_result branch_target::add_speculative_branch(state_stack& entr
 				return add_branch_result::incompatible;
 		}
 	} else {
-		data_stack_touched = std::max(data_stack_touched, ds_touched);
-		return_stack_touched = std::max(return_stack_touched, rs_touched);
-
 		if(altered_locals.size() < locals_altered.size())
 			altered_locals.resize(locals_altered.size());
 		for(auto i = locals_altered.size(); i-- > 0;) {
@@ -3688,12 +3432,12 @@ inline void branch_target::materialize(environment& env) {
 			LLVMPositionBuilderAtEnd(env.llvm_builder, block_location);
 			auto new_state = types_on_entry->copy();
 			
-			for(uint32_t i = 0; i < data_stack_touched; ++i) {
+			for(uint32_t i = 0; i < new_state->main_size(); ++i) {
 				auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[new_state->main_type_back(i)].llvm_type, "auto-d-phi");
 				phi_nodes.push_back(node);
 				new_state->set_main_ex_back(i, node);
 			}
-			for(uint32_t i = 0; i < return_stack_touched; ++i) {
+			for(uint32_t i = 0; i < new_state->return_size(); ++i) {
 				auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[new_state->return_type_back(i)].llvm_type, "auto-r-phi");
 				phi_nodes.push_back(node);
 				new_state->set_return_ex_back(i, node);
@@ -3753,19 +3497,19 @@ inline void branch_target::finalize(environment& env) {
 			for(auto& br : branches_to_here) {
 				inc_blocks.push_back(br.from_block);
 			}
-			for(uint32_t i = 0; i < data_stack_touched; ++i) {
+			for(uint32_t i = 0; i < types_on_entry->main_size(); ++i) {
 				inc_vals.clear();
 				for(auto& br : branches_to_here) {
 					inc_vals.push_back(br.stack->main_ex_back(i));
 				}
 				LLVMAddIncoming(phi_nodes[i], inc_vals.data(), inc_blocks.data(), uint32_t(branches_to_here.size()));
 			}
-			for(uint32_t i = 0; i < return_stack_touched; ++i) {
+			for(uint32_t i = 0; i < types_on_entry->return_size(); ++i) {
 				inc_vals.clear();
 				for(auto& br : branches_to_here) {
 					inc_vals.push_back(br.stack->return_ex_back(i));
 				}
-				LLVMAddIncoming(phi_nodes[data_stack_touched + i], inc_vals.data(), inc_blocks.data(), uint32_t(branches_to_here.size()));
+				LLVMAddIncoming(phi_nodes[types_on_entry->main_size() + i], inc_vals.data(), inc_blocks.data(), uint32_t(branches_to_here.size()));
 			}
 			uint32_t j = 0;
 			for(uint32_t i = 0; i < altered_locals.size(); ++i) {
@@ -3775,7 +3519,7 @@ inline void branch_target::finalize(environment& env) {
 						assert(i < br.locals_state.size());
 						inc_vals.push_back(br.locals_state[i].expression);
 					}
-					LLVMAddIncoming(phi_nodes[data_stack_touched + return_stack_touched + j], inc_vals.data(), inc_blocks.data(), uint32_t(branches_to_here.size()));
+					LLVMAddIncoming(phi_nodes[types_on_entry->main_size() + types_on_entry->return_size() + j], inc_vals.data(), inc_blocks.data(), uint32_t(branches_to_here.size()));
 					++j;
 				}
 			}
@@ -3785,9 +3529,359 @@ inline void branch_target::finalize(environment& env) {
 	}
 }
 
+class function_scope : public locals_holder {
+public:
+	branch_target fn_exit;
+
+	std::unique_ptr<state_stack> initial_state;
+	std::unique_ptr<state_stack> iworking_state;
+	std::vector<int32_t> compiled_bytes;
+	std::vector<int32_t> type_subs;
+	std::vector< LLVMValueRef> initial_parameters;
+	std::vector< internal_lvar_data> lvar_store;
+	std::vector<bool> lvar_relet;
+	LLVMValueRef llvm_fn = nullptr;
+	LLVMBasicBlockRef current_block = nullptr;
+	size_t locals_size_position = 0;
+	int32_t for_word = -1;
+	int32_t for_instance = -1;
+	int32_t max_locals_size = 0;
+	fif_mode entry_mode;
+	fif_mode condition_mode = fif_mode(0);
+	bool intepreter_skip_body = false;
+	uint8_t exit_point_count = 0;
+
+	function_scope(opaque_compiler_data* p, environment& e, state_stack& entry_state, int32_t for_word, int32_t for_instance) : locals_holder(p, e), for_word(for_word), for_instance(for_instance) {
+
+		initial_state = entry_state.new_copy();
+		iworking_state = entry_state.new_copy();
+		entry_mode = env.mode;
+
+		if(for_word == -1) {
+			env.report_error("attempted to compile a function for an anonymous word");
+			env.mode = fif_mode::error;
+			return;
+		}
+
+
+		if(typechecking_mode(env.mode))
+			env.dict.word_array[for_word].being_typechecked = true;
+		else if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+			assert(for_instance != -1);
+			std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = true;
+		}
+		if(env.mode == fif_mode::compiling_bytecode) {
+			fif_call imm2 = enter_function;
+			uint64_t imm2_bytes = 0;
+			memcpy(&imm2_bytes, &imm2, 8);
+			compiled_bytes.push_back(int32_t(imm2_bytes & 0xFFFFFFFF));
+			compiled_bytes.push_back(int32_t((imm2_bytes >> 32) & 0xFFFFFFFF));
+			locals_size_position = compiled_bytes.size();
+			compiled_bytes.push_back(0);
+		}
+		if(env.mode == fif_mode::compiling_llvm) {
+			assert(for_instance != -1);
+			auto fn_desc = std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_start, std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_count);
+
+#ifdef USE_LLVM
+			if(!std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function) {
+				auto fn_string_name = word_name_from_id(for_word, env) + "#" + std::to_string(for_instance);
+				auto fn_type = llvm_function_type_from_desc(env, fn_desc);
+				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function = LLVMAddFunction(env.llvm_module, fn_string_name.c_str(), fn_type);
+			}
+#endif
+			auto compiled_fn = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function;
+			llvm_fn = compiled_fn;
+
+#ifdef USE_LLVM
+			if(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).is_imported_function)
+				LLVMSetFunctionCallConv(compiled_fn, NATIVE_CC);
+			else
+				LLVMSetFunctionCallConv(compiled_fn, LLVMCallConv::LLVMFastCallConv);
+
+			LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMPrivateLinkage);
+			auto entry_block = LLVMAppendBasicBlockInContext(env.llvm_context, compiled_fn, "fn_entry_point");
+			LLVMPositionBuilderAtEnd(env.llvm_builder, entry_block);
+			llvm_make_function_parameters(env, compiled_fn, *iworking_state, fn_desc, initial_parameters);
+			initial_state = iworking_state->copy();
+			current_block = entry_block;
+#endif
+		}
+
+	}
+	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
+		return &(lvar_store[offset]);
+	}
+	virtual void resize_lvar_storage(int32_t sz) override {
+		max_locals_size = std::max(max_locals_size, sz);
+		if(sz > 0)
+			lvar_store.resize(uint32_t(sz));
+	}
+	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
+		return lvar_store;
+	}
+	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
+		lvar_store = v;
+	}
+	virtual int32_t size_lvar_storage() override {
+		return int32_t(lvar_store.size());
+	}
+	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
+		if(lvar_store[index].type != type)
+			return false;
+
+		if(lvar_relet.size() <= uint32_t(index))
+			lvar_relet.resize(uint32_t(index) + 1);
+		lvar_relet[index] = true;
+		
+		lvar_store[index].data = data;
+		lvar_store[index].expression = expression;
+		return true;
+	}
+	virtual std::vector<int32_t>* type_substitutions() override {
+		return &type_subs;
+	}
+	virtual control_structure get_type()override {
+		return control_structure::function;
+	}
+	virtual LLVMValueRef llvm_function()override {
+		return llvm_fn;
+	}
+	virtual LLVMBasicBlockRef* llvm_block() override {
+		return &current_block;
+	}
+	virtual int32_t word_id()override {
+		return for_word;
+	}
+	virtual int32_t instance_id()override {
+		return for_instance;
+	}
+	virtual std::vector<int32_t>* bytecode_compilation_progress()override {
+		return &compiled_bytes;
+	}
+	virtual ankerl::unordered_dense::map<uint64_t, typecheck_3_record>* typecheck_record()override {
+		return parent ? parent->typecheck_record() : nullptr;
+	}
+	virtual state_stack* working_state()override {
+		return iworking_state.get();
+	}
+	virtual void set_working_state(std::unique_ptr<state_stack> p) override {
+		iworking_state = std::move(p);
+	}
+	void add_return() {
+		if(condition_mode == fif_mode(0))
+			condition_mode = env.mode;
+		else
+			condition_mode = merge_modes(env.mode, condition_mode);
+
+		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+			++exit_point_count;
+			auto pb = env.compiler_stack.back()->llvm_block();
+			fn_exit.add_cb_with_exit_pad(branch_source{ env.compiler_stack.back()->working_state()->copy(), copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, env);
+			env.mode = surpress_branch(env.mode);
+		}
+
+		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
+			auto wstemp = env.compiler_stack.back()->working_state();
+			if(fn_exit.add_speculative_branch(*wstemp, lvar_relet) != add_branch_result::ok) {
+				env.mode = fail_typechecking(env.mode);
+			}
+			env.mode = surpress_branch(env.mode);
+			return;
+		} else if(env.mode == fif_mode::interpreting) {
+			intepreter_skip_body = true;
+			env.mode = surpress_branch(env.mode);
+			return;
+		}
+	}
+	virtual bool finish(environment&)override {
+		int32_t stack_consumed = int32_t(initial_state->main_size()) - int32_t(iworking_state->min_main_depth);
+		int32_t rstack_consumed = int32_t(initial_state->return_size()) - int32_t(iworking_state->min_return_depth);
+		int32_t stack_added = int32_t(iworking_state->main_size()) - int32_t(iworking_state->min_main_depth);
+		int32_t rstack_added = int32_t(iworking_state->return_size()) - int32_t(iworking_state->min_return_depth);
+		assert(stack_added >= 0);
+		assert(rstack_added >= 0);
+		assert(stack_consumed >= 0);
+		assert(rstack_consumed >= 0);
+
+		if(recursive(env.mode)) {
+			env.mode = fail_mode(env.mode);
+		}
+
+
+		if(entry_mode == fif_mode::interpreting && intepreter_skip_body) {
+			env.mode = fif_mode::interpreting;
+
+			release_locals();
+			return true;
+		}
+
+		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
+			if(fn_exit.add_speculative_branch(*iworking_state, lvar_relet) != add_branch_result::ok) {
+				env.mode = fail_typechecking(env.mode);
+			}
+		}
+
+		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+			++exit_point_count;
+			if(exit_point_count > 1) {
+				auto pb = env.compiler_stack.back()->llvm_block();
+				fn_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, env);
+			}
+		}
+
+		if(condition_mode != fif_mode(0))
+			env.mode = merge_modes(env.mode, condition_mode);
+
+		if(typechecking_level(entry_mode) == 1 && !failed(env.mode)) {
+			word& w = env.dict.word_array[for_word];
+
+			interpreted_word_instance temp;
+			auto& current_stack = *iworking_state;
+
+			temp.stack_types_start = int32_t(env.dict.all_stack_types.size());
+			{
+				for(int32_t i = 0; i < stack_consumed; ++i) {
+					env.dict.all_stack_types.push_back(initial_state->main_type_back(i));
+				}
+			}
+			int32_t skipped = 0;
+			if(stack_added > 0) {
+				env.dict.all_stack_types.push_back(-1);
+				for(int32_t i = 1; i <= stack_added; ++i) {
+					env.dict.all_stack_types.push_back(current_stack.main_type_back(stack_added - i));
+				}
+			} else {
+				++skipped;
+			}
+			if(rstack_consumed > 0) {
+				for(; skipped > 0; --skipped)
+					env.dict.all_stack_types.push_back(-1);
+				env.dict.all_stack_types.push_back(-1);
+				for(int32_t i = 0; i < rstack_consumed; ++i) {
+					env.dict.all_stack_types.push_back(initial_state->return_type_back(i));
+				}
+			} else {
+				++skipped;
+			}
+			if(rstack_added > 0) {
+				for(; skipped > 0; --skipped)
+					env.dict.all_stack_types.push_back(-1);
+				env.dict.all_stack_types.push_back(-1);
+				for(int32_t i = 1; i <= rstack_added; ++i) {
+					env.dict.all_stack_types.push_back(current_stack.return_type_back(rstack_added - i));
+				}
+			}
+			temp.stack_types_count = int32_t(env.dict.all_stack_types.size()) - temp.stack_types_start;
+			temp.typechecking_level = provisional_success(env.mode) ? 1 : 3;
+
+			if(for_instance == -1) {
+				w.instances.push_back(int32_t(env.dict.all_instances.size()));
+				env.dict.all_instances.push_back(std::move(temp));
+			} else if(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).typechecking_level == 0) {
+				env.dict.all_instances[for_instance] = std::move(temp);
+			}
+
+			env.dict.word_array[for_word].being_typechecked = false;
+		} else if(typechecking_level(entry_mode) == 2 && !failed(env.mode)) {
+			if(for_instance == -1) {
+				env.report_error("tried to level 2 typecheck a word without an instance");
+				env.mode = fif_mode::error;
+				return true;
+			}
+			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
+			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
+			auto revised_description = expand_stack_description(*initial_state, existing_description, stack_consumed, rstack_consumed);
+
+			if(!compare_stack_description(existing_description, std::span<const int32_t>(revised_description.data(), revised_description.size()))) {
+				wi.stack_types_start = int32_t(env.dict.all_stack_types.size());
+				wi.stack_types_count = int32_t(revised_description.size());
+				env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), revised_description.begin(), revised_description.end());
+			}
+
+			wi.typechecking_level = std::max(wi.typechecking_level, provisional_success(env.mode) ? 2 : 3);
+			env.dict.word_array[for_word].being_typechecked = false;
+		} else if(typechecking_level(entry_mode) == 3 && !failed(env.mode)) {
+			// no alterations -- handled explicitly by invoking lvl 3
+			env.dict.word_array[for_word].being_typechecked = false;
+		} else if(base_mode(entry_mode) == fif_mode::compiling_bytecode) {
+			if(for_instance == -1) {
+				env.report_error("tried to compile a word without an instance");
+				env.mode = fif_mode::error;
+				return true;
+			}
+
+			if(exit_point_count > 1) {
+				fn_exit.materialize(env);
+				fn_exit.finalize(env);
+			}
+
+			compiled_bytes[locals_size_position] = max_locals_size;
+
+			fif_call imm = function_return;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compiled_bytes.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			
+			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
+			wi.compiled_bytecode = std::move(compiled_bytes);
+
+			if(for_instance != -1)
+				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
+		} else if(base_mode(entry_mode) == fif_mode::compiling_llvm) {
+#ifdef USE_LLVM
+			if(for_instance == -1) {
+				env.report_error("tried to compile a word without an instance");
+				env.mode = fif_mode::error;
+				return true;
+			}
+
+			if(exit_point_count > 1) {
+				fn_exit.materialize(env);
+				fn_exit.finalize(env);
+			}
+
+			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
+			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
+
+			if(exit_point_count == 1) {
+				wi.llvm_parameter_permutation = llvm_make_function_return(env, existing_description, initial_parameters);
+			} else {
+				llvm_make_function_return(env, existing_description, initial_parameters);
+				wi.llvm_parameter_permutation.clear();
+			}
+			
+			wi.llvm_compilation_finished = true;
+
+			if(LLVMVerifyFunction(wi.llvm_function, LLVMVerifierFailureAction::LLVMPrintMessageAction)) {
+
+				std::string mod_contents = LLVMPrintModuleToString(env.llvm_module);
+
+				char* message = nullptr;
+				LLVMVerifyModule(env.llvm_module, LLVMReturnStatusAction, &message);
+
+				env.report_error("LLVM verification of function failed");
+				env.mode = fif_mode::error;
+				return true;
+			}
+
+			if(for_instance != -1)
+				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).being_compiled = false;
+#endif
+		} else if(typechecking_mode(entry_mode)) {
+			env.dict.word_array[for_word].being_typechecked = false;
+			return true;
+		} else {
+			env.report_error("reached end of compilation in unexpected mode");
+			env.mode = fif_mode::error;
+			return true;
+		}
+		return true;
+	}
+};
 class conditional_scope : public locals_holder {
 public:
-	std::unique_ptr<state_stack> iworking_state;
 	std::unique_ptr<state_stack> initial_state;
 	std::vector< internal_lvar_data> entry_locals_state;
 
@@ -3796,8 +3890,8 @@ public:
 	branch_target scope_end;
 	branch_target else_target;
 
-	uint32_t entry_ds_depth = 0;
-	uint32_t entry_rs_depth = 0;
+	size_t ds_depth = 0;
+	size_t rs_depth = 0;
 
 	fif_mode entry_mode;
 	fif_mode first_branch_end_mode;
@@ -3834,21 +3928,20 @@ public:
 				LLVMAppendExistingBasicBlock(env.compiler_stack.back()->llvm_function(), *pb);
 				LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
 
-				else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, parent_block, branch_condition, *pb, 0, false, false, true}, lvar_relet, 0, 0, env);
+				else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, parent_block, branch_condition, *pb, 0, false, false, true}, lvar_relet, env);
 			}
 #endif
 		} else if(env.mode == fif_mode::compiling_bytecode) {
 			entry_state.pop_main();
-			else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, 0, 0, env);
+			else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, env);
 		} else if(!skip_compilation(env.mode)) {
 			entry_state.pop_main();
-			else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, 0, 0, env);
+			else_target.add_concrete_branch(branch_source{ entry_state.copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, env);
 		}
 
-		entry_ds_depth = uint32_t(entry_state.min_main_depth);
-		entry_rs_depth = uint32_t(entry_state.min_return_depth);
+		ds_depth = uint32_t(entry_state.min_main_depth);
+		rs_depth = uint32_t(entry_state.min_return_depth);
 
-		iworking_state = entry_state.copy();
 		initial_state = entry_state.copy();
 	}
 	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
@@ -3880,28 +3973,23 @@ public:
 		auto pb = env.compiler_stack.back()->llvm_block();
 
 		if(!skip_compilation(env.mode)) {
-			scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
-				uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
-				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+			auto wstate = env.compiler_stack.back()->working_state();
+			ds_depth = std::min(ds_depth, wstate->min_main_depth);
+			rs_depth = std::min(rs_depth, wstate->min_return_depth);
+			scope_end.add_concrete_branch(branch_source{ wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet, env);
 		}
 
-		iworking_state = initial_state->copy();
+		env.compiler_stack.back()->set_working_state(initial_state->copy());
 		lvar_relet.clear();
 		env.compiler_stack.back()->set_lvar_storage(entry_locals_state);
 
-		else_target.materialize(env);
-
 		first_branch_end_mode = env.mode;
 		env.mode = entry_mode;
+
+		else_target.materialize(env);
 	}
 	virtual control_structure get_type()override {
 		return control_structure::str_if;
-	}
-	virtual state_stack* working_state() override {
-		return iworking_state.get();
-	}
-	virtual void set_working_state(std::unique_ptr<state_stack> p)override {
-		iworking_state = std::move(p);
 	}
 	virtual bool finish(environment&)override {
 		if(!typechecking_mode(env.mode) && !skip_compilation(env.mode)) {
@@ -3913,7 +4001,6 @@ public:
 		}
 
 		if(env.mode == fif_mode::interpreting) {
-			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
 
@@ -3921,42 +4008,39 @@ public:
 
 		if(!else_target.is_concrete) {
 			if(!skip_compilation(env.mode)) {
-				scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet,
-					uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
-					uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+				scope_end.add_concrete_branch(branch_source{ env.compiler_stack.back()->working_state()->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet, env);
 			}
 
 			first_branch_end_mode = env.mode;
 			env.mode = entry_mode;
 
-			iworking_state = initial_state->copy();
+			env.compiler_stack.back()->set_working_state(initial_state->copy());
 			lvar_relet.clear();
 			env.compiler_stack.back()->set_lvar_storage(entry_locals_state);
 
 			else_target.materialize(env);
 		}
-		else_target.finalize(env);
+		
 
 		if(!skip_compilation(env.mode)) {
-			auto branch_valid = scope_end.add_concrete_branch(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true },
-				lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth),
-				uint32_t(iworking_state->return_size() - iworking_state->min_return_depth), env);
+			auto branch_valid = scope_end.add_concrete_branch(branch_source{ env.compiler_stack.back()->working_state()->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet, env);
 			if(branch_valid != add_branch_result::ok) {
 				env.mode = fail_mode(env.mode);
 			}
 		}
+		
+		auto temp_mode = env.mode;
+		env.mode = entry_mode;
+		else_target.finalize(env);
+
+		env.mode = merge_modes(temp_mode, first_branch_end_mode);
+		
 		scope_end.materialize(env);
 		scope_end.finalize(env);
 
-		env.mode = merge_modes(env.mode, first_branch_end_mode);
-		
-		iworking_state->min_main_depth = std::min(uint32_t(iworking_state->main_size()) - scope_end.data_stack_touched, entry_ds_depth);
-		iworking_state->min_return_depth = std::min(uint32_t(iworking_state->return_size()) - scope_end.return_stack_touched, entry_rs_depth);
-
-		iworking_state->min_main_depth = std::min(uint32_t(iworking_state->main_size()) - scope_end.data_stack_touched, entry_ds_depth);
-		iworking_state->min_return_depth = std::min(uint32_t(iworking_state->return_size()) - scope_end.return_stack_touched, entry_rs_depth);
-
-		parent->set_working_state(std::move(iworking_state));
+		auto wstate = env.compiler_stack.back()->working_state();
+		wstate->min_main_depth = std::min(wstate->min_main_depth, ds_depth);
+		wstate->min_return_depth = std::min(wstate->min_return_depth, rs_depth);
 
 		return true;
 	}
@@ -3965,7 +4049,6 @@ public:
 class while_loop_scope : public locals_holder {
 public:
 	std::unique_ptr<state_stack> initial_state;
-	std::unique_ptr<state_stack> iworking_state;
 
 	std::vector<bool> lvar_relet;
 
@@ -3983,9 +4066,6 @@ public:
 
 	while_loop_scope(opaque_compiler_data* p, environment& e, state_stack& entry_state) : locals_holder(p, e) {
 		initial_state = entry_state.copy();
-		iworking_state = entry_state.copy();
-		initial_state->min_main_depth = entry_state.min_main_depth;
-		initial_state->min_return_depth = entry_state.min_return_depth;
 		entry_mode = env.mode;
 
 		if(!env.source_stack.empty()) {
@@ -3995,7 +4075,7 @@ public:
 		if(typechecking_mode(env.mode)) {
 			if(failed(env.mode))
 				return;
-			loop_start.add_speculative_branch(*iworking_state, lvar_relet, 0, 0);
+			loop_start.add_speculative_branch(*initial_state, lvar_relet);
 			return;
 		} else if(env.mode == fif_mode::interpreting) {
 			return;
@@ -4012,26 +4092,21 @@ public:
 	virtual control_structure get_type()override {
 		return control_structure::str_while_loop;
 	}
-	virtual state_stack* working_state() override {
-		return iworking_state.get();
-	}
-	virtual void set_working_state(std::unique_ptr<state_stack> p) override {
-		iworking_state = std::move(p);
-	}
 	void add_break() {
 		if(condition_mode == fif_mode(0))
 			condition_mode = env.mode;
 		else
 			condition_mode = merge_modes(env.mode, condition_mode);
 
+		auto wstemp = env.compiler_stack.back()->working_state();
 		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
-			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, 0, 0, env);
+			loop_exit.add_cb_with_exit_pad(branch_source{ wstemp->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, env);
 			env.mode = surpress_branch(env.mode);
 		}
 
 		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
-			if(loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+			if(loop_exit.add_speculative_branch(*wstemp, lvar_relet) != add_branch_result::ok) {
 				env.mode = fail_typechecking(env.mode);
 			}
 			env.mode = surpress_branch(env.mode);
@@ -4057,20 +4132,20 @@ public:
 
 		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
-
-			if(iworking_state->main_size() == 0) {
+			auto wstate = env.compiler_stack.back()->working_state();
+			if(wstate->main_size() == 0) {
 				env.report_error("while loop conditional terminated with an inappropriate value");
 				env.mode = fif_mode::error;
 				return;
 			}
-			if(iworking_state->main_type_back(0) != fif_bool) {
+			if(wstate->main_type_back(0) != fif_bool) {
 				env.report_error("while loop conditional terminated with an inappropriate value");
 				env.mode = fif_mode::error;
 				return;
 			}
 			
-			auto branch_condition = iworking_state->main_ex_back(0);
-			iworking_state->pop_main();
+			auto branch_condition = wstate->main_ex_back(0);
+			wstate->pop_main();
 
 			LLVMBasicBlockRef continuation = nullptr;
 
@@ -4080,25 +4155,26 @@ public:
 				LLVMAppendExistingBasicBlock(in_fn, continuation);
 			}
 
-			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, 0, 0, env);
+			loop_exit.add_cb_with_exit_pad(branch_source{ wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, env);
 		}
 
 		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
-			if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+			auto wstate = env.compiler_stack.back()->working_state();
+			if(wstate->main_size() == 0 || wstate->main_type_back(0) != fif_bool) {
 				env.mode = fail_typechecking(env.mode);
 				return;
 			}
-			iworking_state->pop_main();
-			if(loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+			wstate->pop_main();
+			if(loop_exit.add_speculative_branch(*wstate, lvar_relet) != add_branch_result::ok) {
 				env.mode = fail_typechecking(env.mode);
 			}
 			return;
 		} else if(env.mode == fif_mode::interpreting) {
-			if(iworking_state->main_data_back(0) == 0) {
+			if(env.compiler_stack.back()->working_state()->main_data_back(0) == 0) {
 				intepreter_skip_body = true;
 				env.mode = surpress_branch(env.mode);
 			}
-			iworking_state->pop_main();
+			env.compiler_stack.back()->working_state()->pop_main();
 			return;
 		}
 	}
@@ -4107,21 +4183,21 @@ public:
 			env.mode = fif_mode::interpreting;
 			
 			release_locals();
-			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
 
+		auto wstate = env.compiler_stack.back()->working_state();
+
 		if(env.mode == fif_mode::interpreting) {
-			if(!saw_conditional && iworking_state->main_type_back(0) == fif_bool) {
-				if(iworking_state->main_data_back(0) == 0) {
-					iworking_state->pop_main();
+			if(!saw_conditional && wstate->main_type_back(0) == fif_bool) {
+				if(wstate->main_data_back(0) == 0) {
+					wstate->pop_main();
 					release_locals();
-					parent->set_working_state(std::move(iworking_state));
 					return true;
 				}
-				iworking_state->pop_main();
+				wstate->pop_main();
 			}
-			if(!saw_conditional && iworking_state->main_type_back(0) != fif_bool) {
+			if(!saw_conditional && wstate->main_type_back(0) != fif_bool) {
 				env.report_error("while loop terminated with an inappropriate conditional");
 				env.mode = fif_mode::error;
 				return true;
@@ -4139,18 +4215,18 @@ public:
 
 			if(!saw_conditional && !skip_compilation(env.mode)) {
 				saw_conditional = true;
-				if(iworking_state->main_size() == 0) {
+				if(wstate->main_size() == 0) {
 					env.report_error("while loop terminated with an inappropriate conditional");
 					env.mode = fif_mode::error;
 					return true;
 				}
-				if(iworking_state->main_type_back(0) != fif_bool) {
+				if(wstate->main_type_back(0) != fif_bool) {
 					env.report_error("while loop terminated with an inappropriate conditional");
 					env.mode = fif_mode::error;
 					return true;
 				}
-				auto branch_condition = iworking_state->main_ex_back(0);
-				iworking_state->pop_main();
+				auto branch_condition = wstate->main_ex_back(0);
+				wstate->pop_main();
 
 				LLVMBasicBlockRef continuation_block = nullptr;
 				if(env.mode == fif_mode::compiling_llvm) {
@@ -4159,7 +4235,7 @@ public:
 					LLVMAppendExistingBasicBlock(in_fn, continuation_block);
 				}
 
-				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true }, *this,  lvar_relet, 0, 0, env);
+				loop_exit.add_cb_with_exit_pad(branch_source{ wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true }, *this,  lvar_relet, env);
 			}
 
 
@@ -4167,9 +4243,9 @@ public:
 				release_locals();
 				
 				auto bmatch = loop_start.add_concrete_branch(branch_source{
-					iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
+					wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
 					0, false, true, true },
-					lvar_relet, 0, 0, env);
+					lvar_relet, env);
 
 				if(bmatch != add_branch_result::ok) {
 					env.mode = fif_mode::error;
@@ -4186,29 +4262,25 @@ public:
 			if(condition_mode != fif_mode(0))
 				env.mode = merge_modes(env.mode, condition_mode);
 
-			iworking_state->min_main_depth = std::min(iworking_state->min_main_depth, initial_state->min_main_depth);
-			iworking_state->min_return_depth = std::min(iworking_state->min_return_depth, initial_state->min_return_depth);
-			parent->set_working_state(std::move(iworking_state));
-
 			return true;
 		} else if(typechecking_level(env.mode) == 2 && phi_pass == true) {
 			phi_pass = false;
 			if(!saw_conditional) {
-				iworking_state->pop_main();
+				wstate->pop_main();
 			}
 
 			env.mode = entry_mode;
 			condition_mode = fif_mode(0);
 
-			loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+			loop_start.add_speculative_branch(*wstate, lvar_relet);
 
-			iworking_state = initial_state->copy();
+			env.compiler_stack.back()->set_working_state(initial_state->copy());
 
 			auto pb = env.compiler_stack.back()->llvm_block();
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-					iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr,  nullptr,  nullptr,
+				initial_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr,  nullptr,  nullptr,
 					0, false, true, true }, 
-				lvar_relet, 0, 0, env);
+				lvar_relet, env);
 			
 			if(bmatch != add_branch_result::ok) {
 				env.mode = fif_mode::error;
@@ -4232,16 +4304,16 @@ public:
 					condition_mode = merge_modes(env.mode, condition_mode);
 
 				if(!skip_compilation(env.mode)) {
-					if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+					if(wstate->main_size() == 0 || wstate->main_type_back(0) != fif_bool) {
 						env.mode = fail_typechecking(env.mode);
 						return true;
 					}
-					iworking_state->pop_main();
-					loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+					wstate->pop_main();
+					loop_exit.add_speculative_branch(*wstate, lvar_relet);
 				}
 			}
 			
-			if(failed(env.mode) || (!recursive(env.mode) && !skip_compilation(env.mode) && loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok)) {
+			if(failed(env.mode) || (!recursive(env.mode) && !skip_compilation(env.mode) && loop_start.add_speculative_branch(*wstate, lvar_relet) != add_branch_result::ok)) {
 				env.mode = fail_typechecking(env.mode);
 				return true;
 			}
@@ -4250,10 +4322,8 @@ public:
 				env.mode = merge_modes(env.mode, condition_mode);
 
 			if(loop_exit.types_on_entry) {
-				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, iworking_state->min_main_depth);
-				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, iworking_state->min_return_depth);
-				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
-				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
+				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, wstate->min_main_depth);
+				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, wstate->min_return_depth);
 				parent->set_working_state(std::move(loop_exit.types_on_entry));
 			}
 			return true;
@@ -4266,7 +4336,6 @@ public:
 class do_loop_scope : public locals_holder {
 public:
 	std::unique_ptr<state_stack> initial_state;
-	std::unique_ptr<state_stack> iworking_state;
 
 	std::vector<bool> lvar_relet;
 
@@ -4282,9 +4351,6 @@ public:
 
 	do_loop_scope(opaque_compiler_data* p, environment& e, state_stack& entry_state) : locals_holder(p, e) {
 		initial_state = entry_state.copy();
-		iworking_state = entry_state.copy();
-		initial_state->min_main_depth = entry_state.min_main_depth;
-		initial_state->min_return_depth = entry_state.min_return_depth;
 		entry_mode = env.mode;
 
 		if(!env.source_stack.empty()) {
@@ -4294,7 +4360,7 @@ public:
 		if(typechecking_mode(env.mode)) {
 			if(failed(env.mode))
 				return;
-			loop_start.add_speculative_branch(*iworking_state, lvar_relet, 0, 0);
+			loop_start.add_speculative_branch(*initial_state, lvar_relet);
 			return;
 		} else if(env.mode == fif_mode::interpreting) {
 			return;
@@ -4311,26 +4377,22 @@ public:
 	virtual control_structure get_type()override {
 		return control_structure::str_do_loop;
 	}
-	virtual state_stack* working_state() override {
-		return iworking_state.get();
-	}
-	virtual void set_working_state(std::unique_ptr<state_stack> p) override {
-		iworking_state = std::move(p);
-	}
 	void add_break() {
 		if(condition_mode == fif_mode(0))
 			condition_mode = env.mode;
 		else
 			condition_mode = merge_modes(env.mode, condition_mode);
 
+		auto wstemp = env.compiler_stack.back()->working_state();
+
 		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
-			loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, 0, 0, env);
+			loop_exit.add_cb_with_exit_pad(branch_source{ wstemp->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, *this, lvar_relet, env);
 			env.mode = surpress_branch(env.mode);
 		}
 
 		if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
-			if(loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok) {
+			if(loop_exit.add_speculative_branch(*wstemp, lvar_relet) != add_branch_result::ok) {
 				env.mode = fail_typechecking(env.mode);
 			}
 			env.mode = surpress_branch(env.mode);
@@ -4349,19 +4411,18 @@ public:
 			env.mode = fif_mode::interpreting;
 
 			release_locals();
-			parent->set_working_state(std::move(iworking_state));
 			return true;
 		}
 
+		auto wstate = env.compiler_stack.back()->working_state();
 		if(env.mode == fif_mode::interpreting) {
-			if(iworking_state->main_size() > 0 && iworking_state->main_type_back(0) == fif_bool) {
-				if(iworking_state->main_data_back(0) != 0) {
-					iworking_state->pop_main();
+			if(wstate->main_size() > 0 && wstate->main_type_back(0) == fif_bool) {
+				if(wstate->main_data_back(0) != 0) {
+					wstate->pop_main();
 					release_locals();
-					parent->set_working_state(std::move(iworking_state));
 					return true;
 				}
-				iworking_state->pop_main();
+				wstate->pop_main();
 			} else {
 				env.report_error("do loop terminated with an inappropriate conditional");
 				env.mode = fif_mode::error;
@@ -4378,18 +4439,18 @@ public:
 			auto pb = env.compiler_stack.back()->llvm_block();
 
 			if(!skip_compilation(env.mode)) {
-				if(iworking_state->main_size() == 0) {
-					env.report_error("while loop terminated with an inappropriate conditional");
+				if(wstate->main_size() == 0) {
+					env.report_error("do loop terminated with an inappropriate conditional");
 					env.mode = fif_mode::error;
 					return true;
 				}
-				if(iworking_state->main_type_back(0) != fif_bool) {
-					env.report_error("while loop terminated with an inappropriate conditional");
+				if(wstate->main_type_back(0) != fif_bool) {
+					env.report_error("do loop terminated with an inappropriate conditional");
 					env.mode = fif_mode::error;
 					return true;
 				}
-				auto branch_condition = iworking_state->main_ex_back(0);
-				iworking_state->pop_main();
+				auto branch_condition = wstate->main_ex_back(0);
+				wstate->pop_main();
 
 				LLVMBasicBlockRef continuation_block = nullptr;
 				if(env.mode == fif_mode::compiling_llvm) {
@@ -4398,15 +4459,15 @@ public:
 					LLVMAppendExistingBasicBlock(in_fn, continuation_block);
 				}
 
-				loop_exit.add_cb_with_exit_pad(branch_source{ iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, true, false, true }, *this, lvar_relet, 0, 0, env);
+				loop_exit.add_cb_with_exit_pad(branch_source{ wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, true, false, true }, *this, lvar_relet, env);
 
 
 				release_locals();
 
 				auto bmatch = loop_start.add_concrete_branch(branch_source{
-					iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
+					wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
 					0, false, true, true },
-					lvar_relet, 0, 0, env);
+					lvar_relet, env);
 
 				if(bmatch != add_branch_result::ok) {
 					env.mode = fif_mode::error;
@@ -4424,27 +4485,23 @@ public:
 				env.mode = merge_modes(env.mode, condition_mode);
 
 
-			iworking_state->min_main_depth = std::min(iworking_state->min_main_depth, initial_state->min_main_depth);
-			iworking_state->min_return_depth = std::min(iworking_state->min_return_depth, initial_state->min_return_depth);
-			parent->set_working_state(std::move(iworking_state));
-
 			return true;
 		} else if(typechecking_level(env.mode) == 2 && phi_pass == true) {
 			phi_pass = false;
-			iworking_state->pop_main();
+			wstate->pop_main();
 
 			env.mode = entry_mode;
 			condition_mode = fif_mode(0);
 
-			loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+			loop_start.add_speculative_branch(*wstate, lvar_relet);
 
-			iworking_state = initial_state->copy();
+			env.compiler_stack.back()->set_working_state(initial_state->copy());
 
 			auto pb = env.compiler_stack.back()->llvm_block();
 			auto bmatch = loop_start.add_concrete_branch(branch_source{
-				iworking_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
+				initial_state->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
 				0, false, true, true },
-				lvar_relet, 0, 0, env);
+				lvar_relet, env);
 
 			if(bmatch != add_branch_result::ok) {
 				env.mode = fif_mode::error;
@@ -4465,15 +4522,15 @@ public:
 				condition_mode = merge_modes(env.mode, condition_mode);
 
 			if(!skip_compilation(env.mode)) {
-				if(iworking_state->main_size() == 0 || iworking_state->main_type_back(0) != fif_bool) {
+				if(wstate->main_size() == 0 || wstate->main_type_back(0) != fif_bool) {
 					env.mode = fail_typechecking(env.mode);
 					return true;
 				}
-				iworking_state->pop_main();
-				loop_exit.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth));
+				wstate->pop_main();
+				loop_exit.add_speculative_branch(*wstate, lvar_relet);
 			}
 			
-			if(failed(env.mode) || (!recursive(env.mode) && !skip_compilation(env.mode) && loop_start.add_speculative_branch(*iworking_state, lvar_relet, uint32_t(iworking_state->main_size() - iworking_state->min_main_depth), uint32_t(iworking_state->return_size() - iworking_state->min_return_depth)) != add_branch_result::ok)) {
+			if(failed(env.mode) || (!recursive(env.mode) && !skip_compilation(env.mode) && loop_start.add_speculative_branch(*wstate, lvar_relet) != add_branch_result::ok)) {
 				env.mode = fail_typechecking(env.mode);
 				return true;
 			}
@@ -4482,10 +4539,8 @@ public:
 				env.mode = merge_modes(env.mode, condition_mode);
 
 			if(loop_exit.types_on_entry) {
-				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, iworking_state->min_main_depth);
-				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, iworking_state->min_return_depth);
-				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, initial_state->min_main_depth);
-				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, initial_state->min_return_depth);
+				loop_exit.types_on_entry->min_main_depth = std::min(loop_exit.types_on_entry->min_main_depth, wstate->min_main_depth);
+				loop_exit.types_on_entry->min_return_depth = std::min(loop_exit.types_on_entry->min_return_depth, wstate->min_return_depth);
 				parent->set_working_state(std::move(loop_exit.types_on_entry));
 			}
 			return true;
