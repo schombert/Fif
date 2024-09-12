@@ -646,6 +646,17 @@ inline int32_t* fif_else(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	return p + 2;
 }
+inline int32_t* fif_and_if(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_if) {
+		e->report_error("invalid use of &if");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	} else {
+		fif::conditional_scope* c = static_cast<fif::conditional_scope*>(e->compiler_stack.back().get());
+		c->and_if();
+	}
+	return p + 2;
+}
 inline int32_t* fif_then(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::str_if) {
 		e->report_error("invalid use of then/end-if");
@@ -4712,6 +4723,7 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "}", lex_scope_end, { }, true);
 	add_precompiled(fif_env, "if", fif_if, { }, true);
 	add_precompiled(fif_env, "else", fif_else, { }, true);
+	add_precompiled(fif_env, "&if", fif_and_if, { }, true);
 	add_precompiled(fif_env, "then", fif_then, { }, true);
 	add_precompiled(fif_env, "end-if", fif_then, { }, true);
 	add_precompiled(fif_env, "while", fif_while, { }, true);

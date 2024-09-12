@@ -3811,7 +3811,7 @@ public:
 				return true;
 			}
 
-			if(exit_point_count > 1) {
+			if(exit_point_count > 1 || (exit_point_count == 1 && env.mode != fif_mode::compiling_bytecode)) {
 				fn_exit.materialize(env);
 				fn_exit.finalize(env);
 			}
@@ -3837,7 +3837,7 @@ public:
 				return true;
 			}
 
-			if(exit_point_count > 1) {
+			if(exit_point_count > 1 || (exit_point_count == 1 && env.mode != fif_mode::compiling_llvm)) {
 				fn_exit.materialize(env);
 				fn_exit.finalize(env);
 			}
@@ -3894,7 +3894,7 @@ public:
 	size_t rs_depth = 0;
 
 	fif_mode entry_mode;
-	fif_mode first_branch_end_mode;
+	fif_mode first_branch_end_mode = fif_mode(0);
 	bool interpreter_first_branch = false;
 	bool interpreter_second_branch = false;
 	bool typechecking_provisional_on_first_branch = false;
@@ -3950,6 +3950,95 @@ public:
 		lvar_relet[index] = true;
 		return parent ? parent->re_let(index, type, data, expression) : true;
 	}
+	void and_if() {
+		auto wstate = env.compiler_stack.back()->working_state();
+
+		if(env.mode == fif_mode::interpreting) {
+			if(wstate->main_data_back(0) != 0) {
+				interpreter_first_branch = true;
+				interpreter_second_branch = false;
+			} else {
+				interpreter_first_branch = false;
+				interpreter_second_branch = true;
+				release_locals();
+				env.mode = surpress_branch(env.mode);
+			}
+			wstate->pop_main();
+			return;
+		}
+
+		if(else_target.is_concrete) {
+			else_target = branch_target{ };
+			entry_mode = env.mode;
+			entry_locals_state = env.compiler_stack.back()->copy_lvar_storage();
+
+			if(env.mode == fif_mode::compiling_llvm) {
+#ifdef USE_LLVM
+				auto branch_condition = wstate->main_ex_back(0);
+				wstate->pop_main();
+
+				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
+					auto parent_block = *pb;
+
+					*pb = LLVMCreateBasicBlockInContext(env.llvm_context, "if-first-branch");
+					LLVMAppendExistingBasicBlock(env.compiler_stack.back()->llvm_function(), *pb);
+					LLVMPositionBuilderAtEnd(env.llvm_builder, *pb);
+
+					else_target.add_concrete_branch(branch_source{ wstate->copy(), { }, parent_block, branch_condition, *pb, 0, false, false, true }, lvar_relet, env);
+				}
+#endif
+			} else if(env.mode == fif_mode::compiling_bytecode) {
+				wstate->pop_main();
+				else_target.add_concrete_branch(branch_source{ wstate->copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, env);
+			} else if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
+				if(wstate->main_size() == 0 || wstate->main_type_back(0) != fif_bool) {
+					env.mode = fail_typechecking(env.mode);
+					return;
+				}
+				wstate->pop_main();
+				else_target.add_concrete_branch(branch_source{ wstate->copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, env);
+			}
+		} else {
+			if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+				auto pb = env.compiler_stack.back()->llvm_block();
+				if(wstate->main_size() == 0) {
+					env.report_error("&if with inappropriate value");
+					env.mode = fif_mode::error;
+					return;
+				}
+				if(wstate->main_type_back(0) != fif_bool) {
+					env.report_error("&if with inappropriate value");
+					env.mode = fif_mode::error;
+					return;
+				}
+
+				auto branch_condition = wstate->main_ex_back(0);
+				wstate->pop_main();
+
+				LLVMBasicBlockRef continuation = nullptr;
+#ifdef USE_LLVM
+				if(env.mode == fif_mode::compiling_llvm) {
+					auto in_fn = env.compiler_stack.back()->llvm_function();
+					continuation = LLVMCreateBasicBlockInContext(env.llvm_context, "continuation");
+					LLVMAppendExistingBasicBlock(in_fn, continuation);
+				}
+#endif
+				else_target.add_cb_with_exit_pad(branch_source{ wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation, 0, false, false, true }, *this, lvar_relet, env);
+
+			} else if(!skip_compilation(env.mode) && typechecking_mode(env.mode)) {
+				if(wstate->main_size() == 0 || wstate->main_type_back(0) != fif_bool) {
+					env.mode = fail_typechecking(env.mode);
+					return;
+				}
+				wstate->pop_main();
+				if(else_target.add_concrete_branch(branch_source{ wstate->copy(), { }, nullptr, nullptr, nullptr, 0, false, false, true }, lvar_relet, env) != add_branch_result::ok) {
+					env.mode = fail_typechecking(env.mode);
+					return;
+				}
+			}
+		}
+
+	}
 	void commit_first_branch(environment&) {
 		if(else_target.is_concrete) {
 			env.report_error("attempted to compile multiple else conditions");
@@ -3983,10 +4072,15 @@ public:
 		lvar_relet.clear();
 		env.compiler_stack.back()->set_lvar_storage(entry_locals_state);
 
-		first_branch_end_mode = env.mode;
+		if(first_branch_end_mode == fif_mode(0))
+			first_branch_end_mode = env.mode;
+		else
+			first_branch_end_mode = merge_modes(env.mode, first_branch_end_mode);
+
 		env.mode = entry_mode;
 
 		else_target.materialize(env);
+		else_target.finalize(env);
 	}
 	virtual control_structure get_type()override {
 		return control_structure::str_if;
@@ -4011,7 +4105,11 @@ public:
 				scope_end.add_concrete_branch(branch_source{ env.compiler_stack.back()->working_state()->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true }, lvar_relet, env);
 			}
 
-			first_branch_end_mode = env.mode;
+			if(first_branch_end_mode == fif_mode(0))
+				first_branch_end_mode = env.mode;
+			else
+				first_branch_end_mode = merge_modes(env.mode, first_branch_end_mode);
+
 			env.mode = entry_mode;
 
 			env.compiler_stack.back()->set_working_state(initial_state->copy());
@@ -4019,6 +4117,7 @@ public:
 			env.compiler_stack.back()->set_lvar_storage(entry_locals_state);
 
 			else_target.materialize(env);
+			else_target.finalize(env);
 		}
 		
 
@@ -4028,12 +4127,8 @@ public:
 				env.mode = fail_mode(env.mode);
 			}
 		}
-		
-		auto temp_mode = env.mode;
-		env.mode = entry_mode;
-		else_target.finalize(env);
 
-		env.mode = merge_modes(temp_mode, first_branch_end_mode);
+		env.mode = merge_modes(env.mode, first_branch_end_mode);
 		
 		scope_end.materialize(env);
 		scope_end.finalize(env);
