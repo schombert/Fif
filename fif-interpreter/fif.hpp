@@ -1960,11 +1960,91 @@ inline type_match_result match_stack_description(std::span<int32_t const> desc, 
 }
 
 
-inline void apply_stack_description(std::span<int32_t const> desc, state_stack& ts, std::vector<int32_t> const& param_perm, environment& env) { // ret: true if function matched
-	
+inline std::vector<int32_t> make_parameter_permutation(std::span<int32_t const> desc, state_stack const& final_state, state_stack const& initial_state) {
+	std::vector<int32_t> permutation;
+
+	int32_t match_position = 0;
 	// stack matching
 
-	
+	int32_t parameter_count = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		++match_position;
+		++parameter_count;
+	}
+
+	++match_position; // skip -1
+
+	// output stack
+	int32_t output_stack_types = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		++match_position;
+		++output_stack_types;
+	}
+	++match_position; // skip -1
+
+	// return stack matching
+	int32_t rparameter_count = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		++rparameter_count;
+	}
+
+	++match_position; // skip -1
+
+	// output ret stack
+	int32_t ret_added = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		++match_position;
+		++ret_added;
+	}
+
+	permutation.resize(output_stack_types + ret_added, -1);
+
+	uint32_t pinsert_index = 0;
+
+	for(int32_t i = output_stack_types - 1; i >= 0; --i) {
+		for(int32_t j = 0; j < parameter_count; ++j) {
+			if(initial_state.main_size() > uint32_t(j) && initial_state.main_data_back(size_t(j)) == final_state.main_data_back(size_t(i))) {
+				permutation[pinsert_index] = j;
+				break;
+			}
+		}
+		for(int32_t j = 0; j < rparameter_count; ++j) {
+			if(initial_state.return_size() > uint32_t(j) && initial_state.return_data_back(size_t(j)) == final_state.main_data_back(size_t(i))) {
+				permutation[pinsert_index] = j + parameter_count;
+				break;
+			}
+		}
+		++pinsert_index;
+	}
+	for(int32_t i = ret_added - 1; i >= 0; --i) {
+		for(int32_t j = 0; j < parameter_count; ++j) {
+			if(initial_state.main_size() > uint32_t(j) && initial_state.main_data_back(size_t(j)) == final_state.return_data_back(size_t(i))) {
+				permutation[pinsert_index] = j;
+				break;
+			}
+		}
+		for(int32_t j = 0; j < rparameter_count; ++j) {
+			if(initial_state.return_size() > uint32_t(j) && initial_state.return_data_back(size_t(j)) == final_state.return_data_back(size_t(i))) {
+				permutation[pinsert_index] = j + parameter_count;
+				break;
+			}
+		}
+		++pinsert_index;
+	}
+	while(!permutation.empty() && permutation.back() == -1)
+		permutation.pop_back();
+
+
+	// params array
+	// main_back 0 .... main_back n, return back 0 ... return back m
+	// permutation[ nth output ] -> if not -1 looks up and uses value in params array
+	// output 0 is first pushed to main ... output k is last pushed to return
+
+	return permutation;
+}
+
+inline void apply_stack_description(std::span<int32_t const> desc, state_stack& ts, std::vector<int32_t> const& param_perm, environment& env) { // ret: true if function matched
+	// stack matching
 	int32_t match_position = 0;
 	std::vector<int32_t> type_subs;
 	std::vector<int64_t> params;
@@ -2475,18 +2555,14 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 	return brief_fn_return{ ret_type , output_stack_types, ret_added, returns_group.size()  > 1};
 }
 
-inline std::vector<int32_t> llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<LLVMValueRef> const& initial_parameters) {
-	std::vector<int32_t> permutation;
-	
+inline void llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<LLVMValueRef> const& initial_parameters) {
 	auto rsummary = llvm_function_return_type_from_desc( env, desc);
-	permutation.resize(rsummary.num_stack_values + rsummary.num_rstack_values, -1);
-
+	
 	uint32_t pinsert_index = 0;
 
 	for(int32_t i = rsummary.num_stack_values - 1; i >= 0; --i) {
 		for(int32_t j = 0; uint32_t(j) < initial_parameters.size(); ++j) {
 			if(env.compiler_stack.back()->working_state()->main_size() > uint32_t(j) && initial_parameters[j] == env.compiler_stack.back()->working_state()->main_ex_back(i)) {
-				permutation[pinsert_index] = j;
 				break;
 			}
 		}
@@ -2495,7 +2571,6 @@ inline std::vector<int32_t> llvm_make_function_return(environment& env, std::spa
 	for(int32_t i = rsummary.num_rstack_values - 1; i >= 0; --i) {
 		for(int32_t j = 0; uint32_t(j) < initial_parameters.size(); ++j) {
 			if(env.compiler_stack.back()->working_state()->return_size() > uint32_t(j) && initial_parameters[j] == env.compiler_stack.back()->working_state()->return_ex_back(i)) {
-				permutation[pinsert_index] = j;
 				break;
 			}
 		}
@@ -2504,15 +2579,15 @@ inline std::vector<int32_t> llvm_make_function_return(environment& env, std::spa
 
 	if(rsummary.composite_type == nullptr) {
 		LLVMBuildRetVoid(env.llvm_builder);
-		return permutation;
+		return;
 	}
 	if(rsummary.is_struct_type == false) {
 		if(rsummary.num_stack_values == 0) {
 			LLVMBuildRet(env.llvm_builder, env.compiler_stack.back()->working_state()->return_ex_back(0));
-			return permutation;
+			return;
 		} else if(rsummary.num_rstack_values == 0) {
 			LLVMBuildRet(env.llvm_builder, env.compiler_stack.back()->working_state()->main_ex_back(0));
-			return permutation;
+			return;
 		} else {
 			assert(false);
 		}
@@ -2532,7 +2607,7 @@ inline std::vector<int32_t> llvm_make_function_return(environment& env, std::spa
 	LLVMBuildRet(env.llvm_builder, rstruct);
 	// LLVMBuildAggregateRet(env.llvm_builder, LLVMValueRef * RetVals, unsigned N);
 
-	return permutation;
+	return;
 }
 
 inline void llvm_make_function_call(environment& env, interpreted_word_instance& wi, std::span<int32_t const> desc) {
@@ -3608,6 +3683,7 @@ public:
 		return lvar_store;
 	}
 	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
+		max_locals_size = std::max(max_locals_size, int32_t(v.size()));
 		lvar_store = v;
 	}
 	virtual int32_t size_lvar_storage() override {
@@ -3770,6 +3846,9 @@ public:
 			}
 			temp.stack_types_count = int32_t(env.dict.all_stack_types.size()) - temp.stack_types_start;
 			temp.typechecking_level = provisional_success(env.mode) ? 1 : 3;
+			if(!provisional_success(env.mode)) {
+				temp.llvm_parameter_permutation = make_parameter_permutation(std::span<const int32_t>(env.dict.all_stack_types.data() + temp.stack_types_start, size_t(temp.stack_types_count)), iworking_state, initial_state);
+			}
 
 			if(for_instance == -1) {
 				w.instances.push_back(int32_t(env.dict.all_instances.size()));
@@ -3796,6 +3875,9 @@ public:
 			}
 
 			wi.typechecking_level = std::max(wi.typechecking_level, provisional_success(env.mode) ? 2 : 3);
+			if(!provisional_success(env.mode)) {
+				wi.llvm_parameter_permutation = make_parameter_permutation(revised_description, iworking_state, initial_state);
+			}
 			env.dict.word_array[for_word].being_typechecked = false;
 		} else if(typechecking_level(entry_mode) == 3 && !failed(env.mode)) {
 			// no alterations -- handled explicitly by invoking lvl 3
@@ -3833,7 +3915,7 @@ public:
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
 
-			wi.llvm_parameter_permutation = llvm_make_function_return(env, existing_description, initial_parameters);
+			llvm_make_function_return(env, existing_description, initial_parameters);
 			wi.llvm_compilation_finished = true;
 
 			if(LLVMVerifyFunction(wi.llvm_function, LLVMVerifierFailureAction::LLVMPrintMessageAction)) {
@@ -4854,10 +4936,15 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 		switch_compiler_stack_mode(env, fif_mode::tc_level_3);
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
 		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, word_index);
+		function_scope* sptr = fnscope.get();
 		fnscope->type_subs = tsubs;
 		env.compiler_stack.emplace_back(std::move(fnscope));
 
 		run_to_function_end(env);
+		
+		auto input_stack = std::move(sptr->initial_state);
+		auto final_stack = std::move(sptr ->iworking_state);
+
 		env.source_stack.pop_back();
 
 		bool fc = failed(env.mode);
@@ -4913,6 +5000,8 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 			env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), revised_description.begin(), revised_description.end());
 		}
 
+		wi.llvm_parameter_permutation = make_parameter_permutation(revised_description, final_stack, input_stack);
+		
 		env.compiler_stack.pop_back(); // for typecheck3_record_holder
 	}
 

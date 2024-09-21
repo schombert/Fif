@@ -3153,3 +3153,33 @@ TEST_CASE("adv control flow tests", "fif combined tests") {
 	}
 }
 
+TEST_CASE("parameter permutation detection", "fif compiler tests") {
+	SECTION("trivial") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t >r dup r> + ; 5 4 t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 2);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 5);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.main_data(1) == 9);
+		CHECK(values.main_type(1) == fif::fif_i32);
+
+		auto& wi = std::get<fif::interpreted_word_instance>(fif_env.dict.all_instances.back());
+		REQUIRE(wi.llvm_parameter_permutation.size() >= 1);
+		CHECK(wi.llvm_parameter_permutation.size() == 1);
+		CHECK(wi.llvm_parameter_permutation[0] == 1);
+	}
+}
+
