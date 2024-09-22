@@ -2380,7 +2380,7 @@ struct parse_result {
 inline void execute_fif_word(parse_result word, environment& env, bool ignore_specializations);
 
 #ifdef USE_LLVM
-inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int32_t const> desc) {
+inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
 	std::vector<LLVMTypeRef> parameter_group;
 	std::vector<LLVMTypeRef> returns_group;
 
@@ -2400,13 +2400,17 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 
 	++match_position; // skip -1
 
+	int32_t output_counter = 0;
+
 	// output stack
 	int32_t first_output_stack = match_position;
 	//int32_t output_stack_types = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
+			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		}
 		++match_position;
-		//++output_stack_types;
+		++output_counter;
 	}
 	++match_position; // skip -1
 
@@ -2423,9 +2427,11 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 	// output ret stack
 	//int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
+			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		}
 		++match_position;
-		//++ret_added;
+		++output_counter;
 	}
 
 	LLVMTypeRef ret_type = nullptr;
@@ -2497,7 +2503,7 @@ struct brief_fn_return {
 	bool is_struct_type;
 };
 
-inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std::span<int32_t const> desc) {
+inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
 	std::vector<LLVMTypeRef> returns_group;
 
 	/*
@@ -2509,29 +2515,28 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 
 	//int32_t consumed_stack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		//parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 		++match_position;
-		//++consumed_stack_cells;
 	}
 
 	++match_position; // skip -1
 
+	int32_t output_counter = 0;
+	int32_t output_stack_types = 0;
 	// output stack
 	int32_t first_output_stack = match_position;
-	int32_t output_stack_types = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
+			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			++output_stack_types;
+		}
 		++match_position;
-		++output_stack_types;
+		++output_counter;
 	}
 	++match_position; // skip -1
 
 	// return stack matching
-	//int32_t consumed_rstack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		//parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 		++match_position;
-		//++consumed_rstack_cells;
 	}
 
 	++match_position; // skip -1
@@ -2539,14 +2544,17 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 	// output ret stack
 	int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
+			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			++ret_added;
+		}
 		++match_position;
-		++ret_added;
+		++output_counter;
 	}
 
 	LLVMTypeRef ret_type = nullptr;
 	if(returns_group.size() == 0) {
-		// leave as nullptr
+		
 	} else if(returns_group.size() == 1) {
 		ret_type = returns_group[0];
 	} else {
@@ -2555,65 +2563,100 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 	return brief_fn_return{ ret_type , output_stack_types, ret_added, returns_group.size()  > 1};
 }
 
-inline void llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<LLVMValueRef> const& initial_parameters) {
-	auto rsummary = llvm_function_return_type_from_desc( env, desc);
+inline void llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<LLVMValueRef> const& initial_parameters, std::vector<int32_t> const& param_perm) {
+	std::vector<LLVMTypeRef> returns_group;
+	std::vector<LLVMValueRef> returns_vals;
+
+	/*
+	* NOTE: function assumes that description is fully resolved
+	*/
+
+	int32_t match_position = 0;
+	// stack matching
+
+	//int32_t consumed_stack_cells = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		++match_position;
+	}
+
+	++match_position; // skip -1
+
+	int32_t output_counter = 0;
+	int32_t output_stack_types = 0;
+	// output stack
+	int32_t first_output_stack = match_position;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
+			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			returns_vals.push_back(env.compiler_stack.back()->working_state()->main_ex_back(size_t(output_stack_types)));
+			++output_stack_types;
+		}
+		++match_position;
+		++output_counter;
+	}
+	++match_position; // skip -1
+
+	// return stack matching
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		++match_position;
+	}
+
+	++match_position; // skip -1
+
+	// output ret stack
+	int32_t ret_added = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
+			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			returns_vals.push_back(env.compiler_stack.back()->working_state()->return_ex_back(size_t(ret_added)));
+			++ret_added;
+		}
+		++match_position;
+		++output_counter;
+	}
+
+	LLVMTypeRef ret_type = nullptr;
+	if(returns_group.size() == 0) {
+
+	} else if(returns_group.size() == 1) {
+		ret_type = returns_group[0];
+	} else {
+		ret_type = LLVMStructTypeInContext(env.llvm_context, returns_group.data(), uint32_t(returns_group.size()), false);
+	}
 	
-	uint32_t pinsert_index = 0;
 
-	for(int32_t i = rsummary.num_stack_values - 1; i >= 0; --i) {
-		for(int32_t j = 0; uint32_t(j) < initial_parameters.size(); ++j) {
-			if(env.compiler_stack.back()->working_state()->main_size() > uint32_t(j) && initial_parameters[j] == env.compiler_stack.back()->working_state()->main_ex_back(i)) {
-				break;
-			}
-		}
-		++pinsert_index;
-	}
-	for(int32_t i = rsummary.num_rstack_values - 1; i >= 0; --i) {
-		for(int32_t j = 0; uint32_t(j) < initial_parameters.size(); ++j) {
-			if(env.compiler_stack.back()->working_state()->return_size() > uint32_t(j) && initial_parameters[j] == env.compiler_stack.back()->working_state()->return_ex_back(i)) {
-				break;
-			}
-		}
-		++pinsert_index;
-	}
-
-	if(rsummary.composite_type == nullptr) {
+	if(ret_type == nullptr) {
 		LLVMBuildRetVoid(env.llvm_builder);
 		return;
 	}
-	if(rsummary.is_struct_type == false) {
-		if(rsummary.num_stack_values == 0) {
-			LLVMBuildRet(env.llvm_builder, env.compiler_stack.back()->working_state()->return_ex_back(0));
-			return;
-		} else if(rsummary.num_rstack_values == 0) {
-			LLVMBuildRet(env.llvm_builder, env.compiler_stack.back()->working_state()->main_ex_back(0));
-			return;
-		} else {
-			assert(false);
-		}
+	if(returns_group.size() == 1) {
+		LLVMBuildRet(env.llvm_builder, returns_vals[0]);
+		return;
 	}
 
-	auto rstruct = LLVMGetUndef(rsummary.composite_type);
+	auto rstruct = LLVMGetUndef(ret_type);
 	uint32_t insert_index = 0;
 
-	for(int32_t i = rsummary.num_stack_values - 1; i >= 0; --i) {
-		rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, env.compiler_stack.back()->working_state()->main_ex_back(i), insert_index, "");
+	for(int32_t i = output_stack_types - 1; i >= 0; --i) {
+		rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, returns_vals[i], insert_index, "");
 		++insert_index;
 	}
-	for(int32_t i = rsummary.num_rstack_values - 1; i >= 0;  --i) {
-		rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, env.compiler_stack.back()->working_state()->return_ex_back(i), insert_index, "");
+	for(int32_t i = ret_added - 1; i >= 0;  --i) {
+		rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, returns_vals[output_stack_types + i], insert_index, "");
 		++insert_index;
 	}
 	LLVMBuildRet(env.llvm_builder, rstruct);
-	// LLVMBuildAggregateRet(env.llvm_builder, LLVMValueRef * RetVals, unsigned N);
 
 	return;
 }
 
 inline void llvm_make_function_call(environment& env, interpreted_word_instance& wi, std::span<int32_t const> desc) {
 	std::vector<LLVMValueRef> params;
+	int32_t count_return_values = 0;
+
 	{
 		int32_t match_position = 0;
+		int32_t output_counter = 0;
 		// stack matching
 
 		//int32_t consumed_stack_cells = 0;
@@ -2628,11 +2671,12 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 
 		// output stack
 		int32_t first_output_stack = match_position;
-		//int32_t output_stack_types = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			//returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type.llvm_type);
+			if(output_counter >= wi.llvm_parameter_permutation.size() || wi.llvm_parameter_permutation[output_counter] == -1) {
+				++count_return_values;
+			}
 			++match_position;
-			//++output_stack_types;
+			++output_counter;
 		}
 		++match_position; // skip -1
 
@@ -2644,71 +2688,73 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 			++match_position;
 			//++consumed_rstack_cells;
 		}
+
+		++match_position; // skip -1
+
+		// output ret stack
+		int32_t ret_added = 0;
+		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+			if(output_counter >= wi.llvm_parameter_permutation.size() || wi.llvm_parameter_permutation[output_counter] == -1) {
+				++count_return_values;
+			} 
+			++match_position;
+			++output_counter;
+		}
 	}
 
 	assert(wi.llvm_function);
-	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc), wi.llvm_function, params.data(), uint32_t(params.size()), "");
+	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation), wi.llvm_function, params.data(), uint32_t(params.size()), "");
 	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
-	auto rsummary = llvm_function_return_type_from_desc(env, desc);
-
-	if(rsummary.composite_type == nullptr) {
-		return;
-	}
 
 	{
-		uint32_t extract_index = 0;
 		int32_t match_position = 0;
+		uint32_t extract_index = 0;
 		// stack matching
 
 		//int32_t consumed_stack_cells = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			//parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 			++match_position;
-			//++consumed_stack_cells;
 		}
 
 		++match_position; // skip -1
 
+		int32_t output_counter = 0;
 		// output stack
 		int32_t first_output_stack = match_position;
-		//int32_t output_stack_types = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(extract_index < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[extract_index] != -1) {
-				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, params[wi.llvm_parameter_permutation[extract_index]]);
-			} else if(rsummary.is_struct_type == false) { // single return value
-				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, retvalue);
-			} else {
+			if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
+				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, params[wi.llvm_parameter_permutation[output_counter]]);
+			} else if(count_return_values > 1) {
 				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, LLVMBuildExtractValue(env.llvm_builder, retvalue, extract_index, ""));
+				++extract_index;
+			} else {
+				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, retvalue);
 			}
-			++extract_index;
 			++match_position;
-			//++output_stack_types;
+			++output_counter;
 		}
 		++match_position; // skip -1
 
 		// return stack matching
-		//int32_t consumed_rstack_cells = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			//parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 			++match_position;
-			//++consumed_rstack_cells;
 		}
 
 		++match_position; // skip -1
 
 		// output ret stack
-		//int32_t ret_added = 0;
+		int32_t ret_added = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(extract_index < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[extract_index] != -1) {
-				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, params[wi.llvm_parameter_permutation[extract_index]]);
-			} else if(rsummary.is_struct_type == false) { // single return value
-				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, retvalue);
-			} else {
+			if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
+				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, params[wi.llvm_parameter_permutation[output_counter]]);
+			} else if(count_return_values > 1) {
 				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, LLVMBuildExtractValue(env.llvm_builder, retvalue, extract_index, ""));
+				++extract_index;
+			} else {
+				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, retvalue);
 			}
-			++extract_index;
 			++match_position;
-			//++ret_added;
+			++output_counter;
 		}
 	}
 }
@@ -3638,7 +3684,7 @@ public:
 #ifdef USE_LLVM
 			if(!std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function) {
 				auto fn_string_name = word_name_from_id(for_word, env) + "#" + std::to_string(for_instance);
-				auto fn_type = llvm_function_type_from_desc(env, fn_desc);
+				auto fn_type = llvm_function_type_from_desc(env, fn_desc, std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_parameter_permutation);
 				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function = LLVMAddFunction(env.llvm_module, fn_string_name.c_str(), fn_type);
 			}
 #endif
@@ -3915,7 +3961,7 @@ public:
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
 
-			llvm_make_function_return(env, existing_description, initial_parameters);
+			llvm_make_function_return(env, existing_description, initial_parameters, wi.llvm_parameter_permutation);
 			wi.llvm_compilation_finished = true;
 
 			if(LLVMVerifyFunction(wi.llvm_function, LLVMVerifierFailureAction::LLVMPrintMessageAction)) {
@@ -5544,7 +5590,7 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	auto& wi = std::get<interpreted_word_instance>(env.dict.all_instances[match.word_index]);
 
 	auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + wi.stack_types_start, wi.stack_types_count);
-	auto fn_type = llvm_function_type_from_desc(env, desc);
+	auto fn_type = llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation);
 	auto compiled_fn = LLVMAddFunction(env.llvm_module, export_name.c_str(), fn_type);
 
 	LLVMSetFunctionCallConv(compiled_fn, NATIVE_CC);
@@ -5588,9 +5634,9 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 		++consumed_rstack_cells;
 	}
 
-	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc), wi.llvm_function, params.data(), uint32_t(params.size()), "");
+	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation), wi.llvm_function, params.data(), uint32_t(params.size()), "");
 	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
-	auto rsummary = llvm_function_return_type_from_desc(env, desc);
+	auto rsummary = llvm_function_return_type_from_desc(env, desc, wi.llvm_parameter_permutation);
 
 	// make return
 	if(rsummary.composite_type == nullptr) {
@@ -5598,8 +5644,17 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	} else {
 		LLVMBuildRet(env.llvm_builder, retvalue);
 	}
-	if(LLVMVerifyFunction(compiled_fn, LLVMVerifierFailureAction::LLVMPrintMessageAction))
-		std::abort();
+	if(LLVMVerifyFunction(compiled_fn, LLVMVerifierFailureAction::LLVMPrintMessageAction)) {
+
+		std::string mod_contents = LLVMPrintModuleToString(env.llvm_module);
+
+		char* message = nullptr;
+		LLVMVerifyModule(env.llvm_module, LLVMReturnStatusAction, &message);
+
+		env.report_error("LLVM verification of function failed");
+		env.mode = fif_mode::error;
+		return nullptr;
+	}
 
 	env.exported_functions.push_back(compiled_fn);
 
@@ -5726,7 +5781,7 @@ inline void add_import(std::string_view name, void* ptr, fif_call interpreter_im
 
 #ifdef USE_LLVM
 	auto fn_desc = std::span<int32_t const>(itype_list.begin(), itype_list.end());
-	auto fn_type = llvm_function_type_from_desc(env, fn_desc);
+	auto fn_type = llvm_function_type_from_desc(env, fn_desc, wi.llvm_parameter_permutation);
 	wi.llvm_function = LLVMAddFunction(env.llvm_module, nstr.c_str(), fn_type);
 	LLVMSetFunctionCallConv(wi.llvm_function, NATIVE_CC);
 	LLVMSetLinkage(wi.llvm_function, LLVMLinkage::LLVMExternalLinkage);
