@@ -495,6 +495,7 @@ struct type {
 	static constexpr uint32_t FLAG_REFCOUNTED = 0x00000001;
 	static constexpr uint32_t FLAG_SINGLE_MEMBER = 0x00000002;
 	static constexpr uint32_t FLAG_TEMPLATE = 0x00000004;
+	static constexpr uint32_t FLAG_STATELESS = 0x00000008;
 
 #ifdef USE_LLVM
 	LLVMTypeRef llvm_type = nullptr;
@@ -521,6 +522,9 @@ struct type {
 	bool is_struct_template() const {
 		return (flags & FLAG_TEMPLATE) != 0;
 	}
+	bool stateless() const {
+		return (flags & FLAG_STATELESS) != 0;
+	}
 };
 
 constexpr inline int32_t fif_i32 = 0;
@@ -539,6 +543,8 @@ constexpr inline int32_t fif_nil = 12;
 constexpr inline int32_t fif_ptr = 13;
 constexpr inline int32_t fif_opaque_ptr = 14;
 constexpr inline int32_t fif_struct = 15;
+constexpr inline int32_t fif_anon_struct = 16;
+constexpr inline int32_t fif_stack_token = 17;
 
 class environment;
 
@@ -618,6 +624,14 @@ public:
 		type_array[fif_struct].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMGetUndef(LLVMVoidTypeInContext(c));
 		};
+		type_array[fif_anon_struct].llvm_type = LLVMVoidTypeInContext(llvm_context);
+		type_array[fif_anon_struct].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
+			return LLVMGetUndef(LLVMVoidTypeInContext(c));
+		};
+		type_array[fif_stack_token].llvm_type = LLVMVoidTypeInContext(llvm_context);
+		type_array[fif_stack_token].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
+			return LLVMGetUndef(LLVMVoidTypeInContext(c));
+		};
 	}
 #endif
 	dictionary() {
@@ -651,7 +665,11 @@ public:
 		type_array.push_back(type{ nullptr, nullptr, nullptr, 1, 0, 0, 0 });
 		types.insert_or_assign(std::string("opaque_ptr"), fif_nil);
 		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
-		types.insert_or_assign(std::string("struct"), fif_struct);
+		types.insert_or_assign(std::string("llvm.struct"), fif_struct);
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		types.insert_or_assign(std::string("struct"), fif_anon_struct);
+		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		types.insert_or_assign(std::string("stack-token"), fif_stack_token);
 		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
 	}
 };
@@ -1177,7 +1195,9 @@ inline int32_t struct_child_count(int32_t type, environment& env) {
 }
 
 inline int64_t interpreter_struct_zero_constant(int32_t t, environment* e) {
-	if(e->dict.type_array[t].single_member_struct()) {
+	if(e->dict.type_array[t].stateless()) {
+		return 0;
+	} else if(e->dict.type_array[t].single_member_struct()) {
 		auto child_index = e->dict.type_array[t].decomposed_types_start + 1 + 0;
 		auto child_type = e->dict.all_stack_types[child_index];
 		if(e->dict.type_array[child_type].interpreter_zero)
@@ -1286,6 +1306,8 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 	
 	if(ctypes.size() == 1)
 		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
+	if(ctypes.size() == 0)
+		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
 
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
 	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
@@ -1359,6 +1381,8 @@ inline int32_t instantiate_templated_struct(int32_t template_base, std::vector<i
 	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
 	if(ctypes.size() == 1)
 		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
+	if(ctypes.size() == 0)
+		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
 
 	env.dict.type_array.back().type_slots = 0;
 	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), final_subtype_list.begin(), final_subtype_list.end());
@@ -1424,6 +1448,8 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 
 	if(subtypes.size() == 1)
 		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
+	if(subtypes.size() == 0)
+		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
 
 	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
 	env.dict.type_array.back().type_slots = template_types + extra_count;
@@ -1595,6 +1621,202 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 	return new_type;
 }
 
+inline int32_t make_anon_struct_type(std::span<int32_t const> subtypes, environment& env) {
+
+	int32_t new_type = int32_t(env.dict.type_array.size());
+	env.dict.type_array.emplace_back();
+
+	std::vector<LLVMTypeRef> ctypes;
+	for(uint32_t j = 0; j < subtypes.size(); ++j) {
+		ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
+	}
+	if(ctypes.size() != 1) {
+		std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
+#ifdef USE_LLVM
+		auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
+		LLVMStructSetBody(ty, ctypes.data(), uint32_t(ctypes.size()), false);
+		env.dict.type_array.back().llvm_type = ty;
+		env.dict.type_array.back().zero_constant = struct_zero_constant;
+#endif
+		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
+	} else {
+#ifdef USE_LLVM
+		env.dict.type_array.back().llvm_type = ctypes[0];
+		env.dict.type_array.back().zero_constant = env.dict.type_array[subtypes[0]].zero_constant;
+#endif
+		env.dict.type_array.back().interpreter_zero = env.dict.type_array[subtypes[0]].interpreter_zero;
+	}
+
+	env.dict.type_array.back().decomposed_types_count = uint32_t(subtypes.size() + 1);
+	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
+
+	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
+
+	if(subtypes.size() == 1)
+		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
+	if(subtypes.size() == 0)
+		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
+
+	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+	env.dict.type_array.back().type_slots = 0;
+	env.dict.all_stack_types.push_back(fif_anon_struct);
+
+	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
+
+	int32_t start_types = int32_t(env.dict.all_stack_types.size());
+	env.dict.all_stack_types.push_back(new_type);
+
+	int32_t end_zero = int32_t(env.dict.all_stack_types.size());
+	env.dict.all_stack_types.push_back(-1);
+	env.dict.all_stack_types.push_back(new_type);
+
+	int32_t end_one = int32_t(env.dict.all_stack_types.size());
+	env.dict.all_stack_types.push_back(new_type);
+
+	int32_t end_two = int32_t(env.dict.all_stack_types.size());
+
+	auto bury_word = [&](std::string const& name, int32_t id) {
+		int32_t start_word = 0;
+		int32_t preceding_word = -1;
+		if(auto it = env.dict.words.find(name); it != env.dict.words.end()) {
+			start_word = it->second;
+		} else {
+			env.dict.words.insert_or_assign(name, id);
+			return;
+		}
+		while(env.dict.word_array[start_word].specialization_of != -1) {
+			preceding_word = start_word;
+			start_word = env.dict.word_array[start_word].specialization_of;
+		}
+		if(preceding_word == -1) {
+			env.dict.words.insert_or_assign(name, id);
+			env.dict.word_array[id].specialization_of = start_word;
+			assert(id != start_word);
+		} else {
+			env.dict.word_array[preceding_word].specialization_of = id;
+			env.dict.word_array[id].specialization_of = start_word;
+			assert(id != start_word);
+		}
+	};
+
+	{
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map2 copy");
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_two - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+		bury_word("copy", int32_t(env.dict.word_array.size() - 1));
+	}
+	{
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map2 dup");
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_two - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+		bury_word("dup", int32_t(env.dict.word_array.size() - 1));
+	}
+	{
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map1 init");
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_one - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+		bury_word("init", int32_t(env.dict.word_array.size() - 1));
+	}
+	{
+		env.dict.word_array.emplace_back();
+		env.dict.word_array.back().source = std::string("struct-map0 drop");
+		env.dict.word_array.back().stack_types_start = start_types;
+		env.dict.word_array.back().stack_types_count = end_zero - start_types;
+		env.dict.word_array.back().treat_as_base = true;
+		bury_word("drop", int32_t(env.dict.word_array.size() - 1));
+	}
+
+	uint32_t index = 0;
+	auto desc = subtypes;
+	while(desc.size() > 0) {
+		auto next = next_encoded_stack_type(desc);
+
+		{
+			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
+			env.dict.all_stack_types.push_back(new_type);
+			env.dict.all_stack_types.push_back(-1);
+			for(uint32_t j = 0; j < next; ++j)
+				env.dict.all_stack_types.push_back(desc[j]);
+			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
+
+			env.dict.word_array.emplace_back();
+			env.dict.word_array.back().source = std::string("forth.extract ") + std::to_string(index);
+			env.dict.word_array.back().stack_types_start = start_types_i;
+			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
+			env.dict.word_array.back().treat_as_base = true;
+
+			bury_word(std::string(".m") + std::to_string(index), int32_t(env.dict.word_array.size() - 1));
+		}
+		{
+			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
+			env.dict.all_stack_types.push_back(new_type);
+			env.dict.all_stack_types.push_back(-1);
+			env.dict.all_stack_types.push_back(new_type);
+			for(uint32_t j = 0; j < next; ++j)
+				env.dict.all_stack_types.push_back(desc[j]);
+			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
+
+			env.dict.word_array.emplace_back();
+			env.dict.word_array.back().source = std::string("forth.extract-copy ") + std::to_string(index);
+			env.dict.word_array.back().stack_types_start = start_types_i;
+			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
+			env.dict.word_array.back().treat_as_base = true;
+
+			bury_word(std::string(".m") + std::to_string(index) + "@", int32_t(env.dict.word_array.size() - 1));
+		}
+		{
+			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
+			env.dict.all_stack_types.push_back(new_type);
+			for(uint32_t j = 0; j < next; ++j)
+				env.dict.all_stack_types.push_back(desc[j]);
+			env.dict.all_stack_types.push_back(-1);
+			env.dict.all_stack_types.push_back(new_type);
+			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
+
+			env.dict.word_array.emplace_back();
+			env.dict.word_array.back().source = std::string("forth.insert ") + std::to_string(index);
+			env.dict.word_array.back().stack_types_start = start_types_i;
+			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
+			env.dict.word_array.back().treat_as_base = true;
+
+			bury_word(std::string(".m") + std::to_string(index) + "!", int32_t(env.dict.word_array.size() - 1));
+		}
+		{
+			int32_t start_types_i = int32_t(env.dict.all_stack_types.size());
+			env.dict.all_stack_types.push_back(fif_ptr);
+			env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+			env.dict.all_stack_types.push_back(new_type);
+			env.dict.all_stack_types.push_back(-1);
+			env.dict.all_stack_types.push_back(-1);
+			env.dict.all_stack_types.push_back(fif_ptr);
+			env.dict.all_stack_types.push_back(std::numeric_limits<int32_t>::max());
+			for(uint32_t j = 0; j < next; ++j)
+				env.dict.all_stack_types.push_back(desc[j]);
+			env.dict.all_stack_types.push_back(-1);
+			int32_t end_types_i = int32_t(env.dict.all_stack_types.size());
+
+			env.dict.word_array.emplace_back();
+			env.dict.word_array.back().source = std::string("forth.gep ") + std::to_string(index);
+			env.dict.word_array.back().stack_types_start = start_types_i;
+			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
+			env.dict.word_array.back().treat_as_base = true;
+
+			bury_word(std::string(".m") + std::to_string(index), int32_t(env.dict.word_array.size() - 1));
+		}
+
+		++index;
+		desc = desc.subspan(next);
+	}
+
+	return new_type;
+}
+
 inline type_match internal_resolve_type(std::string_view text, environment& env, std::vector<int32_t>* type_subs) {
 	uint32_t mt_end = 0;
 	if(text.starts_with("ptr(nil)")) {
@@ -1614,7 +1836,7 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 			return type_match{ fif_nil, mt_end };
 		}
 	}
-	if(text.substr(0, mt_end) == "struct") { // prevent "generic" struct matching
+	if(text.substr(0, mt_end) == "llvm.struct") { // prevent "generic" struct matching
 		return type_match{ -1, uint32_t(text.length()) };
 	}
 	if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
@@ -1634,7 +1856,28 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		if(mt_end < text.size() && text[mt_end] == ')')
 			++mt_end;
 
-		if(env.dict.type_array[it->second].type_slots != int32_t(subtypes.size())) {
+		if(it->second == fif_anon_struct) {
+			// try to find existing matching anon struct
+			for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+				if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
+					auto ta_start = env.dict.type_array[i].decomposed_types_start;
+					if(env.dict.all_stack_types[ta_start] == it->second) {
+						bool match = true;
+						for(uint32_t j = 0; j < subtypes.size(); ++j) {
+							if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
+								match = false;
+								break;
+							}
+						}
+						if(match) {
+							return type_match{ int32_t(i), mt_end };
+						}
+					}
+				}
+			}
+			// else 
+			return type_match{ make_anon_struct_type(subtypes, env), mt_end };
+		} else if(env.dict.type_array[it->second].type_slots != int32_t(subtypes.size())) {
 			env.report_error("attempted to instantiate a type with the wrong number of parameters");
 			env.mode = fif_mode::error;
 			return type_match{ -1, mt_end };
@@ -1807,7 +2050,28 @@ inline type_match resolve_span_type(std::span<int32_t const> tlist, std::vector<
 		++mt_end;
 
 	
-	 if(base_type == fif_ptr && !subtypes.empty() && subtypes[0] == fif_nil) {
+	if(base_type == fif_anon_struct) {
+		// try to find existing matching anon struct
+		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+			if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
+				auto ta_start = env.dict.type_array[i].decomposed_types_start;
+				if(env.dict.all_stack_types[ta_start] == base_type) {
+					bool match = true;
+					for(uint32_t j = 0; j < subtypes.size(); ++j) {
+						if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
+							match = false;
+							break;
+						}
+					}
+					if(match) {
+						return type_match{ int32_t(i), mt_end };
+					}
+				}
+			}
+		}
+		// else 
+		return type_match{ make_anon_struct_type(subtypes, env), mt_end };
+	} else if(base_type == fif_ptr && !subtypes.empty() && subtypes[0] == fif_nil) {
 		return type_match{ fif_opaque_ptr, mt_end };
 	} else if(env.dict.type_array[base_type].is_struct_template()) {
 		return type_match{ instantiate_templated_struct_full(base_type, subtypes, env), mt_end };

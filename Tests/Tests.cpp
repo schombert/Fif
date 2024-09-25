@@ -1008,7 +1008,7 @@ TEST_CASE("variables test", "fif combined tests") {
 		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
-			": cswap { ( a b ) b a } ; "
+			": cswap lex-scope ( a b ) b a end-lex ; "
 			": t 1 cswap ; "
 			"2.5 t drop ",
 			values);
@@ -1075,7 +1075,7 @@ TEST_CASE("variables test", "fif combined tests") {
 		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
-			": cswap { ( a b ) b a } ; "
+			": cswap lex-scope ( a b ) b a end-lex ; "
 			": t 1 cswap drop ; "
 			":export test_jit_fn f32 t ; ",
 			values);
@@ -3180,6 +3180,72 @@ TEST_CASE("parameter permutation detection", "fif compiler tests") {
 		REQUIRE(wi.llvm_parameter_permutation.size() >= 1);
 		CHECK(wi.llvm_parameter_permutation.size() == 1);
 		CHECK(wi.llvm_parameter_permutation[0] == 1);
+	}
+}
+
+
+TEST_CASE("advanced structures", "fif combined tests") {
+	SECTION("anon struct and destruct") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t 5 < if { 1 0.5 }struct else { 7 2.5 }struct then de-struct drop ; 1 t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 1);
+		CHECK(values.main_type(0) == fif::fif_i32);
+	}
+
+	SECTION("anon struct and destruct llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t 5 < if { 1 0.5 }struct else { 7 2.5 }struct then de-struct drop ; "
+			":export test_jit_fn i32 t ; ", values);
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)(int32_t);
+				ftype fn = (ftype)bare_address;
+				CHECK(fn(1) == 1);
+				CHECK(fn(5) == 7);
+			}
+		}
 	}
 }
 
