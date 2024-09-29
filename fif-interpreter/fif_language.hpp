@@ -1430,7 +1430,7 @@ inline int32_t* f_select(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		s.mark_used_from_main(3);
 		s.pop_main();
 		s.pop_main();
-		s.set_main_data_back(0, e->new_ident());
+		s.set_main_data_back(0, e->dict.type_array[s.main_type_back(0)].stateless() ? 0 : e->new_ident());
 	}
 	return p + 2;
 }
@@ -1589,7 +1589,7 @@ inline int32_t* impl_load(fif::state_stack& s, int32_t* p, fif::environment* e) 
 		}
 	} else if(fif::typechecking_mode(e->mode)) {
 		s.pop_main();
-		s.push_back_main(pointer_contents, e->new_ident(), nullptr);
+		s.push_back_main(pointer_contents, e->dict.type_array[pointer_contents].stateless() ? 0 : e->new_ident(), nullptr);
 	}
 	return p + 2;
 }
@@ -1642,7 +1642,7 @@ inline int32_t* impl_load_deallocated(fif::state_stack& s, int32_t* p, fif::envi
 
 	} else if(fif::typechecking_mode(e->mode)) {
 		s.pop_main();
-		s.push_back_main(pointer_contents, e->new_ident(), nullptr);
+		s.push_back_main(pointer_contents, e->dict.type_array[pointer_contents].stateless() ? 0 : e->new_ident(), nullptr);
 	}
 	return p + 2;
 }
@@ -2252,26 +2252,34 @@ inline int32_t* do_fextract(fif::state_stack& s, int32_t* p, fif::environment* e
 	} else {
 		auto ptr = s.main_data_back(0);
 		auto children = (int64_t*)(ptr);
-		auto child_data = children[index_value];
+		auto child_data = children ? children[index_value] : 0;
 
-		if(e->dict.type_array[child_type].flags != 0) {
-			s.push_back_main(child_type, child_data, nullptr);
-			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-			child_data = s.main_data_back(0);
-			s.pop_main();
-			s.pop_main();
-		}
-
-		if(e->dict.type_array[stype].flags != 0) {
-			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
-		} else {
-			s.pop_main();
-		}
-
+		
+		s.push_back_main(child_type, child_data, nullptr);
+		execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+		child_data = s.main_data_back(0);
+		s.pop_main();
+		if(children)
+			children[index_value] = s.main_data_back(0);
+		s.pop_main();
+		
+		execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+		
 		s.push_back_main(child_type, child_data, nullptr);
 	}
 
 	return p + 3;
+}
+
+inline int32_t actual_index_value(int32_t struct_type, int32_t raw_index, fif::environment& env) {
+	int32_t result = 0;
+	for(int32_t i = 0; i < raw_index && i + 1 < env.dict.type_array[struct_type].decomposed_types_count; ++i) {
+		auto child_index = env.dict.type_array[struct_type].decomposed_types_start + 1 + i;
+		auto child_type = env.dict.all_stack_types[child_index];
+		if(env.dict.type_array[child_type].stateless() == false)
+			++result;
+	}
+	return result;
 }
 
 inline int32_t* forth_extract(fif::state_stack& s, int32_t* p, fif::environment* e) {
@@ -2291,61 +2299,76 @@ inline int32_t* forth_extract(fif::state_stack& s, int32_t* p, fif::environment*
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.pop_main();
+			s.push_back_main(child_type, 0, nullptr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_type);
 		} else {
 			auto struct_expr = s.main_ex_back(0);
-			auto result = LLVMBuildExtractValue(e->llvm_builder, struct_expr, index_value, "");
+			auto result = LLVMBuildExtractValue(e->llvm_builder, struct_expr, actual_index_value(stype, index_value, *e), "");
+			auto original_result = result;
 
-			if(e->dict.type_array[child_type].flags != 0) {
-				s.push_back_main(child_type, 0, result);
-				execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-				result = s.main_ex_back(0);
-				s.pop_main();
-				s.pop_main();
+			s.push_back_main(child_type, 0, result);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			result = s.main_ex_back(0);
+			s.pop_main();
+			if(s.main_ex_back(0) != original_result) {
+				auto new_s_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), actual_index_value(stype, index_value, *e), "");
+				s.set_main_ex_back(1, new_s_expr);
 			}
-			if(e->dict.type_array[stype].flags != 0) {
-				execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
-			} else {
-				s.pop_main();
-			}
+			s.pop_main();
+			
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+			
 			s.push_back_main(child_type, 0, result);
 		}
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.pop_main();
+			s.push_back_main(child_type, 0, nullptr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_type);
 		} else {
 			auto ptr = s.main_data_back(0);
 			auto children = (int64_t*)(ptr);
-			auto child_data = children[index_value];
+			auto child_data = children ? children[index_value] : 0;
 
-
-			if(e->dict.type_array[child_type].flags != 0) {
-				s.push_back_main(child_type, child_data, nullptr);
-				execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-				child_data = s.main_data_back(0);
-				s.pop_main();
-				s.pop_main();
-			}
-
-			if(e->dict.type_array[stype].flags != 0) {
-				execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
-			} else {
-				s.pop_main();
-			}
-
+			s.push_back_main(child_type, child_data, nullptr);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			child_data = s.main_data_back(0);
+			s.pop_main();
+			if(children)
+				children[index_value] = s.main_data_back(0);
+			s.pop_main();
+			
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+			
 			s.push_back_main(child_type, child_data, nullptr);
 		}
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.pop_main();
+			s.push_back_main(child_type, 0, nullptr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_type);
 		} else {
+			auto original_result = e->new_ident();
+			s.push_back_main(child_type, original_result, nullptr);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			auto result = s.main_data_back(0);
 			s.pop_main();
-			s.push_back_main(child_type, e->new_ident(), nullptr);
+			if(s.main_data_back(0) != original_result) {
+				s.set_main_data_back(1, e->new_ident());
+			}
+			s.pop_main();
+		
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+			s.push_back_main(child_type, result, nullptr);
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
@@ -2377,15 +2400,16 @@ inline int32_t* do_fextractc(fif::state_stack& s, int32_t* p, fif::environment* 
 	} else {
 		auto ptr = s.main_data_back(0);
 		auto children = (int64_t*)(ptr);
-		auto child_data = children[index_value];
+		auto child_data = children ? children[index_value] : 0;
 
-		if(e->dict.type_array[child_type].flags != 0) {
-			s.push_back_main(child_type, child_data, nullptr);
-			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-			child_data = s.main_data_back(0);
-			s.pop_main();
-			s.pop_main();
-		}
+		s.push_back_main(child_type, child_data, nullptr);
+		execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+		child_data = s.main_data_back(0);
+		s.pop_main();
+		if(children)
+			children[index_value] = s.main_data_back(0);
+		s.pop_main();
+		
 
 		s.mark_used_from_main(1);
 		s.push_back_main(child_type, child_data, nullptr);
@@ -2410,28 +2434,36 @@ inline int32_t* forth_extract_copy(fif::state_stack& s, int32_t* p, fif::environ
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.push_back_main(child_type, 0, nullptr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_type);
 			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
 			s.set_main_type_back(1, stype);
 		} else {
 			auto struct_expr = s.main_ex_back(0);
-			auto result = LLVMBuildExtractValue(e->llvm_builder, struct_expr, index_value, "");
+			auto result = LLVMBuildExtractValue(e->llvm_builder, struct_expr, actual_index_value(stype, index_value, *e), "");
+			auto original_result = result;
 			s.mark_used_from_main(1);
 
-			if(e->dict.type_array[child_type].flags != 0) {
-				s.push_back_main(child_type, 0, result);
-				execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-				result = s.main_ex_back(0);
-				s.pop_main();
-				s.pop_main();
+			s.push_back_main(child_type, 0, result);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			result = s.main_ex_back(0);
+			s.pop_main();
+			if(s.main_ex_back(0) != original_result) {
+				auto new_s_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), actual_index_value(stype, index_value, *e), "");
+				s.set_main_ex_back(1, new_s_expr);
 			}
+			s.pop_main();
+			
 			s.push_back_main(child_type, 0, result);
 		}
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.push_back_main(child_type, 0, nullptr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_type);
 			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
@@ -2439,28 +2471,39 @@ inline int32_t* forth_extract_copy(fif::state_stack& s, int32_t* p, fif::environ
 		} else {
 			auto ptr = s.main_data_back(0);
 			auto children = (int64_t*)(ptr);
-			auto child_data = children[index_value];
+			auto child_data = children ? children[index_value] : 0;
 			s.mark_used_from_main(1);
 
-			if(e->dict.type_array[child_type].flags != 0) {
-				s.push_back_main(child_type, child_data, nullptr);
-				execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-				child_data = s.main_data_back(0);
-				s.pop_main();
-				s.pop_main();
-			}
-
+			s.push_back_main(child_type, child_data, nullptr);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			child_data = s.main_data_back(0);
+			s.pop_main();
+			if(children)
+				children[index_value] = s.main_data_back(0);
+			s.pop_main();
+			
 			s.push_back_main(child_type, child_data, nullptr);
 		}
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.mark_used_from_main(1);
+			s.push_back_main(child_type, 0, nullptr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_type);
 			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
 			s.set_main_type_back(1, stype);
 		} else {
-			s.mark_used_from_main(1);
-			s.push_back_main(child_type, e->new_ident(), nullptr);
+			auto original_result = e->new_ident();
+			s.push_back_main(child_type, original_result, nullptr);
+			execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+			auto result = s.main_data_back(0);
+			s.pop_main();
+			if(s.main_data_back(0) != original_result) {
+				s.set_main_data_back(1, e->new_ident());
+			}
+			s.pop_main();
+			s.push_back_main(child_type, result, nullptr);
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
@@ -2493,12 +2536,12 @@ inline int32_t* do_finsert(fif::state_stack& s, int32_t* p, fif::environment* e)
 		auto ptr = s.main_data_back(0);
 		auto children = (int64_t*)(ptr);
 
-		if(e->dict.type_array[child_type].flags != 0) {
-			s.push_back_main(child_type, children[index_value], 0);
-			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
-		}
+		s.push_back_main(child_type, children ? children[index_value] : 0, 0);
+		execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+		
 		s.pop_main();
-		children[index_value] = s.main_data_back(0);
+		if(children)
+			children[index_value] = s.main_data_back(0);
 		s.pop_main();
 
 		s.push_back_main(stype, ptr, 0);
@@ -2523,28 +2566,37 @@ inline int32_t* forth_insert(fif::state_stack& s, int32_t* p, fif::environment* 
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			auto struct_expr = s.main_ex_back(0);
+			s.pop_main();
+			s.pop_main();
+			s.push_back_main(stype, 0, struct_expr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(2);
 			s.set_main_type_back(0, child_type);
 			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
 			s.set_main_type_back(0, stype);
 		} else {
 			auto struct_expr = s.main_ex_back(0);
+			auto actual_index = actual_index_value(stype, index_value, *e);
 
-			if(e->dict.type_array[child_type].flags != 0) {
-				auto oldv = LLVMBuildExtractValue(e->llvm_builder, struct_expr, index_value, "");
-				s.push_back_main(child_type, 0, oldv);
-				execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
-			}
-
+			auto oldv = LLVMBuildExtractValue(e->llvm_builder, struct_expr, actual_index, "");
+			s.push_back_main(child_type, 0, oldv);
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+			
 			s.pop_main();
-			struct_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), index_value, "");
+			struct_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), actual_index, "");
 			s.pop_main();
 			s.push_back_main(stype, 0, struct_expr);
 		}
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			auto ptr = s.main_data_back(0);
+			s.pop_main();
+			s.pop_main();
+			s.push_back_main(stype, ptr, 0);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(2);
 			s.set_main_type_back(0, child_type);
 			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
@@ -2553,18 +2605,23 @@ inline int32_t* forth_insert(fif::state_stack& s, int32_t* p, fif::environment* 
 			auto ptr = s.main_data_back(0);
 			auto children = (int64_t*)(ptr);
 
-			if(e->dict.type_array[child_type].flags != 0) {
-				s.push_back_main(child_type, children[index_value], 0);
-				execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
-			}
+			s.push_back_main(child_type, children ? children[index_value] : 0, 0);
+			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+			
 			s.pop_main();
-			children[index_value] = s.main_data_back(0);
+			if(children)
+				children[index_value] = s.main_data_back(0);
 			s.pop_main();
 
 			s.push_back_main(stype, ptr, 0);
 		}
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			auto ptr = s.main_data_back(0);
+			s.pop_main();
+			s.pop_main();
+			s.push_back_main(stype, ptr, 0);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(2);
 			s.set_main_type_back(0, child_type);
 			execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
@@ -2622,7 +2679,7 @@ inline int32_t* do_fgep(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	} else {
 		auto ptr = s.main_data_back(0);
 		auto children = (int64_t*)(ptr);
-		auto child_ptr = children + index_value;
+		auto child_ptr = children ? children + index_value : nullptr;
 
 		int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), child_type, -1 };
 		std::vector<int32_t> subs;
@@ -2671,30 +2728,39 @@ inline int32_t* forth_gep(fif::state_stack& s, int32_t* p, fif::environment* e) 
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.mark_used_from_main(1);
+			s.set_main_type_back(0, child_ptr_type.type);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_ptr_type.type);
 		} else {
 			auto struct_expr = s.main_ex_back(0);
-			auto ptr_expr = LLVMBuildStructGEP2(e->llvm_builder, e->dict.type_array[stype].llvm_type, struct_expr, uint32_t(index_value), "");
+			auto ptr_expr = LLVMBuildStructGEP2(e->llvm_builder, e->dict.type_array[stype].llvm_type, struct_expr, uint32_t(actual_index_value(stype, index_value, *e)), "");
 			s.pop_main();
 			s.push_back_main(child_ptr_type.type, 0, ptr_expr);
 		}
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.mark_used_from_main(1);
+			s.set_main_type_back(0, child_ptr_type.type);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_ptr_type.type);
 		} else {
 			auto ptr = s.main_data_back(0);
 			auto children = (int64_t*)(ptr);
-			auto child_ptr = children + index_value;
+			auto child_ptr = children ? children + index_value : nullptr;
 
 			s.pop_main();
 			s.push_back_main(child_ptr_type.type, (int64_t)child_ptr, 0);
 		}
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
-		if(e->dict.type_array[stype].single_member_struct()) {
+		if(e->dict.type_array[child_type].stateless()) {
+			s.pop_main();
+			s.push_back_main(child_ptr_type.type, 0, nullptr);
+		} else if(e->dict.type_array[stype].single_member_struct()) {
 			s.mark_used_from_main(1);
 			s.set_main_type_back(0, child_ptr_type.type);
 		} else {
@@ -2738,7 +2804,7 @@ inline int32_t* do_fsmz(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		for(int32_t i = 0; i < children_count; ++i) {
 			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 			auto child_type = e->dict.all_stack_types[child_index];
-			s.push_back_main(child_type, children[i], nullptr);
+			s.push_back_main(child_type, children ? children[i] : 0, nullptr);
 			execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
 		}
 
@@ -2769,7 +2835,11 @@ inline int32_t* forth_struct_map_zero(fif::state_stack& s, int32_t* p, fif::envi
 			for(int32_t i = 0; i < children_count; ++i) {
 				auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 				auto child_type = e->dict.all_stack_types[child_index];
-				s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(i), ""));
+				if(e->dict.type_array[child_type].stateless() == false) {
+					s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(actual_index_value(stype, i, *e)), ""));
+				} else {
+					s.push_back_main(child_type, 0, nullptr);
+				}
 				execute_fif_word(mapped_function, *e, false);
 			}
 
@@ -2842,9 +2912,10 @@ inline int32_t* do_fsmo(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		for(int32_t i = 0; i < children_count; ++i) {
 			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 			auto child_type = e->dict.all_stack_types[child_index];
-			s.push_back_main(child_type, children[i], nullptr);
+			s.push_back_main(child_type, children ? children[i] : 0, nullptr);
 			execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
-			children[i] = s.main_data_back(0);
+			if(children)
+				children[i] = s.main_data_back(0);
 			s.pop_main();
 		}
 	}
@@ -2873,9 +2944,13 @@ inline int32_t* forth_struct_map_one(fif::state_stack& s, int32_t* p, fif::envir
 			for(int32_t i = 0; i < children_count; ++i) {
 				auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 				auto child_type = e->dict.all_stack_types[child_index];
-				s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(i), ""));
+				if(e->dict.type_array[child_type].stateless() == false)
+					s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(actual_index_value(stype, i, *e)), ""));
+				else
+					s.push_back_main(child_type, 0, nullptr);
 				execute_fif_word(mapped_function, *e, false);
-				struct_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), uint32_t(i), "");
+				if(e->dict.type_array[child_type].stateless() == false)
+					struct_expr = LLVMBuildInsertValue(e->llvm_builder, struct_expr, s.main_ex_back(0), uint32_t(actual_index_value(stype, i, *e)), "");
 				s.pop_main();
 			}
 			s.set_main_ex_back(0, struct_expr);
@@ -2959,10 +3034,11 @@ inline int32_t* do_fsmt(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		for(int32_t i = 0; i < children_count; ++i) {
 			auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 			auto child_type = e->dict.all_stack_types[child_index];
-			s.push_back_main(child_type, children[i], nullptr);
+			s.push_back_main(child_type, children ? children[i] : 0, nullptr);
 			execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
 
-			new_children[i] = s.main_data_back(0);
+			if(new_children)
+				new_children[i] = s.main_data_back(0);
 
 			s.pop_main();
 			s.pop_main();
@@ -2998,9 +3074,15 @@ inline int32_t* forth_struct_map_two(fif::state_stack& s, int32_t* p, fif::envir
 			for(int32_t i = 0; i < children_count; ++i) {
 				auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 				auto child_type = e->dict.all_stack_types[child_index];
-				s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(i), ""));
+				if(e->dict.type_array[child_type].stateless() == false)
+					s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(actual_index_value(stype, i, *e)), ""));
+				else 
+					s.push_back_main(child_type, 0, nullptr);
+
 				execute_fif_word(mapped_function, *e, false);
-				new_struct_expr = LLVMBuildInsertValue(e->llvm_builder, new_struct_expr, s.main_ex_back(0), uint32_t(i), "");
+		
+				if(e->dict.type_array[child_type].stateless() == false)
+					new_struct_expr = LLVMBuildInsertValue(e->llvm_builder, new_struct_expr, s.main_ex_back(0), uint32_t(actual_index_value(stype, i, *e)), "");
 				s.pop_main();
 				s.pop_main();
 			}
@@ -4580,7 +4662,8 @@ inline int32_t* structify(fif::state_stack& s, int32_t* p, fif::environment* e) 
 					s.pop_main();
 					break;
 				}
-				new_struct_expr = LLVMBuildInsertValue(e->llvm_builder, new_struct_expr, s.main_ex_back(0), i, "");
+				if(e->dict.type_array[s.main_type_back(0)].stateless() == false)
+					new_struct_expr = LLVMBuildInsertValue(e->llvm_builder, new_struct_expr, s.main_ex_back(0), actual_index_value(resolved_struct_type.type, i, *e), "");
 				++i;
 				s.pop_main();
 			}
@@ -4634,7 +4717,10 @@ inline int32_t* de_struct(fif::state_stack& s, int32_t* p, fif::environment* e) 
 			for(int32_t i = children_count; i --> 0; ) {
 				auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 				auto child_type = e->dict.all_stack_types[child_index];
-				s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(i), ""));
+				if(e->dict.type_array[child_type].stateless() == false)
+					s.push_back_main(child_type, 0, LLVMBuildExtractValue(e->llvm_builder, struct_expr, uint32_t(actual_index_value(stype, i, *e)), ""));
+				else
+					s.push_back_main(child_type, 0, nullptr);
 			}
 		}
 #endif
@@ -4668,7 +4754,7 @@ inline int32_t* de_struct(fif::state_stack& s, int32_t* p, fif::environment* e) 
 			for(int32_t i = children_count; i-- > 0;) {
 				auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + i;
 				auto child_type = e->dict.all_stack_types[child_index];
-				s.push_back_main(child_type, e->new_ident(), nullptr);
+				s.push_back_main(child_type, e->dict.type_array[child_type].stateless() ? 0 : e->new_ident(), nullptr);
 			}
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {

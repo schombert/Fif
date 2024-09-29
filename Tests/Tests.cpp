@@ -3247,5 +3247,143 @@ TEST_CASE("advanced structures", "fif combined tests") {
 			}
 		}
 	}
+
+	SECTION("empty struct A") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, 
+			":struct A ; "
+			":struct B ; "
+			":struct C A high B low ; "
+			": t make C swap 5 < if drop make C then .high ; "
+			"1 t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 0);
+		CHECK(values.main_type(0) != 0);
+	}
+
+	SECTION("partially empty struct B") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			":struct A ; "
+			":struct C f32 f A mid i32 i ; "
+			": t make C swap 5 < if 3 swap .i! then .i ; "
+			"1 t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_data(0) == 3);
+		CHECK(values.main_type(0) == fif::fif_i32);
+	}
+
+	SECTION("empty struct A llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			":struct A ; "
+			":struct B ; "
+			":struct C A high B low ; "
+			": t make C swap 5 < if drop make C then .high drop 1 ; "
+			":export test_jit_fn i32 t ; ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)(int32_t);
+				ftype fn = (ftype)bare_address;
+				CHECK(fn(1) == 1);
+				CHECK(fn(5) == 1);
+			}
+		}
+	}
+
+	SECTION("partially empty struct B llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			":struct A ; "
+			":struct C f32 f A mid i32 i ; "
+			": t make C swap 5 < if 3 swap .i! then .i ; "
+			":export test_jit_fn i32 t ; ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)(int32_t);
+				ftype fn = (ftype)bare_address;
+				CHECK(fn(1) == 3);
+				CHECK(fn(5) == 0);
+			}
+		}
+	}
 }
 

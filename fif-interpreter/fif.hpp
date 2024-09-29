@@ -580,7 +580,7 @@ public:
 		type_array[fif_f64].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstReal(LLVMDoubleTypeInContext(c), 0.0);
 		};
-		type_array[fif_bool].llvm_type =  LLVMInt1TypeInContext(llvm_context);
+		type_array[fif_bool].llvm_type = LLVMInt1TypeInContext(llvm_context);
 		type_array[fif_bool].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMConstInt(LLVMInt1TypeInContext(c), 0, true);
 		};
@@ -632,6 +632,7 @@ public:
 		type_array[fif_stack_token].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
 			return LLVMGetUndef(LLVMVoidTypeInContext(c));
 		};
+		type_array[fif_stack_token].flags |= type::FLAG_STATELESS;
 	}
 #endif
 	dictionary() {
@@ -1174,7 +1175,8 @@ inline LLVMValueRef struct_zero_constant(LLVMContextRef c, int32_t t, environmen
 	std::vector<LLVMValueRef> zvals;
 	for(int32_t j = 1; j < e->dict.type_array[t].decomposed_types_count; ++j) {
 		auto st = e->dict.all_stack_types[e->dict.type_array[t].decomposed_types_start + j];
-		zvals.push_back(e->dict.type_array[st].zero_constant(c, st, e));
+		if(e->dict.type_array[st].stateless() == false)
+			zvals.push_back(e->dict.type_array[st].zero_constant(c, st, e));
 	}
 	return LLVMConstNamedStruct(e->dict.type_array[t].llvm_type, zvals.data(), uint32_t(zvals.size()));
 }
@@ -1228,34 +1230,43 @@ inline uint32_t next_encoded_stack_type(std::span<int32_t const> desc) {
 	return i;
 }
 
-inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vector<int32_t> const& final_subtype_list, environment& env) {
-
+inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vector<int32_t> const& final_subtype_list, environment& env, bool skip_check = false) {
 	auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + env.dict.type_array[template_base].decomposed_types_start, size_t(env.dict.type_array[template_base].decomposed_types_count));
 
-	uint32_t match_pos = 0;
-	uint32_t mem_count = 0;
-	std::vector<int32_t> type_subs_out;
-	while(match_pos < desc.size()) {
-		if(mem_count > final_subtype_list.size()) {
+	if(!skip_check) {
+		uint32_t match_pos = 0;
+		uint32_t mem_count = 0;
+		std::vector<int32_t> type_subs_out;
+		while(match_pos < desc.size()) {
+			if(mem_count > final_subtype_list.size()) {
+				env.report_error("attempted to instantiate a struct template with the wrong number of members");
+				env.mode = fif_mode::error;
+				return -1;
+			}
+
+			auto mr = fill_in_variable_types(final_subtype_list[mem_count], desc.subspan(match_pos), type_subs_out, env);
+			if(!mr.match_result) {
+				env.report_error("attempted to instantiate a struct template with types that do not match its definition");
+				env.mode = fif_mode::error;
+				return -1;
+			}
+
+			match_pos += next_encoded_stack_type(desc.subspan(match_pos));
+			++mem_count;
+		}
+		if(mem_count < final_subtype_list.size()) {
 			env.report_error("attempted to instantiate a struct template with the wrong number of members");
 			env.mode = fif_mode::error;
 			return -1;
 		}
-		
-		auto mr = fill_in_variable_types(final_subtype_list[mem_count], desc.subspan(match_pos), type_subs_out, env);
-		if(!mr.match_result) {
-			env.report_error("attempted to instantiate a struct template with types that do not match its definition");
+	}
+
+	for(auto t : final_subtype_list) {
+		if(t < 0) {
+			env.report_error("attempted to instantiate a struct template with too few type parameters");
 			env.mode = fif_mode::error;
 			return -1;
 		}
-
-		match_pos += next_encoded_stack_type(desc.subspan(match_pos));
-		++mem_count;
-	}
-	if(mem_count < final_subtype_list.size()) {
-		env.report_error("attempted to instantiate a struct template with the wrong number of members");
-		env.mode = fif_mode::error;
-		return -1;
 	}
 
 	for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
@@ -1278,13 +1289,19 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 	env.dict.type_array.emplace_back();
 
 	std::vector<LLVMTypeRef> ctypes;
-	for(uint32_t j = 0; j < final_subtype_list.size(); ++j) {
-		ctypes.push_back(env.dict.type_array[final_subtype_list[j]].llvm_type);
+	int32_t count_real_members = 0;
+	int32_t last_type = 0;
+	for(uint32_t j = 0; j < (final_subtype_list.size() - size_t(env.dict.type_array[template_base].non_member_types)); ++j) {
+		if(env.dict.type_array[final_subtype_list[j]].stateless() == false) {
+			ctypes.push_back(env.dict.type_array[final_subtype_list[j]].llvm_type);
+			++count_real_members;
+			last_type = final_subtype_list[j];
+		}
 	}
-	for(int32_t j = 0; j < env.dict.type_array[template_base].non_member_types; ++j)
-		ctypes.pop_back();
 
-	if(ctypes.size() != 1) {
+	if(count_real_members == 0) {
+		// leave nullptrs
+	} else if(count_real_members > 1) {
 		std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
 #ifdef USE_LLVM
 		auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
@@ -1304,13 +1321,14 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 	env.dict.type_array.back().decomposed_types_count = uint32_t(final_subtype_list.size() + 1);
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 	
-	if(ctypes.size() == 1)
+	if(count_real_members == 1)
 		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
-	if(ctypes.size() == 0)
+	else if(count_real_members == 0)
 		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
 
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
 	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+
 	env.dict.type_array.back().type_slots = 0;
 	env.dict.all_stack_types.push_back(template_base);
 	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), final_subtype_list.begin(), final_subtype_list.end());
@@ -1320,7 +1338,6 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 
 inline int32_t instantiate_templated_struct(int32_t template_base, std::vector<int32_t> const& subtypes, environment& env) {
 	std::vector<int32_t> final_subtype_list;
-	final_subtype_list.push_back(template_base);
 
 	auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + env.dict.type_array[template_base].decomposed_types_start, size_t(env.dict.type_array[template_base].decomposed_types_count));
 
@@ -1331,63 +1348,7 @@ inline int32_t instantiate_templated_struct(int32_t template_base, std::vector<i
 		final_subtype_list.push_back(mresult.type);
 	}
 
-	for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
-		if(env.dict.type_array[i].decomposed_types_count == int32_t(final_subtype_list.size())) {
-			auto ta_start = env.dict.type_array[i].decomposed_types_start;
-			bool match = true;
-
-			for(uint32_t j = 0; j < final_subtype_list.size(); ++j) {
-				if(env.dict.all_stack_types[ta_start + j] != final_subtype_list[j]) {
-					match = false;
-					break;
-				}
-			}
-
-			if(match)
-				return  int32_t(i);
-		}
-	}
-
-	int32_t new_type = int32_t(env.dict.type_array.size());
-	env.dict.type_array.emplace_back();
-
-	std::vector<LLVMTypeRef> ctypes;
-	for(uint32_t j = 1; j < final_subtype_list.size(); ++j) {
-		ctypes.push_back(env.dict.type_array[final_subtype_list[j]].llvm_type);
-	}
-	for(int32_t j = 0; j < env.dict.type_array[template_base].non_member_types; ++j)
-		ctypes.pop_back();
-
-	if(ctypes.size() != 1) {
-		std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
-#ifdef USE_LLVM
-		auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
-		LLVMStructSetBody(ty, ctypes.data(), uint32_t(ctypes.size()), false);
-		env.dict.type_array.back().llvm_type = ty;
-		env.dict.type_array.back().zero_constant = struct_zero_constant;
-#endif
-		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
-	} else {
-#ifdef USE_LLVM
-		env.dict.type_array.back().llvm_type = ctypes[0];
-		env.dict.type_array.back().zero_constant = env.dict.type_array[final_subtype_list[0]].zero_constant;
-#endif
-		env.dict.type_array.back().interpreter_zero = env.dict.type_array[final_subtype_list[0]].interpreter_zero;
-	}
-	env.dict.type_array.back().decomposed_types_count = uint32_t(final_subtype_list.size());
-	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
-
-	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
-	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
-	if(ctypes.size() == 1)
-		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
-	if(ctypes.size() == 0)
-		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
-
-	env.dict.type_array.back().type_slots = 0;
-	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), final_subtype_list.begin(), final_subtype_list.end());
-
-	return new_type;
+	return instantiate_templated_struct_full(template_base, final_subtype_list, env, true);
 }
 
 inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> subtypes, std::vector<std::string_view> const& member_names, environment& env, int32_t template_types, int32_t extra_count) {
@@ -1398,10 +1359,19 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 
 	if(template_types == 0 && extra_count == 0) {
 		std::vector<LLVMTypeRef> ctypes;
+		int32_t count_real_members = 0;
+		int32_t last_type = 0;
+
 		for(uint32_t j = 0; j < subtypes.size(); ++j) {
-			ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
+			if(env.dict.type_array[subtypes[j]].stateless() == false) {
+				ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
+				++count_real_members;
+				last_type = subtypes[j];
+			}
 		}
-		if(ctypes.size() != 1) {
+		if(count_real_members == 0) {
+			//leave null
+		} else if(count_real_members > 1) {
 			std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
 #ifdef USE_LLVM
 			auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
@@ -1417,6 +1387,15 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 #endif
 			env.dict.type_array.back().interpreter_zero = env.dict.type_array[subtypes[0]].interpreter_zero;
 		}
+
+		env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
+		env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+
+		if(count_real_members == 1) {
+			env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
+		} else if(count_real_members == 0) {
+			env.dict.type_array.back().flags |= type::FLAG_STATELESS;
+		}
 	} else {
 #ifdef USE_LLVM
 		env.dict.type_array.back().llvm_type = LLVMVoidTypeInContext(env.llvm_context);
@@ -1424,6 +1403,8 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 #endif
 		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
 		env.dict.type_array.back().non_member_types = extra_count;
+
+		env.dict.type_array.back().flags |= type::FLAG_TEMPLATE;
 	}
 
 	env.dict.type_array.back().decomposed_types_count = uint32_t(subtypes.size() + (template_types + extra_count == 0 ? 1 : extra_count));
@@ -1441,17 +1422,6 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 	};
 
 
-	if(template_types + extra_count > 0)
-		env.dict.type_array.back().flags |= type::FLAG_TEMPLATE;
-	else
-		env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
-
-	if(subtypes.size() == 1)
-		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
-	if(subtypes.size() == 0)
-		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
-
-	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
 	env.dict.type_array.back().type_slots = template_types + extra_count;
 	if(template_types + extra_count == 0)
 		env.dict.all_stack_types.push_back(fif_struct);
@@ -1627,10 +1597,19 @@ inline int32_t make_anon_struct_type(std::span<int32_t const> subtypes, environm
 	env.dict.type_array.emplace_back();
 
 	std::vector<LLVMTypeRef> ctypes;
+	int32_t count_real_members = 0;
+	int32_t last_type = 0;
 	for(uint32_t j = 0; j < subtypes.size(); ++j) {
-		ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
+		if(env.dict.type_array[subtypes[j]].stateless() == false) {
+			ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
+			++count_real_members;
+			last_type = subtypes[j];
+		}
 	}
-	if(ctypes.size() != 1) {
+
+	if(count_real_members == 0) {
+		// leave null
+	} else if(count_real_members > 1) {
 		std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
 #ifdef USE_LLVM
 		auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
@@ -1651,13 +1630,13 @@ inline int32_t make_anon_struct_type(std::span<int32_t const> subtypes, environm
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
-
-	if(subtypes.size() == 1)
-		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
-	if(subtypes.size() == 0)
-		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
-
 	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+	if(count_real_members == 1) {
+		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
+	} else if(count_real_members == 0) {
+		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
+	}
+
 	env.dict.type_array.back().type_slots = 0;
 	env.dict.all_stack_types.push_back(fif_anon_struct);
 
@@ -2368,7 +2347,7 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 		if(output_counter < param_perm.size() && param_perm[output_counter] != -1) {
 			ts.push_back_main(result.type, params[param_perm[output_counter]], nullptr);
 		} else {
-			ts.push_back_main(result.type, env.new_ident(), nullptr);
+			ts.push_back_main(result.type, env.dict.type_array[result.type].stateless() ? 0 : env.new_ident(), nullptr);
 		}
 		++output_counter;
 	}
@@ -2381,7 +2360,7 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 		if(output_counter < param_perm.size() && param_perm[output_counter] != -1) {
 			ts.push_back_return(result.type, params[param_perm[output_counter]], nullptr);
 		} else {
-			ts.push_back_return(result.type, env.new_ident(), nullptr);
+			ts.push_back_return(result.type, env.dict.type_array[result.type].stateless() ? 0 : env.new_ident(), nullptr);
 		}
 		match_position += result.end_match_pos;
 		++output_counter;
@@ -2657,7 +2636,8 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 
 	//int32_t consumed_stack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		if(env.dict.type_array[desc[match_position]].stateless() == false)
+			parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 		++match_position;
 		//++consumed_stack_cells;
 	}
@@ -2671,7 +2651,8 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 	//int32_t output_stack_types = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			if(env.dict.type_array[desc[match_position]].stateless() == false)
+				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 		}
 		++match_position;
 		++output_counter;
@@ -2681,7 +2662,8 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 	// return stack matching
 	//int32_t consumed_rstack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		if(env.dict.type_array[desc[match_position]].stateless() == false)
+			parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 		++match_position;
 		//++consumed_rstack_cells;
 	}
@@ -2692,7 +2674,8 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 	//int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			if(env.dict.type_array[desc[match_position]].stateless() == false)
+				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 		}
 		++match_position;
 		++output_counter;
@@ -2709,7 +2692,7 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 	return LLVMFunctionType(ret_type, parameter_group.data(), uint32_t(parameter_group.size()), false);
 }
 
-inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, state_stack& ws, std::span<int32_t const> desc, std::vector<LLVMValueRef>& initial_params) {
+inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, state_stack& ws, std::span<int32_t const> desc) {
 
 	/*
 	* NOTE: function assumes that description is fully resolved
@@ -2719,10 +2702,13 @@ inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, sta
 	// stack matching
 
 	int32_t consumed_stack_cells = 0;
+	int32_t params_consumed = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		auto ex = LLVMGetParam(fn, uint32_t(consumed_stack_cells));
-		initial_params.push_back(ex);
-		ws.set_main_ex_back(consumed_stack_cells, ex);
+		if(env.dict.type_array[desc[match_position]].stateless() == false) {
+			auto ex = LLVMGetParam(fn, uint32_t(params_consumed));
+			ws.set_main_ex_back(consumed_stack_cells, ex);
+			++params_consumed;
+		}
 		++match_position;
 		++consumed_stack_cells;
 	}
@@ -2741,9 +2727,11 @@ inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, sta
 	// return stack matching
 	int32_t consumed_rstack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		auto ex = LLVMGetParam(fn, uint32_t(consumed_stack_cells + consumed_rstack_cells));
-		initial_params.push_back(ex);
-		ws.set_return_ex_back(consumed_rstack_cells, ex);
+		if(env.dict.type_array[desc[match_position]].stateless() == false) {
+			auto ex = LLVMGetParam(fn, uint32_t(params_consumed));
+			ws.set_return_ex_back(consumed_rstack_cells, ex);
+			++params_consumed;
+		}
 		++match_position;
 		++consumed_rstack_cells;
 	}
@@ -2790,7 +2778,8 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 	int32_t first_output_stack = match_position;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			if(env.dict.type_array[desc[match_position]].stateless() == false)
+				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 			++output_stack_types;
 		}
 		++match_position;
@@ -2809,7 +2798,8 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 	int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+			if(env.dict.type_array[desc[match_position]].stateless() == false)
+				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
 			++ret_added;
 		}
 		++match_position;
@@ -2827,7 +2817,7 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 	return brief_fn_return{ ret_type , output_stack_types, ret_added, returns_group.size()  > 1};
 }
 
-inline void llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<LLVMValueRef> const& initial_parameters, std::vector<int32_t> const& param_perm) {
+inline void llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
 	std::vector<LLVMTypeRef> returns_group;
 	std::vector<LLVMValueRef> returns_vals;
 
@@ -2851,9 +2841,11 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 	int32_t first_output_stack = match_position;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-			returns_vals.push_back(env.compiler_stack.back()->working_state()->main_ex_back(size_t(output_stack_types)));
-			++output_stack_types;
+			if(env.dict.type_array[desc[match_position]].stateless() == false) {
+				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+				returns_vals.push_back(env.compiler_stack.back()->working_state()->main_ex_back(size_t(output_stack_types)));
+				++output_stack_types;
+			}
 		}
 		++match_position;
 		++output_counter;
@@ -2871,9 +2863,11 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 	int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-			returns_vals.push_back(env.compiler_stack.back()->working_state()->return_ex_back(size_t(ret_added)));
-			++ret_added;
+			if(env.dict.type_array[desc[match_position]].stateless() == false) {
+				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+				returns_vals.push_back(env.compiler_stack.back()->working_state()->return_ex_back(size_t(ret_added)));
+				++ret_added;
+			}
 		}
 		++match_position;
 		++output_counter;
@@ -2925,7 +2919,9 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 
 		//int32_t consumed_stack_cells = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			params.push_back(env.compiler_stack.back()->working_state()->main_ex_back(0));
+			if(env.dict.type_array[desc[match_position]].stateless() == false) {
+				params.push_back(env.compiler_stack.back()->working_state()->main_ex_back(0));
+			}
 			env.compiler_stack.back()->working_state()->pop_main();
 			++match_position;
 			//++consumed_stack_cells;
@@ -2947,7 +2943,9 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 		// return stack matching
 		//int32_t consumed_rstack_cells = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			params.push_back(env.compiler_stack.back()->working_state()->return_ex_back(0));
+			if(env.dict.type_array[desc[match_position]].stateless() == false) {
+				params.push_back(env.compiler_stack.back()->working_state()->return_ex_back(0));
+			}
 			env.compiler_stack.back()->working_state()->pop_return();
 			++match_position;
 			//++consumed_rstack_cells;
@@ -2986,7 +2984,9 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 		// output stack
 		int32_t first_output_stack = match_position;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
+			if(env.dict.type_array[desc[match_position]].stateless()) {
+				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, nullptr);
+			} else if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
 				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, params[wi.llvm_parameter_permutation[output_counter]]);
 			} else if(count_return_values > 1) {
 				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, LLVMBuildExtractValue(env.llvm_builder, retvalue, extract_index, ""));
@@ -3009,7 +3009,9 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 		// output ret stack
 		int32_t ret_added = 0;
 		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
+			if(env.dict.type_array[desc[match_position]].stateless()) {
+				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, nullptr);
+			}if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
 				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, params[wi.llvm_parameter_permutation[output_counter]]);
 			} else if(count_return_values > 1) {
 				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, LLVMBuildExtractValue(env.llvm_builder, retvalue, extract_index, ""));
@@ -3085,29 +3087,31 @@ public:
 		auto* ws = env.compiler_stack.back()->working_state();
 		for(auto& l : vars) {
 			auto data_ptr = env.compiler_stack.back()->get_lvar_storage(l.second);
-			if(env.mode == fif_mode::compiling_bytecode) {
-				if(env.dict.type_array[data_ptr->type].flags != 0) {
-					if(data_ptr->is_stack_variable) {
-						ws->push_back_main(data_ptr->type, data_ptr->data, nullptr);
-						execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-					} else {
-						ws->push_back_main(data_ptr->type, data_ptr->data, nullptr);
-						execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+			if(env.dict.type_array[data_ptr->type].stateless() == false) {
+				if(env.mode == fif_mode::compiling_bytecode) {
+					if(env.dict.type_array[data_ptr->type].flags != 0) {
+						if(data_ptr->is_stack_variable) {
+							ws->push_back_main(data_ptr->type, data_ptr->data, nullptr);
+							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+						} else {
+							ws->push_back_main(data_ptr->type, data_ptr->data, nullptr);
+							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+						}
 					}
-				}
-			} else if(env.mode == fif_mode::compiling_llvm) {
-				if(env.dict.type_array[data_ptr->type].flags != 0) {
-					if(data_ptr->is_stack_variable) {
+				} else if(env.mode == fif_mode::compiling_llvm) {
+					if(env.dict.type_array[data_ptr->type].flags != 0) {
+						if(data_ptr->is_stack_variable) {
 #ifdef USE_LLVM
-						auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[data_ptr->type].llvm_type, data_ptr->expression, "");
+							auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[data_ptr->type].llvm_type, data_ptr->expression, "");
 #else
-						void* iresult = nullptr;
+							void* iresult = nullptr;
 #endif
-						ws->push_back_main(data_ptr->type, 0, iresult);
-						execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-					} else {
-						ws->push_back_main(data_ptr->type, 0, data_ptr->expression);
-						execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+							ws->push_back_main(data_ptr->type, 0, iresult);
+							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+						} else {
+							ws->push_back_main(data_ptr->type, 0, data_ptr->expression);
+							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+						}
 					}
 				}
 			}
@@ -3902,7 +3906,6 @@ public:
 	state_stack iworking_state;
 	std::vector<int32_t> compiled_bytes;
 	std::vector<int32_t> type_subs;
-	std::vector< LLVMValueRef> initial_parameters;
 	std::vector< internal_lvar_data> lvar_store;
 	LLVMValueRef llvm_fn = nullptr;
 	LLVMBasicBlockRef current_block = nullptr;
@@ -3964,7 +3967,7 @@ public:
 			LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMPrivateLinkage);
 			auto entry_block = LLVMAppendBasicBlockInContext(env.llvm_context, compiled_fn, "fn_entry_point");
 			LLVMPositionBuilderAtEnd(env.llvm_builder, entry_block);
-			llvm_make_function_parameters(env, compiled_fn, iworking_state, fn_desc, initial_parameters);
+			llvm_make_function_parameters(env, compiled_fn, iworking_state, fn_desc);
 			initial_state = iworking_state;
 			current_block = entry_block;
 #endif
@@ -4225,7 +4228,7 @@ public:
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
 
-			llvm_make_function_return(env, existing_description, initial_parameters, wi.llvm_parameter_permutation);
+			llvm_make_function_return(env, existing_description, wi.llvm_parameter_permutation);
 			wi.llvm_compilation_finished = true;
 
 			if(LLVMVerifyFunction(wi.llvm_function, LLVMVerifierFailureAction::LLVMPrintMessageAction)) {
