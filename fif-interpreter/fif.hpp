@@ -506,6 +506,10 @@ struct type {
 #endif
 	interpreter_zero_expr interpreter_zero = nullptr;
 
+	int64_t ntt_data = 0;
+	LLVMValueRef ntt_llvm_constant = nullptr;
+	int32_t ntt_base_type = -1;
+
 	int32_t type_slots = 0;
 	int32_t non_member_types = 0;
 	int32_t decomposed_types_start = 0;
@@ -637,41 +641,42 @@ public:
 #endif
 	dictionary() {
 		types.insert_or_assign(std::string("i32"), fif_i32);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("f32"), fif_f32);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("bool"), fif_bool);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("type"), fif_type);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("i64"), fif_i64);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("f64"), fif_f64);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("u32"), fif_u32);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("u64"), fif_u64);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("i16"), fif_i16);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("u16"), fif_u16);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("i8"), fif_i8);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("u8"), fif_u8);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("nil"), fif_nil);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("ptr"), fif_ptr);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 1, 0, 0, 0 });
+		type_array.emplace_back();
+		type_array.back().type_slots = 1;
 		types.insert_or_assign(std::string("opaque_ptr"), fif_nil);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("llvm.struct"), fif_struct);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("struct"), fif_anon_struct);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 		types.insert_or_assign(std::string("stack-token"), fif_stack_token);
-		type_array.push_back(type{ nullptr, nullptr, nullptr, 0, 0, 0, 0 });
+		type_array.emplace_back();
 	}
 };
 
@@ -1267,6 +1272,11 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 			env.mode = fif_mode::error;
 			return -1;
 		}
+		if(env.dict.type_array[t].ntt_base_type != -1) {
+			env.report_error("attempted to instantiate a struct template member type with a non-type template parameter");
+			env.mode = fif_mode::error;
+			return -1;
+		}
 	}
 
 	for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
@@ -1363,6 +1373,11 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 		int32_t last_type = 0;
 
 		for(uint32_t j = 0; j < subtypes.size(); ++j) {
+			if(env.dict.type_array[subtypes[j]].ntt_base_type != -1) {
+				env.report_error("attempted to make a struct with a member of a non-type (i.e. value) type");
+				env.mode = fif_mode::error;
+				return -1;
+			}
 			if(env.dict.type_array[subtypes[j]].stateless() == false) {
 				ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
 				++count_real_members;
@@ -1818,7 +1833,68 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 	if(text.substr(0, mt_end) == "llvm.struct") { // prevent "generic" struct matching
 		return type_match{ -1, uint32_t(text.length()) };
 	}
-	if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
+
+	if(is_integer(text.data(), text.data() + mt_end)) {
+		int64_t dat = parse_int(text.substr(0, mt_end));
+		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+			if(env.dict.type_array[i].ntt_data == dat && env.dict.type_array[i].ntt_base_type == fif_i32) {
+				return type_match{ int32_t(i), mt_end };
+			}
+		}
+		int32_t new_type = int32_t(env.dict.type_array.size());
+		env.dict.type_array.emplace_back();
+		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_i32].llvm_type;
+		env.dict.type_array.back().ntt_data = dat;
+		env.dict.type_array.back().ntt_base_type = fif_i32;
+		env.dict.type_array.back().ntt_llvm_constant = LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), uint64_t(dat), true);
+
+		return type_match{ new_type, mt_end };
+	} else if(is_fp(text.data(), text.data() + mt_end)) {
+		int64_t dat = 0;
+		float fdat = parse_float(text.substr(0, mt_end));
+		memcpy(&dat, &fdat, 4);
+		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+			if(env.dict.type_array[i].ntt_data == dat && env.dict.type_array[i].ntt_base_type == fif_f32) {
+				return type_match{ int32_t(i), mt_end };
+			}
+		}
+		int32_t new_type = int32_t(env.dict.type_array.size());
+		env.dict.type_array.emplace_back();
+		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_f32].llvm_type;
+		env.dict.type_array.back().ntt_data = dat;
+		env.dict.type_array.back().ntt_base_type = fif_f32;
+		env.dict.type_array.back().ntt_llvm_constant = LLVMConstReal(LLVMFloatTypeInContext(env.llvm_context), fdat);
+
+		return type_match{ new_type, mt_end };
+	} else if(text.substr(0, mt_end) == "true") {
+		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+			if(env.dict.type_array[i].ntt_data == 1 && env.dict.type_array[i].ntt_base_type == fif_bool) {
+				return type_match{ int32_t(i), mt_end };
+			}
+		}
+		int32_t new_type = int32_t(env.dict.type_array.size());
+		env.dict.type_array.emplace_back();
+		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_bool].llvm_type;
+		env.dict.type_array.back().ntt_data = 1;
+		env.dict.type_array.back().ntt_base_type = fif_bool;
+		env.dict.type_array.back().ntt_llvm_constant = LLVMConstInt(LLVMInt1TypeInContext(env.llvm_context), 1, true);
+
+		return type_match{ new_type, mt_end };
+	} else if(text.substr(0, mt_end) == "false") {
+		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+			if(env.dict.type_array[i].ntt_data == 0 && env.dict.type_array[i].ntt_base_type == fif_bool) {
+				return type_match{ int32_t(i), mt_end };
+			}
+		}
+		int32_t new_type = int32_t(env.dict.type_array.size());
+		env.dict.type_array.emplace_back();
+		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_bool].llvm_type;
+		env.dict.type_array.back().ntt_data = 0;
+		env.dict.type_array.back().ntt_base_type = fif_bool;
+		env.dict.type_array.back().ntt_llvm_constant = LLVMConstInt(LLVMInt1TypeInContext(env.llvm_context), 0, true);
+
+		return type_match{ new_type, mt_end };
+	} else if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
 		if(mt_end >= text.size() || text[mt_end] == ',' ||  text[mt_end] == ')') {	// case: plain type
 			return type_match{ it->second, mt_end };
 		}
@@ -1862,6 +1938,10 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 			return type_match{ -1, mt_end };
 		} else if(env.dict.type_array[it->second].is_struct_template()) {
 			return type_match{ instantiate_templated_struct(it->second, subtypes, env), mt_end };
+		} else if(it->second == fif_ptr && env.dict.type_array[subtypes[0]].ntt_base_type != -1) {
+			env.report_error("attempted to instantiate a pointer to a non-type");
+			env.mode = fif_mode::error;
+			return type_match{ -1, mt_end };
 		} else {
 			for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
 				if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {

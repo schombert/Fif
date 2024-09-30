@@ -3177,6 +3177,11 @@ inline int32_t* do_make(state_stack& s, int32_t* p, environment* env) {
 		env->mode = fif_mode::error;
 		return nullptr;
 	}
+	if(env->dict.type_array[resolved_type].ntt_base_type != -1) {
+		env->report_error("make was unable to resolve the type");
+		env->mode = fif_mode::error;
+		return nullptr;
+	}
 
 	if(typechecking_mode(env->mode)) {
 		s.push_back_main(resolved_type, env->new_ident(), nullptr);
