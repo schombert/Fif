@@ -14,6 +14,8 @@
 
 #pragma comment(lib, "LLVM-C.lib")
 
+using vo = fif::vsize_obj;
+
 TEST_CASE("trivial test cases", "fif jit tests") {
 	SECTION("trivial") {
 		fif::environment fif_env;
@@ -67,8 +69,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "+", values);
 
@@ -77,7 +79,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 5);
+		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
 	SECTION("fp add") {
 		fif::environment fif_env;
@@ -90,13 +92,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		};
 
 		fif::interpreter_stack values{ };
-		int64_t temp_dat = 0;
-		float temp_val = 2.5f;
-		memcpy(&temp_dat, &temp_val, 4);
-		values.push_back_main(fif::fif_f32, temp_dat, nullptr);
-		temp_val = 3.25f;
-		memcpy(&temp_dat, &temp_val, 4);
-		values.push_back_main(fif::fif_f32, temp_dat, nullptr);
+		values.push_back_main(vo(fif::fif_f32, 2.5f, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_f32, 3.25f, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "+", values);
 
@@ -105,10 +102,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 
-		temp_dat = values.main_data(0);
-		memcpy(&temp_val, &temp_dat, 4);
-		CHECK(temp_val == 5.75f);
 		CHECK(values.main_type(0) == fif::fif_f32);
+		CHECK(values.popr_main().as<float>() == 5.75f);
 	}
 	SECTION("invalid add") {
 		fif::environment fif_env;
@@ -121,30 +116,15 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		};
 
 		fif::interpreter_stack values{ };
-		int64_t temp_dat = 0;
-		float temp_val = 2.5f;
-		memcpy(&temp_dat, &temp_val, 4);
-		values.push_back_main(fif::fif_f32, temp_dat, nullptr);
-		values.push_back_main(fif::fif_i32, 0, nullptr);
+		values.push_back_main(vo(fif::fif_f32, 2.5f, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 0, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "+", values);
 
 		CHECK(error_count > 0);
 		CHECK(error_list != "");
 	}
-	/*
-		add_precompiled(fif_env, ":", colon_definition, { });
-	add_precompiled(fif_env, "if", fif_if, { }, true);
-	add_precompiled(fif_env, "else", fif_else, { }, true);
-	add_precompiled(fif_env, "then", fif_then, { }, true);
-	add_precompiled(fif_env, "end-if", fif_then, { }, true);
-	add_precompiled(fif_env, "while", fif_while, { }, true);
-	add_precompiled(fif_env, "loop", fif_loop, { }, true);
-	add_precompiled(fif_env, "end-while", fif_end_while, { }, true);
-	add_precompiled(fif_env, "do", fif_do, { }, true);
-	add_precompiled(fif_env, "until", fif_until, { }, true);
-	add_precompiled(fif_env, "end-do", fif_end_do, { fif::fif_bool }, true);
-	*/
+
 	SECTION("r at") {
 		fif::environment fif_env;
 		fif::initialize_standard_vocab(fif_env);
@@ -157,7 +137,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 
 		fif::interpreter_stack values{ };
 
-		values.push_back_return(fif::fif_i16, 1, nullptr);
+		values.push_back_return(vo(fif::fif_i16, int16_t(1), vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "r@", values);
 
@@ -166,10 +146,11 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		REQUIRE(values.return_size() == 1);
 ;
-		CHECK(values.main_data(0) == 1);
+		
 		CHECK(values.main_type(0) == fif::fif_i16);
-		CHECK(values.return_data(0) == 1);
+		CHECK(values.popr_main().as<int16_t>() == 1);
 		CHECK(values.return_type(0) == fif::fif_i16);
+		CHECK(values.popr_return().as<int16_t>() == 1);
 	}
 	SECTION("from r") {
 		fif::environment fif_env;
@@ -183,7 +164,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 
 		fif::interpreter_stack values{ };
 
-		values.push_back_return(fif::fif_i16, 1, nullptr);
+		values.push_back_return(vo(fif::fif_i16, int16_t(1), vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "r>", values);
 
@@ -191,8 +172,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		REQUIRE(values.return_size() == 0);
-		CHECK(values.main_data(0) == 1);
 		CHECK(values.main_type(0) == fif::fif_i16);
+		CHECK(values.popr_main().as<int16_t>() == 1);
 	}
 	SECTION("to r") {
 		fif::environment fif_env;
@@ -206,7 +187,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 
 		fif::interpreter_stack values{ };
 
-		values.push_back_main(fif::fif_i16, 1, nullptr);
+		values.push_back_main(vo(fif::fif_i16, int16_t(1), vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, ">r", values);
 
@@ -214,8 +195,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 0);
 		REQUIRE(values.return_size() == 1);
-		CHECK(values.return_data(0) == 1);
 		CHECK(values.return_type(0) == fif::fif_i16);
+		CHECK(values.popr_return().as<int16_t>() == 1);
 	}
 	SECTION("swap") {
 		fif::environment fif_env;
@@ -228,11 +209,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		};
 
 		fif::interpreter_stack values{ };
-		int64_t temp_dat = 0;
-		float temp_val = 2.5f;
-		memcpy(&temp_dat, &temp_val, 4);
-		values.push_back_main(fif::fif_f32, temp_dat, nullptr);
-		values.push_back_main(fif::fif_i32, 14, nullptr);
+		values.push_back_main(vo(fif::fif_f32, 2.5f, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 14, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "swap", values);
 
@@ -241,12 +219,10 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 2);
 		CHECK(values.return_size() == 0);
 
-		temp_dat = values.main_data(1);
-		memcpy(&temp_val, &temp_dat, 4);
-		CHECK(temp_val == 2.5f);
 		CHECK(values.main_type(1) == fif::fif_f32);
-		CHECK(values.main_data(0) == 14);
+		CHECK(values.popr_main().as<float>() == 2.5f);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 14);
 	}
 	SECTION("drop") {
 		fif::environment fif_env;
@@ -257,8 +233,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "drop", values);
 
@@ -267,7 +243,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 2);
+		CHECK(values.popr_main().as<int32_t>() == 2);
 	}
 	SECTION("dup") {
 		fif::environment fif_env;
@@ -278,8 +254,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "dup", values);
 
@@ -287,12 +263,13 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 3);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 2);
-		CHECK(values.main_type(1) == fif::fif_i32);
-		CHECK(values.main_data(1) == 3);
+
 		CHECK(values.main_type(2) == fif::fif_i32);
-		CHECK(values.main_data(2) == 3);
+		CHECK(values.popr_main().as<int32_t>() == 3);
+		CHECK(values.main_type(1) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 3);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 2);
 	}
 	SECTION("compound") {
 		fif::environment fif_env;
@@ -303,8 +280,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "dup + +", values);
 
@@ -313,7 +290,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 8);
+		CHECK(values.popr_main().as<int32_t>() == 8);
 	}
 	SECTION("compare") {
 		fif::environment fif_env;
@@ -324,8 +301,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, "<", values);
 
@@ -334,7 +311,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_bool);
-		CHECK(values.main_data(0) != 0);
+		CHECK(values.popr_main().as<bool>());
 	}
 	SECTION("compareb") {
 		fif::environment fif_env;
@@ -345,8 +322,8 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		fif_env.report_error = [&](std::string_view s) { ++error_count; error_list += std::string(s) + "\n"; };
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, ">", values);
 
@@ -355,7 +332,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_bool);
-		CHECK(values.main_data(0) == 0);
+		CHECK(values.popr_main().as<bool>() == false);
 	}
 	SECTION("conditional a") {
 		fif::environment fif_env;
@@ -376,7 +353,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 6);
+		CHECK(values.popr_main().as<int32_t>() == 6);
 	}
 	SECTION("conditional b") {
 		fif::environment fif_env;
@@ -397,7 +374,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 5);
+		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
 	SECTION("while loop") {
 		fif::environment fif_env;
@@ -418,7 +395,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 7);
+		CHECK(values.popr_main().as<int32_t>() == 7);
 	}
 	SECTION("do loop") {
 		fif::environment fif_env;
@@ -439,7 +416,7 @@ TEST_CASE("fundamental calls", "fif interpreter tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 11);
+		CHECK(values.popr_main().as<int32_t>() == 11);
 	}
 }
 
@@ -455,8 +432,8 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 		};
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, ": t dup + + ; t", values);
 
@@ -465,7 +442,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 8);
+		CHECK(values.popr_main().as<int32_t>() == 8);
 	}
 	SECTION("conditional a") {
 		fif::environment fif_env;
@@ -486,7 +463,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 6);
+		CHECK(values.popr_main().as<int32_t>() == 6);
 	}
 	SECTION("conditional b") {
 		fif::environment fif_env;
@@ -507,7 +484,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 5);
+		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
 	SECTION("while loop") {
 		fif::environment fif_env;
@@ -528,7 +505,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 7);
+		CHECK(values.popr_main().as<int32_t>() == 7);
 	}
 	SECTION("do loop") {
 		fif::environment fif_env;
@@ -549,7 +526,7 @@ TEST_CASE("basic colon defs", "fif bytecode tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 11);
+		CHECK(values.popr_main().as<int32_t>() == 11);
 	}
 }
 
@@ -566,8 +543,8 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 		};
 
 		fif::interpreter_stack values{ };
-		values.push_back_main(fif::fif_i32, 2, nullptr);
-		values.push_back_main(fif::fif_i32, 3, nullptr);
+		values.push_back_main(vo(fif::fif_i32, 2, vo::by_value{ }));
+		values.push_back_main(vo(fif::fif_i32, 3, vo::by_value{ }));
 
 		fif::run_fif_interpreter(fif_env, ": t dup + + ;", values);
 
@@ -782,7 +759,7 @@ TEST_CASE("bracket test", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 5);
+		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
 	SECTION("bracket llvm") {
 		fif::environment fif_env;
@@ -842,7 +819,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
-			": t 0 heap-alloc dup dup sizeof i16 swap ! @ swap heap-free drop ; "
+			": t 0 heap-alloc dup dup sizeof i16 swap ! @ swap heap-free ; "
 			"t",
 			values);
 
@@ -851,7 +828,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 8);
+		CHECK(values.popr_main().as<int32_t>() == 8);
 	}
 	SECTION("single pointer llvm") {
 		fif::environment fif_env;
@@ -866,7 +843,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 		fif::interpreter_stack values{ };
 
 		fif::run_fif_interpreter(fif_env,
-			": t 0 heap-alloc dup dup sizeof i16 swap ! @ swap heap-free drop ; "
+			": t 0 heap-alloc dup dup sizeof i16 swap ! @ swap heap-free ; "
 			"t",
 			values);
 
@@ -918,7 +895,7 @@ TEST_CASE("pointers tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 256);
+		CHECK(values.popr_main().as<int32_t>() == 256);
 	}
 
 	SECTION("buffer pointer llvm") {
@@ -993,7 +970,7 @@ TEST_CASE("variables test", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 2);
+		CHECK(values.popr_main().as<int32_t>() == 2);
 	}
 	SECTION("custom swap bytecode") {
 		fif::environment fif_env;
@@ -1018,7 +995,7 @@ TEST_CASE("variables test", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 1);
+		CHECK(values.popr_main().as<int32_t>() == 1);
 	}
 	SECTION("let llvm") {
 		fif::environment fif_env;
@@ -1140,7 +1117,7 @@ TEST_CASE("variables test", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 7);
+		CHECK(values.popr_main().as<int32_t>() == 7);
 	}
 	SECTION("locals llvm") {
 		fif::environment fif_env;
@@ -1225,7 +1202,7 @@ TEST_CASE("specialization test", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_type);
-		CHECK(values.main_data(0) == fif::fif_bool);
+		CHECK(values.popr_main().as<int32_t>() == fif::fif_bool);
 	}
 	SECTION("specialization a bytecode") {
 		fif::environment fif_env;
@@ -1250,7 +1227,7 @@ TEST_CASE("specialization test", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 100);
+		CHECK(values.popr_main().as<int32_t>() == 100);
 	}
 	SECTION("specialization a llvm") {
 		fif::environment fif_env;
@@ -1363,10 +1340,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_f32);
-		int32_t val = 0;
-		float fval = 2.5;
-		memcpy(&val, &fval, 4);
-		CHECK(values.main_data(0) == val);
+		CHECK(values.popr_main().as<float>() == 2.5f);
 	}
 	SECTION("struct definition llvm") {
 		fif::environment fif_env;
@@ -1435,10 +1409,7 @@ TEST_CASE("struct tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_f32);
-		int32_t val = 0;
-		float fval = 2.5;
-		memcpy(&val, &fval, 4);
-		CHECK(values.main_data(0) == val);
+		CHECK(values.popr_main().as<float>() == 2.5f);
 	}
 	SECTION("struct template definition llvm") {
 		fif::environment fif_env;
@@ -1535,8 +1506,8 @@ TEST_CASE("struct tests", "fif combined tests") {
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.main_type(1) == fif::fif_i32);
-		CHECK(values.main_data(0) == 1);
-		CHECK(values.main_data(1) == 0);
+		CHECK(values.popr_main().as<int32_t>() == 0);
+		CHECK(values.popr_main().as<int32_t>() == 1);
 	}
 	SECTION("struct overloading b bytecode") {
 		fif::environment fif_env;
@@ -1564,8 +1535,8 @@ TEST_CASE("struct tests", "fif combined tests") {
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.main_type(1) == fif::fif_i32);
-		CHECK(values.main_data(0) == 1);
-		CHECK(values.main_data(1) == 1);
+		CHECK(values.popr_main().as<int32_t>() == 1);
+		CHECK(values.popr_main().as<int32_t>() == 1);
 	}
 	SECTION("struct overloading a llvm") {
 		fif::environment fif_env;
@@ -1728,7 +1699,7 @@ TEST_CASE("array_tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 42);
+		CHECK(values.popr_main().as<int32_t>() == 42);
 	}
 	SECTION("buf resize llvm") {
 		fif::environment fif_env;
@@ -1804,7 +1775,7 @@ TEST_CASE("array_tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 0);
+		CHECK(values.popr_main().as<int32_t>() == 0);
 	}
 	
 	SECTION("dy-array defines llvm") {
@@ -1878,7 +1849,7 @@ TEST_CASE("array_tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 4);
+		CHECK(values.popr_main().as<int32_t>() == 4);
 	}
 
 	SECTION("dy-array multi-push") {
@@ -1903,7 +1874,7 @@ TEST_CASE("array_tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 7);
+		CHECK(values.popr_main().as<int32_t>() == 7);
 	}
 
 	SECTION("dy-array defines b llvm") {
@@ -2023,7 +1994,7 @@ TEST_CASE("array_tests", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(0) == 8);
+		CHECK(values.popr_main().as<int32_t>() == 8);
 	}
 
 	SECTION("dy-array indexing llvm") {
@@ -2081,8 +2052,7 @@ void set_global(int32_t v) {
 }
 int32_t* interpreted_set_global(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::interpreting)
-		our_global = int32_t(s.main_data_back(0));
-	s.pop_main();
+		our_global = int32_t(s.popr_main().as<int32_t>());
 	return p + 2;
 }
 
@@ -2232,11 +2202,11 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 			fif::container_interface(),
 			values);
 
-		values.push_back_main(fif::fif_opaque_ptr, (int64_t)(container.get()), nullptr);
+		values.push_back_main(vo(fif::fif_opaque_ptr, container.get(), vo::by_value{ }));
 		fif::run_fif_interpreter(fif_env,
 			"set-container ",
 			values);
-		values.push_back_main(fif::fif_opaque_ptr, (int64_t)(dcon::shared_backing_storage.allocation), nullptr);
+		values.push_back_main(vo(fif::fif_opaque_ptr, dcon::shared_backing_storage.allocation, vo::by_value{ }));
 		fif::run_fif_interpreter(fif_env,
 			"set-vector-storage ",
 			values);
@@ -2249,10 +2219,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 42);
 		CHECK(values.main_type(0) == fif::fif_i32);
-
-		values.pop_main();
+		CHECK(values.popr_main().as<int32_t>() == 42);
 
 		auto thandleb = container->create_thingy();
 		container->thingy_set_bf_value(thandleb, true);
@@ -2265,10 +2233,9 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 1);
 		CHECK(values.main_type(0) == fif::fif_bool);
+		CHECK(values.popr_main().as<bool>());
 
-		values.pop_main();
 
 		fif::run_fif_interpreter(fif_env,
 			"0 >thingy_id bf_value @ ",
@@ -2278,9 +2245,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 0);
 		CHECK(values.main_type(0) == fif::fif_bool);
-		values.pop_main();
+		CHECK(values.popr_main().as<bool>() == false);
 
 		fif::run_fif_interpreter(fif_env,
 			"true 0 >thingy_id bf_value ! ",
@@ -2307,10 +2273,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		float fvalue = 2.5f;
 		int64_t ivalue = 0;
 		memcpy(&ivalue, &fvalue, 4);
-		CHECK(values.main_data(0) == ivalue);
 		CHECK(values.main_type(0) == fif::fif_f32);
-		values.pop_main();
-
+		CHECK(values.popr_main().as<int32_t>() == ivalue);
 
 		container->thingy_resize_big_array_bf(13);
 		container->thingy_set_big_array_bf(thandle, 6, true);
@@ -2323,9 +2287,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 1);
 		CHECK(values.main_type(0) == fif::fif_bool);
-		values.pop_main();
+		CHECK(values.popr_main().as<bool>());
 
 		auto vp = container->thingy_get_pooled_v(thandleb);
 		vp.push_back(4);
@@ -2340,9 +2303,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 3);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		values.pop_main();
+		CHECK(values.popr_main().as<int32_t>() == 3);
 
 		fif::run_fif_interpreter(fif_env,
 			"0 >thingy_id pooled_v size ",
@@ -2352,9 +2314,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		values.pop_main();
+		CHECK(values.popr_main().as<int32_t>() == 0);
 
 		fif::run_fif_interpreter(fif_env,
 			"1 >thingy_id pooled_v 1 index @ ",
@@ -2364,9 +2325,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 18);
 		CHECK(values.main_type(0) == fif::fif_i16);
-		values.pop_main();
+		CHECK(values.popr_main().as<int32_t>() == 18);
 
 		auto pa  = container->create_person(); 
 		auto pb = container->create_person();
@@ -2389,9 +2349,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 1);
 		CHECK(values.main_type(0) == fif::fif_bool);
-		values.pop_main();
+		CHECK(values.popr_main().as<bool>());
 
 
 		fif::run_fif_interpreter(fif_env,
@@ -2402,9 +2361,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 80);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		values.pop_main();
+		CHECK(values.popr_main().as<int32_t>() == 80);
 
 		fif::run_fif_interpreter(fif_env,
 			"thingy-size ",
@@ -2414,9 +2372,8 @@ TEST_CASE("dcon integration tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 2);
 		CHECK(values.main_type(0) == fif::fif_i32);
-		values.pop_main();
+		CHECK(values.popr_main().as<int32_t>() == 2);
 	}
 	SECTION("read_value llvm") {
 		auto container = std::make_unique<dcon::data_container>();
@@ -2665,8 +2622,8 @@ TEST_CASE("relet tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 6);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 6);
 	}
 	SECTION("simple_relet llvm") {
 		fif::environment fif_env;
@@ -2735,8 +2692,8 @@ TEST_CASE("relet tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 1);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 1);
 	}
 	SECTION("cond relet llvm") {
 		fif::environment fif_env;
@@ -2806,8 +2763,8 @@ TEST_CASE("relet tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 3);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 3);
 	}
 	SECTION("while relet llvm") {
 		fif::environment fif_env;
@@ -2880,8 +2837,8 @@ TEST_CASE("adv control flow tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 5);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
 	SECTION("simple_break llvm") {
 		fif::environment fif_env;
@@ -2951,8 +2908,8 @@ TEST_CASE("adv control flow tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 5);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
 	SECTION("simple_break2 llvm") {
 		fif::environment fif_env;
@@ -3023,8 +2980,8 @@ TEST_CASE("adv control flow tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 1);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 1);
 	}
 	SECTION("simple_return llvm") {
 		fif::environment fif_env;
@@ -3096,12 +3053,13 @@ TEST_CASE("adv control flow tests", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 3);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 0);
-		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(1) == 2);
-		CHECK(values.main_type(1) == fif::fif_i32);
-		CHECK(values.main_data(2) == 1);
 		CHECK(values.main_type(2) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 1);
+		CHECK(values.main_type(1) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 2);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 0);
+		
 	}
 	SECTION("3andif llvm") {
 		fif::environment fif_env;
@@ -3171,10 +3129,10 @@ TEST_CASE("parameter permutation detection", "fif compiler tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 2);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 5);
-		CHECK(values.main_type(0) == fif::fif_i32);
-		CHECK(values.main_data(1) == 9);
 		CHECK(values.main_type(1) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 9);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
 
 		auto& wi = std::get<fif::interpreted_word_instance>(fif_env.dict.all_instances.back());
 		REQUIRE(wi.llvm_parameter_permutation.size() >= 1);
@@ -3202,8 +3160,8 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 1);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 1);
 	}
 
 	SECTION("anon struct and destruct llvm") {
@@ -3270,8 +3228,8 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 0);
 		CHECK(values.main_type(0) != 0);
+		CHECK(values.popr_main().byte_size == 0);
 	}
 
 	SECTION("partially empty struct B") {
@@ -3295,8 +3253,8 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		CHECK(error_list == "");
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
-		CHECK(values.main_data(0) == 3);
 		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 3);
 	}
 
 	SECTION("empty struct A llvm") {

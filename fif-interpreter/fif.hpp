@@ -87,191 +87,396 @@ struct indirect_string_eq {
 #define LLVMTypeRef void*
 #endif
 
-class single_allocation_2xi32_2xi64_vector {
+class vsize_obj {
+public:
+	struct by_value { };
+
+	static constexpr size_t byte_size = 64;
+	unsigned char internal_buffer[byte_size] = { 0 };
+	int32_t type = 0;
+	uint32_t size = 0;
+
+	vsize_obj() noexcept { }
+	vsize_obj(int32_t type, uint32_t size, unsigned char* dat) noexcept : type(type), size(size) {
+		if(size <= byte_size) {
+			memcpy(internal_buffer, dat, size);
+		} else {
+			auto cpy = new unsigned char[size];
+			memcpy(cpy, dat, size);
+			memcpy(internal_buffer, &cpy, 8);
+		}
+	}
+	template<typename T>
+	vsize_obj(int32_t type, T val, by_value) noexcept : vsize_obj(type, uint32_t(sizeof(T)), (unsigned char*)(&val)) {
+	}
+	vsize_obj(int32_t type, uint32_t size) noexcept : type(type), size(size) {
+		if(size > byte_size) {
+			unsigned char* cpy = nullptr;
+			memcpy(internal_buffer, &cpy, 8);
+		} else {
+		}
+	}
+	vsize_obj(vsize_obj const& o) noexcept : type(o.type), size(o.size) {
+		if(size <= byte_size) {
+			memcpy(internal_buffer, o.internal_buffer, size);
+		} else {
+			unsigned char* optr = nullptr;
+			memcpy(&optr, o.internal_buffer, 8);
+			if(optr) {
+				auto cpy = new unsigned char[size];
+				memcpy(cpy, optr, size);
+				memcpy(internal_buffer, &cpy, 8);
+			} else {
+				unsigned char* cpy = nullptr;
+				memcpy(internal_buffer, &cpy, 8);
+			}
+		}
+	}
+	vsize_obj(vsize_obj&& o) noexcept : type(o.type), size(o.size) {
+		if(size <= byte_size) {
+			memcpy(internal_buffer, o.internal_buffer, size);
+		} else {
+			memcpy(internal_buffer, o.internal_buffer, 8);
+		}
+		o.size = 0;
+		o.type = 0;
+	}
+	vsize_obj& operator=(vsize_obj const& o) noexcept {
+		if(size <= byte_size) {
+
+		} else {
+			unsigned char* ptr = nullptr;
+			memcpy(&ptr, internal_buffer, 8);
+			delete[] ptr;
+		}
+		size = o.size;
+		type = o.type;
+		if(size <= byte_size) {
+			memcpy(internal_buffer, o.internal_buffer, size);
+		} else {
+			unsigned char* optr = nullptr;
+			memcpy(&optr, o.internal_buffer, 8);
+			if(optr) {
+				auto cpy = new unsigned char[size];
+				memcpy(cpy, optr, size);
+				memcpy(internal_buffer, &cpy, 8);
+			} else {
+				unsigned char* cpy = nullptr;
+				memcpy(internal_buffer, &cpy, 8);
+			}
+		}
+
+		return *this;
+	}
+	vsize_obj& operator=(vsize_obj&& o) noexcept {
+		if(size <= byte_size) {
+
+		} else {
+			unsigned char* ptr = nullptr;
+			memcpy(&ptr, internal_buffer, 8);
+			delete[] ptr;
+		}
+
+		size = o.size;
+		type = o.type;
+		if(size <= byte_size) {
+			memcpy(internal_buffer, o.internal_buffer, size);
+		} else {
+			memcpy(internal_buffer, o.internal_buffer, 8);
+		}
+		o.size = 0;
+		o.type = 0;
+
+		return *this;
+	}
+	~vsize_obj() {
+		if(size <= byte_size) {
+			
+		} else {
+			unsigned char* ptr = nullptr;
+			memcpy(&ptr, internal_buffer, 8);
+			delete[] ptr;
+		}
+		size = 0;
+	}
+	unsigned char* data() noexcept  {
+		if(size <= byte_size) {
+			return internal_buffer;
+		} else {
+			unsigned char* ptr = nullptr;
+			memcpy(&ptr, internal_buffer, 8);
+			return ptr;
+		}
+	}
+	unsigned char const* data() const noexcept {
+		if(size <= byte_size) {
+			return internal_buffer;
+		} else {
+			unsigned char const* ptr = nullptr;
+			memcpy(&ptr, internal_buffer, 8);
+			return ptr;
+		}
+	}
+	template<typename T>
+	T as() const noexcept {
+		return *((T const*)data());
+	}
+};
+
+class single_allocation_2xvsize_vector {
+public:
+	struct type_size {
+		int32_t type = 0;
+		uint32_t size = 0;
+	};
 protected:
 	unsigned char* allocation = nullptr;
-	int32_t first_capacity = 0;
-	int32_t second_capacity = 0;
-	int32_t first_size = 0;
-	int32_t second_size = 0;
+	int32_t first_tcapacity = 0;
+	int32_t second_tcapacity = 0;
+	int32_t first_tsize = 0;
+	int32_t second_tsize = 0;
+	int32_t first_bcapacity = 0;
+	int32_t second_bcapacity = 0;
+	int32_t first_bsize = 0;
+	int32_t second_bsize = 0;
 
-	int32_t* first_i32() const {
-		return (int32_t*)allocation;
+	type_size* first_i32() const {
+		return (type_size*)allocation;
 	}
-	int32_t* second_i32() const {
-		return (int32_t*)(allocation + (sizeof(int32_t) + sizeof(int64_t)) * first_capacity);
+	type_size* second_i32() const {
+		return (type_size*)(allocation + (sizeof(type_size) * first_tcapacity)  + first_bcapacity);
 	}
-	int64_t* first_i64() const {
-		return (int64_t*)(allocation + sizeof(int32_t) * first_capacity);
+	unsigned char* first_b() const {
+		return (allocation + sizeof(type_size) * first_tcapacity);
 	}
-	int64_t* second_i64() const {
-		return (int64_t*)(allocation + (sizeof(int32_t) + sizeof(int64_t)) * first_capacity + sizeof(int64_t) * second_capacity);
+	unsigned char* second_b() const {
+		return (allocation + (sizeof(type_size) * first_tcapacity) + first_bcapacity + sizeof(type_size) * second_tcapacity);
 	}
 public:
-	single_allocation_2xi32_2xi64_vector() noexcept { }
-	single_allocation_2xi32_2xi64_vector(single_allocation_2xi32_2xi64_vector const& o) noexcept : first_capacity(o.first_capacity), second_capacity(o.second_capacity), first_size(o.first_size), second_size(o.second_size) {
-		allocation = new unsigned char[o.first_capacity * (sizeof(int32_t) + sizeof(int64_t)) + o.second_capacity * (sizeof(int32_t) + sizeof(int64_t))];
-		memcpy(allocation, o.allocation, o.first_capacity * (sizeof(int32_t) + sizeof(int64_t)) + o.second_capacity * (sizeof(int32_t) + sizeof(int64_t)));
+	single_allocation_2xvsize_vector() noexcept { }
+	single_allocation_2xvsize_vector(single_allocation_2xvsize_vector const& o) noexcept : first_tcapacity(o.first_tcapacity), second_tcapacity(o.second_tcapacity), first_tsize(o.first_tsize), second_tsize(o.second_tsize), first_bcapacity(o.first_bcapacity), second_bcapacity(o.second_bcapacity), first_bsize(o.first_bsize), second_bsize(o.second_bsize) {
+		allocation = new unsigned char[o.first_tcapacity * (sizeof(type_size)) + o.second_tcapacity * (sizeof(type_size)) + o.first_bcapacity + o.second_bcapacity];
+		memcpy(allocation, o.allocation, o.first_tcapacity * (sizeof(type_size)) + o.second_tcapacity * (sizeof(type_size)) + o.first_bcapacity + o.second_bcapacity);
 	}
-	single_allocation_2xi32_2xi64_vector(single_allocation_2xi32_2xi64_vector&& o) noexcept : allocation(o.allocation), first_capacity(o.first_capacity), second_capacity(o.second_capacity), first_size(o.first_size), second_size(o.second_size) {
+	single_allocation_2xvsize_vector(single_allocation_2xvsize_vector&& o) noexcept : allocation(o.allocation), first_tcapacity(o.first_tcapacity), second_tcapacity(o.second_tcapacity), first_tsize(o.first_tsize), second_tsize(o.second_tsize), first_bcapacity(o.first_bcapacity), second_bcapacity(o.second_bcapacity), first_bsize(o.first_bsize), second_bsize(o.second_bsize) {
 		o.allocation = nullptr;
-		o.first_capacity = 0;
-		o.second_capacity = 0;
-		o.first_size = 0;
-		o.second_size = 0;
+		o.first_tcapacity = 0;
+		o.second_tcapacity = 0;
+		o.first_tsize = 0;
+		o.second_tsize = 0;
+		o.first_bcapacity = 0;
+		o.second_bcapacity = 0;
+		o.first_bsize = 0;
+		o.second_bsize = 0;
 	}
-	~single_allocation_2xi32_2xi64_vector() noexcept {
+	~single_allocation_2xvsize_vector() noexcept {
 		delete[] allocation;
 	}
 
-	single_allocation_2xi32_2xi64_vector& operator=(single_allocation_2xi32_2xi64_vector const& o) noexcept {
-		first_capacity = o.first_capacity;
-		second_capacity = o.second_capacity;
-		first_size = o.first_size;
-		second_size = o.second_size;
+	single_allocation_2xvsize_vector& operator=(single_allocation_2xvsize_vector const& o) noexcept {
+		first_tcapacity = o.first_tcapacity;
+		second_tcapacity = o.second_tcapacity;
+		first_tsize = o.first_tsize;
+		second_tsize = o.second_tsize;
+		first_bcapacity = o.first_bcapacity;
+		second_bcapacity = o.second_bcapacity;
+		first_bsize = o.first_bsize;
+		second_bsize = o.second_bsize;
 		
-		allocation = new unsigned char[o.first_capacity * (sizeof(int32_t) + sizeof(int64_t)) + o.second_capacity * (sizeof(int32_t) + sizeof(int64_t))];
-		memcpy(allocation, o.allocation, o.first_capacity * (sizeof(int32_t) + sizeof(int64_t)) + o.second_capacity * (sizeof(int32_t) + sizeof(int64_t)));
+		delete[] allocation;
+		allocation = new unsigned char[o.first_tcapacity * (sizeof(type_size)) + o.second_tcapacity * (sizeof(type_size)) + o.first_bcapacity + o.second_bcapacity];
+		memcpy(allocation, o.allocation, o.first_tcapacity * (sizeof(type_size)) + o.second_tcapacity * (sizeof(type_size)) + o.first_bcapacity + o.second_bcapacity);
 
 		return *this;
 	}
-	single_allocation_2xi32_2xi64_vector& operator=(single_allocation_2xi32_2xi64_vector&& o) noexcept {
+	single_allocation_2xvsize_vector& operator=(single_allocation_2xvsize_vector&& o) noexcept {
+		delete[] allocation;
 		allocation = o.allocation;
-		first_capacity = o.first_capacity;
-		second_capacity = o.second_capacity;
-		first_size = o.first_size;
-		second_size = o.second_size;
+		first_tcapacity = o.first_tcapacity;
+		second_tcapacity = o.second_tcapacity;
+		first_tsize = o.first_tsize;
+		second_tsize = o.second_tsize;
+		first_bcapacity = o.first_bcapacity;
+		second_bcapacity = o.second_bcapacity;
+		first_bsize = o.first_bsize;
+		second_bsize = o.second_bsize;
 
 		o.allocation = nullptr;
-		o.first_capacity = 0;
-		o.second_capacity = 0;
-		o.first_size = 0;
-		o.second_size = 0;
+		o.first_tcapacity = 0;
+		o.second_tcapacity = 0;
+		o.first_tsize = 0;
+		o.second_tsize = 0;
+		o.first_bcapacity = 0;
+		o.second_bcapacity = 0;
+		o.first_bsize = 0;
+		o.second_bsize = 0;
 
 		return *this;
 	}
 
-	int32_t& fi32(int64_t offset) const {
-		assert(0 <= offset && offset < first_size);
+	type_size& fi32(int64_t offset) const {
+		assert(0 <= offset && offset < first_tsize);
 		return *(first_i32() + offset);
 	}
-	int32_t& si32(int64_t offset) const {
-		assert(0 <= offset && offset < second_size);
+	type_size& si32(int64_t offset) const {
+		assert(0 <= offset && offset < second_tsize);
 		return *(second_i32() + offset);
 	}
-	int64_t& fi64(int64_t offset) const {
-		assert(0 <= offset && offset < first_size);
-		return *(first_i64() + offset);
+	unsigned char* fi64(int64_t offset) const {
+		assert(0 <= offset && offset < first_bsize);
+		return (first_b() + offset);
 	}
-	int64_t& si64(int64_t offset) const {
-		assert(0 <= offset && offset < second_size);
-		return *(second_i64() + offset);
+	unsigned char* si64(int64_t offset) const {
+		assert(0 <= offset && offset < second_bsize);
+		return (second_b() + offset);
 	}
 	void clear_first() {
-		first_size = 0;
+		first_tsize = 0;
+		first_bsize = 0;
 	}
 	void clear_second() {
-		second_size = 0;
+		second_tsize = 0;
+		second_bsize = 0;
 	}
 	int32_t size_first() const {
-		return first_size;
+		return first_tsize;
 	}
 	int32_t size_second() const {
-		return second_size;
+		return second_tsize;
+	}
+	int32_t size_bfirst() const {
+		return first_bsize;
+	}
+	int32_t size_bsecond() const {
+		return second_bsize;
 	}
 	void pop_first() {
-		first_size = std::max(0, first_size - 1);
+		if(first_tsize > 0) {
+			first_tsize = first_tsize - 1;
+			first_bsize -= fi32(first_tsize).size;
+		}
+	}
+	vsize_obj popr_first() {
+		vsize_obj result;
+		if(first_tsize > 0) {
+			first_tsize = first_tsize - 1;
+			first_bsize -= fi32(first_tsize).size;
+			result = vsize_obj(fi32(first_tsize).type, fi32(first_tsize).size, first_b() + first_bsize);
+		}
+		return result;
 	}
 	void pop_second() {
-		second_size = std::max(0, second_size - 1);
+		if(second_tsize > 0) {
+			second_tsize = second_tsize - 1;
+			second_bsize -= fi32(second_tsize).size;
+		}
 	}
-	void push_first(int32_t a, int64_t b) {
-		if(first_size >= first_capacity) {
+	vsize_obj popr_second() {
+		vsize_obj result;
+		if(second_tsize > 0) {
+			second_tsize = second_tsize - 1;
+			second_bsize -= fi32(second_tsize).size;
+			result = vsize_obj(fi32(second_tsize).type, fi32(second_tsize).size, second_b() + second_bsize);
+		}
+		return result;
+	}
+	void push_first(vsize_obj const& obj) {
+		if(first_tsize + 1 > first_tcapacity || first_bsize + int32_t(obj.size) > first_bcapacity) {
 			auto temp = std::move(*this);
 
-			auto new_cap = std::max(temp.first_capacity * 2, 8);
-			allocation = new unsigned char[new_cap * (sizeof(int32_t) + sizeof(int64_t)) + std::max(8, temp.second_capacity) * (sizeof(int32_t) + sizeof(int64_t))];
-			first_capacity = new_cap;
-			second_capacity = std::max(8, temp.second_capacity);
-			first_size = temp.first_size;
-			second_size = temp.second_size;
+			auto new_tcap = first_tsize + 1 > first_tcapacity ? std::max(temp.first_tcapacity * 2, 8) : std::max(temp.first_tcapacity, 8);
+			auto new_bcap = first_bsize + int32_t(obj.size) > first_bcapacity ? std::max(temp.first_bcapacity * 2, std::max(first_bsize + int32_t(obj.size), 64)) : std::max(temp.first_bcapacity, 64);
+			auto new_stcap = std::max(temp.second_tcapacity, 8);
+			auto new_sbcap = std::max(temp.second_bcapacity, 64);
 
-			memcpy(first_i32(), temp.first_i32(), sizeof(int32_t) * first_size);
-			memcpy(first_i64(), temp.first_i64(), sizeof(int64_t) * first_size);
-			memcpy(second_i32(), temp.second_i32(), sizeof(int32_t) * second_size);
-			memcpy(second_i64(), temp.second_i64(), sizeof(int64_t) * second_size);
+			allocation = new unsigned char[new_tcap * (sizeof(type_size)) + new_stcap * (sizeof(type_size)) + new_bcap + new_sbcap];
+			first_tcapacity = new_tcap;
+			second_tcapacity = new_stcap;
+			first_bcapacity = new_bcap;
+			second_bcapacity = new_sbcap;
+			first_tsize = temp.first_tsize;
+			second_tsize = temp.second_tsize;
+			first_bsize = temp.first_bsize;
+			second_bsize = temp.second_bsize;
+
+			memcpy(first_i32(), temp.first_i32(), sizeof(type_size) * first_tsize);
+			memcpy(first_b(), temp.first_b(), first_bsize);
+			memcpy(second_i32(), temp.second_i32(), sizeof(type_size) * second_tsize);
+			memcpy(second_b(), temp.second_b(), second_bsize);
 		}
-		++first_size;
-		fi32(first_size - 1) = a;
-		fi64(first_size - 1) = b;
+		++first_tsize;
+		fi32(first_tsize - 1) = type_size{ obj.type, obj.size };
+		if(obj.data())
+			memcpy(fi64(first_bsize), obj.data(), obj.size);
+		first_bsize += int32_t(obj.size);
 	}
-	void push_second(int32_t a, int64_t b) {
-		if(second_size >= second_capacity) {
+	void push_second(vsize_obj const& obj) {
+		if(second_tsize + 1 > second_tcapacity || second_bsize + int32_t(obj.size) > second_bcapacity) {
 			auto temp = std::move(*this);
 
-			auto new_cap = std::max(temp.second_capacity * 2, 8);
-			allocation = new unsigned char[std::max(8, temp.first_capacity)  * (sizeof(int32_t) + sizeof(int64_t)) + new_cap * (sizeof(int32_t) + sizeof(int64_t))];
-			first_capacity = std::max(8, temp.first_capacity);
-			second_capacity = new_cap;
-			first_size = temp.first_size;
-			second_size = temp.second_size;
+			auto new_stcap = second_tsize + 1 > second_tcapacity ? std::max(temp.second_tcapacity * 2, 8) : std::max(temp.second_tcapacity, 8);
+			auto new_sbcap = second_bsize + int32_t(obj.size) > second_bcapacity ? std::max(temp.second_bcapacity * 2, std::max(second_bsize + int32_t(obj.size), 64)) : std::max(temp.second_bcapacity, 64);
+			auto new_tcap = std::max(temp.first_tcapacity, 8);
+			auto new_bcap = std::max(temp.first_bcapacity, 64);
 
-			memcpy(first_i32(), temp.first_i32(), sizeof(int32_t) * first_size);
-			memcpy(first_i64(), temp.first_i64(), sizeof(int64_t) * first_size);
-			memcpy(second_i32(), temp.second_i32(), sizeof(int32_t) * second_size);
-			memcpy(second_i64(), temp.second_i64(), sizeof(int64_t) * second_size);
+			allocation = new unsigned char[new_tcap * (sizeof(type_size)) + new_stcap * (sizeof(type_size)) + new_bcap + new_sbcap];
+			first_tcapacity = new_tcap;
+			second_tcapacity = new_stcap;
+			first_bcapacity = new_bcap;
+			second_bcapacity = new_sbcap;
+			first_tsize = temp.first_tsize;
+			second_tsize = temp.second_tsize;
+			first_bsize = temp.first_bsize;
+			second_bsize = temp.second_bsize;
+
+			memcpy(first_i32(), temp.first_i32(), sizeof(type_size) * first_tsize);
+			memcpy(first_b(), temp.first_b(), first_bsize);
+			memcpy(second_i32(), temp.second_i32(), sizeof(type_size) * second_tsize);
+			memcpy(second_b(), temp.second_b(), second_bsize);
 		}
-		++second_size;
-		si32(second_size - 1) = a;
-		si64(second_size - 1) = b;
+		++second_tsize;
+		si32(second_tsize - 1) = type_size{ obj.type, obj.size };
+		if(obj.data())
+			memcpy(si64(second_bsize), obj.data(), obj.size);
+		second_bsize += int32_t(obj.size);
 	}
 	void resize(int32_t fs, int32_t ss) {
-		if(fs > first_capacity || ss > second_capacity) {
-			auto temp = std::move(*this);
-
-			auto new_fcap = fs > temp.first_capacity ? std::max(temp.first_capacity * 2, 8) : std::max(8, temp.first_capacity);
-			auto new_scap = ss > temp.second_capacity ? std::max(temp.second_capacity * 2, 8) : std::max(8, temp.second_capacity);
-			allocation = new unsigned char[new_fcap * (sizeof(int32_t) + sizeof(int64_t)) + new_scap * (sizeof(int32_t) + sizeof(int64_t))];
-			first_capacity = new_fcap;
-			second_capacity = new_scap;
-			first_size = temp.first_size;
-			second_size = temp.second_size;
-
-			memcpy(first_i32(), temp.first_i32(), sizeof(int32_t) * first_size);
-			memcpy(first_i64(), temp.first_i64(), sizeof(int64_t) * first_size);
-			memcpy(second_i32(), temp.second_i32(), sizeof(int32_t) * second_size);
-			memcpy(second_i64(), temp.second_i64(), sizeof(int64_t) * second_size);
-		}
-		if(fs > first_size) { // zero mem
-			memset(first_i32() + first_size, 0, sizeof(int32_t) * (fs - first_size));
-			memset(first_i64() + first_size, 0, sizeof(int64_t) * (fs - first_size));
-		}
-		if(ss > second_size) { // zero mem
-			memset(second_i32() + second_size, 0, sizeof(int32_t) * (ss - second_size));
-			memset(second_i64() + second_size, 0, sizeof(int64_t) * (ss - second_size));
-		}
-		first_size = fs;
-		second_size = ss;
+		assert(fs <= first_tsize && ss <= second_tsize);
+		while(first_tsize > fs)
+			pop_first();
+		while(second_tsize > ss)
+			pop_second();
 	}
 	void trim_to(int32_t fs, int32_t ss) {
-		fs = std::min(fs, first_size);
-		ss = std::min(ss, second_size);
-		if(fs != first_size) {
-			std::memmove(first_i32(), first_i32() + (first_size - fs), fs * sizeof(int32_t));
-			std::memmove(first_i64(), first_i64() + (first_size - fs), fs * sizeof(int64_t));
-			first_size = fs;
+		fs = std::min(fs, first_tsize);
+		ss = std::min(ss, second_tsize);
+		uint32_t bytes_to_skip = 0;
+		if(fs != first_tsize) {
+			for(int32_t i = 0; i < (first_tsize - fs); ++i) {
+				bytes_to_skip += fi32(i).size;
+			}
+			
+			std::memmove(first_i32(), first_i32() + (first_tsize - fs), fs * sizeof(type_size));
+			std::memmove(first_b(), first_b() + (bytes_to_skip), first_bsize - int32_t(bytes_to_skip));
+			first_tsize = fs;
+			first_bsize -= int32_t(bytes_to_skip);
 		}
-		if(ss != second_size) {
-			std::memmove(second_i32(), second_i32() + (second_size - ss), ss * sizeof(int32_t));
-			std::memmove(second_i64(), second_i64() + (second_size - ss), ss * sizeof(int64_t));
-			second_size = ss;
+		if(ss != second_tsize) {
+			for(int32_t i = 0; i < (second_tsize - ss); ++i) {
+				bytes_to_skip += si32(i).size;
+			}
+
+			std::memmove(second_i32(), second_i32() + (second_tsize - ss), ss * sizeof(type_size));
+			std::memmove(second_b(), second_b() + (bytes_to_skip), second_bsize - int32_t(bytes_to_skip));
+			second_tsize = ss;
+			second_bsize -= int32_t(bytes_to_skip);
 		}
 	}
 };
 
 class state_stack {
 protected:
-	single_allocation_2xi32_2xi64_vector contents;
+	single_allocation_2xvsize_vector contents;
 public:
 	int32_t min_main_depth = 0;
 	int32_t min_return_depth = 0;
@@ -288,81 +493,69 @@ public:
 		contents.pop_first();
 		min_main_depth = std::min(min_main_depth, contents.size_first());
 	}
-	virtual void pop_return() {
+	void pop_return() {
 		contents.pop_second();
 		min_return_depth = std::min(min_return_depth, contents.size_second());
 	}
-	int64_t main_data(size_t index) const {
-		return contents.fi64(int64_t(index));
+	vsize_obj popr_main() {
+		min_main_depth = std::min(min_main_depth, std::max(contents.size_first() - 1, 0));
+		return contents.popr_first();
 	}
-	int64_t return_data(size_t index) const {
-		return contents.si64(int64_t(index));
+	vsize_obj popr_return() {
+		min_return_depth = std::min(min_return_depth, std::max(contents.size_second() - 1, 0));
+		return contents.popr_second();
 	}
-	LLVMValueRef main_ex(size_t index) const {
-		auto v = contents.fi64(int64_t(index));
-		if((v & 1) == 0)
-			return (LLVMValueRef)v;
-		else
-			return nullptr;
+	uint32_t main_byte_at(size_t index) const {
+		uint32_t bskip = 0;
+		for(int32_t i = 0; i < index; ++i) {
+			bskip += contents.fi32(i).size;
+		}
+		return bskip;
 	}
-	LLVMValueRef return_ex(size_t index) const {
-		auto v = contents.si64(int64_t(index));
-		if((v & 1) == 0)
-			return (LLVMValueRef)v;
-		else
-			return nullptr;
+	vsize_obj main_at(size_t index) const {
+		return vsize_obj(contents.fi32(index).type, contents.fi32(index).size, contents.fi64(main_byte_at(index)));
 	}
-	int64_t main_data_back(size_t index) const {
-		return contents.fi64(contents.size_first() - (1 + int64_t(index)));
+	unsigned char* main_ptr_at(size_t index) const {
+		return contents.fi64(main_byte_at(index));
 	}
-	int64_t return_data_back(size_t index) const {
-		return contents.si64(contents.size_second() - (1 + int64_t(index)));
+	uint32_t return_byte_at(size_t index) const {
+		uint32_t bskip = 0;
+		for(int32_t i = 0; i < index; ++i) {
+			bskip += contents.si32(i).size;
+		}
+		return bskip;
 	}
-	LLVMValueRef main_ex_back(size_t index) const {
-		auto v = contents.fi64(contents.size_first() - (1 + int64_t(index)));
-		if((v & 1) == 0)
-			return (LLVMValueRef)v;
-		else
-			return nullptr;
+	unsigned char* return_ptr_at(size_t index) const {
+		return contents.si64(return_byte_at(index));
 	}
-	LLVMValueRef return_ex_back(size_t index) const {
-		auto v = contents.si64(contents.size_second() - (1 + int64_t(index)));
-		if((v & 1) == 0)
-			return (LLVMValueRef)v;
-		else
-			return nullptr;
+	vsize_obj return_at(size_t index) const {
+		return vsize_obj(contents.si32(index).type, contents.si32(index).size, contents.si64(return_byte_at(index)));
 	}
-	void set_main_data(size_t index, int64_t value) {
-		min_main_depth = std::min(min_main_depth, int32_t(index));
-		contents.fi64(int32_t(index)) = value;
+	uint32_t main_byte_back_at(size_t index) const {
+		uint32_t bskip = 0;
+		for(int32_t i = 0; i < index; ++i) {
+			bskip += contents.fi32(contents.size_first() - (i + 1)).size;
+		}
+		return bskip;
 	}
-	void set_return_data(size_t index, int64_t value) {
-		min_return_depth = std::min(min_return_depth, int32_t(index));
-		contents.si64(int32_t(index)) = value;
+	unsigned char* main_back_ptr_at(size_t index) const {
+		return contents.fi64(contents.size_bfirst() - int32_t(main_byte_back_at(index)));
 	}
-	void set_main_ex(size_t index, LLVMValueRef value) {
-		min_main_depth = std::min(min_main_depth, int32_t(index));
-		contents.fi64(int32_t(index)) = (int64_t)value;
+	vsize_obj main_back_at(size_t index) const {
+		return vsize_obj(contents.fi32(index).type, contents.fi32(index).size, contents.fi64(contents.size_bfirst() - int32_t(main_byte_back_at(index))));
 	}
-	void set_return_ex(size_t index, LLVMValueRef value) {
-		min_return_depth = std::min(min_return_depth, int32_t(index));
-		contents.si64(int32_t(index)) = (int64_t)value;
+	uint32_t return_byte_back_at(size_t index) const {
+		uint32_t bskip = 0;
+		for(int32_t i = 0; i < index; ++i) {
+			bskip += contents.si32(contents.size_second() - (i + 1)).size;
+		}
+		return bskip;
 	}
-	void set_main_data_back(size_t index, int64_t value) {
-		min_main_depth = std::min(min_main_depth, contents.size_first() - int32_t(index + 1));
-		contents.fi64(contents.size_first() - (1 + int64_t(index))) = value;
+	unsigned char* return_back_ptr_at(size_t index) const {
+		return contents.si64(contents.size_bsecond() - int32_t(return_byte_back_at(index)));
 	}
-	void set_return_data_back(size_t index, int64_t value) {
-		min_return_depth = std::min(min_return_depth, contents.size_second() - int32_t(index + 1));
-		contents.si64(contents.size_second() - (1 + int64_t(index))) = value;
-	}
-	void set_main_ex_back(size_t index, LLVMValueRef value) {
-		min_main_depth = std::min(min_main_depth, contents.size_first() - int32_t(index + 1));
-		contents.fi64(contents.size_first() - (1 + int64_t(index))) = (int64_t)value;
-	}
-	void set_return_ex_back(size_t index, LLVMValueRef value) {
-		min_return_depth = std::min(min_return_depth, contents.size_second() - int32_t(index + 1));
-		contents.si64(contents.size_second() - (1 + int64_t(index))) = (int64_t)value;
+	vsize_obj return_back_at(size_t index) const {
+		return vsize_obj(contents.si32(index).type, contents.si32(index).size, contents.si64(contents.size_bsecond() - int32_t(return_byte_back_at(index))));
 	}
 	void move_into(state_stack&& other) {
 		*this = std::move(other);
@@ -370,17 +563,21 @@ public:
 	void copy_into(state_stack const& other) {
 		*this = other;
 	}
-	void push_back_main(int32_t t, int64_t data, LLVMValueRef expr) {
-		if(expr)
-			contents.push_first(t, (int64_t)expr);
-		else
-			contents.push_first(t, data);
+	void push_back_main(vsize_obj const& val) {
+		contents.push_first(val);
 	}
-	virtual void push_back_return(int32_t t, int64_t data, LLVMValueRef expr) {
-		if(expr)
-			contents.push_second(t, (int64_t)expr);
-		else
-			contents.push_second(t, data);
+	void push_back_return(vsize_obj const& val) {
+		contents.push_second(val);
+	}
+	template<typename T>
+	void push_back_main(int32_t t, T val) {
+		vsize_obj temp(t, uint32_t(sizeof(T)), (unsigned char*)(&val));
+		contents.push_first(temp);
+	}
+	template<typename T>
+	void push_back_return(int32_t t, T val) {
+		vsize_obj temp(t, uint32_t(sizeof(T)), (unsigned char*)(&val));
+		contents.push_second(temp);
 	}
 	state_stack copy() const {
 		return *this;
@@ -410,33 +607,23 @@ public:
 	size_t return_size()const {
 		return size_t(contents.size_second());
 	}
+	size_t main_byte_size() const {
+		return size_t(contents.size_bfirst());
+	}
+	size_t return_byte_size() const {
+		return size_t(contents.size_bsecond());
+	}
 	int32_t main_type(size_t index) const {
-		return contents.fi32(int32_t(index));
+		return contents.fi32(int32_t(index)).type;
 	}
 	int32_t return_type(size_t index) const {
-		return contents.si32(int32_t(index));
+		return contents.si32(int32_t(index)).type;
 	}
 	int32_t main_type_back(size_t index) const {
-		return contents.fi32(contents.size_first() - int32_t(1 + index));
+		return contents.fi32(contents.size_first() - int32_t(1 + index)).type;
 	}
 	int32_t return_type_back(size_t index) const {
-		return contents.si32(contents.size_second() - int32_t(1 + index));
-	}
-	void set_main_type(size_t index, int32_t t) {
-		contents.fi32(int32_t(index)) = t;
-		min_main_depth = std::min(min_main_depth, int32_t(index));
-	}
-	void set_return_type(size_t index, int32_t t) {
-		contents.si32(int32_t(index)) = t;
-		min_return_depth = std::min(min_return_depth, int32_t(index));
-	}
-	void set_main_type_back(size_t index, int32_t t) {
-		contents.fi32(contents.size_first() - int32_t(1 + index)) = t;
-		min_main_depth = std::min(min_main_depth, contents.size_first() - int32_t(index + 1));
-	}
-	void set_return_type_back(size_t index, int32_t t) {
-		contents.si32(contents.size_second() - int32_t(1 + index)) = t;
-		min_return_depth = std::min(min_return_depth, contents.size_second() - int32_t(index + 1));
+		return contents.si32(contents.size_second() - int32_t(1 + index)).type;
 	}
 };
 
@@ -481,47 +668,43 @@ struct word {
 	bool being_typechecked = false;
 };
 
-inline LLVMValueRef empty_type_fn(LLVMValueRef r, int32_t type, environment*) {
-	return r;
-}
-
-#ifdef USE_LLVM
-using llvm_zero_expr = LLVMValueRef (*)(LLVMContextRef, int32_t t, environment*);
-#endif
-using interpreter_zero_expr = int64_t(*)(int32_t t, environment*);
-using interpreted_new = int64_t(*)();
+struct dup_evaluation {
+	bool alters_source = false;
+	bool copy_altered = false;
+};
 
 struct type {
-	static constexpr uint32_t FLAG_REFCOUNTED = 0x00000001;
-	static constexpr uint32_t FLAG_SINGLE_MEMBER = 0x00000002;
+	static constexpr uint32_t FLAG_STRUCT = 0x00000001;
+	static constexpr uint32_t FLAG_MEMORY_TYPE = 0x00000002;
 	static constexpr uint32_t FLAG_TEMPLATE = 0x00000004;
 	static constexpr uint32_t FLAG_STATELESS = 0x00000008;
-
-#ifdef USE_LLVM
-	LLVMTypeRef llvm_type = nullptr;
-	llvm_zero_expr zero_constant = nullptr;
-#else
-	void* llvm_type = nullptr;
-	void* zero_constant = nullptr;
-#endif
-	interpreter_zero_expr interpreter_zero = nullptr;
+	static constexpr uint32_t FLAG_ARRAY = 0x00000010;
+	static constexpr uint32_t FLAG_POINTER = 0x00000020;
 
 	int64_t ntt_data = 0;
-	LLVMValueRef ntt_llvm_constant = nullptr;
 	int32_t ntt_base_type = -1;
 
 	int32_t type_slots = 0;
 	int32_t non_member_types = 0;
 	int32_t decomposed_types_start = 0;
 	int32_t decomposed_types_count = 0;
-
+	int32_t byte_size = 0;
+	int32_t cell_size = 0;
 	uint32_t flags = 0;
 
-	bool refcounted_type() const {
-		return (flags & FLAG_REFCOUNTED) != 0;
+	std::optional<dup_evaluation> duptype;
+
+	bool is_struct() const {
+		return (flags & FLAG_STRUCT) != 0;
 	}
-	bool single_member_struct() const {
-		return (flags & FLAG_SINGLE_MEMBER) != 0;
+	bool is_pointer() const {
+		return (flags & FLAG_POINTER) != 0;
+	}
+	bool is_array() const {
+		return (flags & FLAG_ARRAY) != 0;
+	}
+	bool is_memory_type() const {
+		return (flags & FLAG_MEMORY_TYPE) != 0;
 	}
 	bool is_struct_template() const {
 		return (flags & FLAG_TEMPLATE) != 0;
@@ -549,6 +732,7 @@ constexpr inline int32_t fif_opaque_ptr = 14;
 constexpr inline int32_t fif_struct = 15;
 constexpr inline int32_t fif_anon_struct = 16;
 constexpr inline int32_t fif_stack_token = 17;
+constexpr inline int32_t fif_array = 18;
 
 class environment;
 
@@ -562,121 +746,97 @@ public:
 	std::vector<int32_t> all_compiled;
 	std::vector<int32_t> all_stack_types;
 
-#ifdef USE_LLVM
-	void ready_llvm_types(LLVMContextRef llvm_context) {
-		type_array[fif_i32].llvm_type = LLVMInt32TypeInContext(llvm_context);
-		type_array[fif_i32].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, true);
-		};
-		type_array[fif_type].llvm_type = LLVMInt32TypeInContext(llvm_context);
-		type_array[fif_type].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, true);
-		};
-		type_array[fif_f32].llvm_type = LLVMFloatTypeInContext(llvm_context);
-		type_array[fif_f32].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstReal(LLVMFloatTypeInContext(c), 0.0);
-		};
-		type_array[fif_i64].llvm_type = LLVMInt64TypeInContext(llvm_context);
-		type_array[fif_i64].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt64TypeInContext(c), 0, true);
-		};
-		type_array[fif_f64].llvm_type = LLVMDoubleTypeInContext(llvm_context);
-		type_array[fif_f64].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstReal(LLVMDoubleTypeInContext(c), 0.0);
-		};
-		type_array[fif_bool].llvm_type = LLVMInt1TypeInContext(llvm_context);
-		type_array[fif_bool].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt1TypeInContext(c), 0, true);
-		};
-		type_array[fif_u32].llvm_type = LLVMInt32TypeInContext(llvm_context);
-		type_array[fif_u32].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt32TypeInContext(c), 0, false);
-		};
-		type_array[fif_u64].llvm_type = LLVMInt64TypeInContext(llvm_context);
-		type_array[fif_u64].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt64TypeInContext(c), 0, false);
-		};
-		type_array[fif_u16].llvm_type = LLVMInt16TypeInContext(llvm_context);
-		type_array[fif_u16].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt16TypeInContext(c), 0, false);
-		};
-		type_array[fif_u8].llvm_type = LLVMInt8TypeInContext(llvm_context);
-		type_array[fif_u8].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt8TypeInContext(c), 0, false);
-		};
-		type_array[fif_i16].llvm_type = LLVMInt16TypeInContext(llvm_context);
-		type_array[fif_i16].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt16TypeInContext(c), 0, true);
-		};
-		type_array[fif_i8].llvm_type = LLVMInt8TypeInContext(llvm_context);
-		type_array[fif_i8].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMConstInt(LLVMInt8TypeInContext(c), 0, true);
-		};
-		type_array[fif_nil].llvm_type = LLVMVoidTypeInContext(llvm_context);
-		type_array[fif_nil].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMGetUndef(LLVMVoidTypeInContext(c));
-		};
-		type_array[fif_ptr].llvm_type = LLVMPointerTypeInContext(llvm_context, 0);
-		type_array[fif_ptr].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMGetUndef(LLVMPointerTypeInContext(c, 0));
-		};
-		type_array[fif_opaque_ptr].llvm_type = LLVMPointerTypeInContext(llvm_context, 0);
-		type_array[fif_opaque_ptr].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMGetUndef(LLVMPointerTypeInContext(c, 0));
-		};
-		type_array[fif_struct].llvm_type = LLVMVoidTypeInContext(llvm_context);
-		type_array[fif_struct].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMGetUndef(LLVMVoidTypeInContext(c));
-		};
-		type_array[fif_anon_struct].llvm_type = LLVMVoidTypeInContext(llvm_context);
-		type_array[fif_anon_struct].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMGetUndef(LLVMVoidTypeInContext(c));
-		};
-		type_array[fif_stack_token].llvm_type = LLVMVoidTypeInContext(llvm_context);
-		type_array[fif_stack_token].zero_constant = +[](LLVMContextRef c, int32_t t, environment*) {
-			return LLVMGetUndef(LLVMVoidTypeInContext(c));
-		};
-		type_array[fif_stack_token].flags |= type::FLAG_STATELESS;
-	}
-#endif
 	dictionary() {
 		types.insert_or_assign(std::string("i32"), fif_i32);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(int32_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("f32"), fif_f32);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(float));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("bool"), fif_bool);
 		type_array.emplace_back();
+		type_array.back().byte_size = 1;
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("type"), fif_type);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(int32_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("i64"), fif_i64);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(int64_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("f64"), fif_f64);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(double));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("u32"), fif_u32);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(uint32_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("u64"), fif_u64);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(uint64_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("i16"), fif_i16);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(int16_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("u16"), fif_u16);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(uint16_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("i8"), fif_i8);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(int8_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("u8"), fif_u8);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(uint8_t));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("nil"), fif_nil);
 		type_array.emplace_back();
+		type_array.back().byte_size = 0;
+		type_array.back().cell_size = 0;
+
 		types.insert_or_assign(std::string("ptr"), fif_ptr);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(void*));
+		type_array.back().cell_size = 1;
 		type_array.back().type_slots = 1;
+
 		types.insert_or_assign(std::string("opaque_ptr"), fif_nil);
 		type_array.emplace_back();
+		type_array.back().byte_size = int32_t(sizeof(void*));
+		type_array.back().cell_size = 1;
+
 		types.insert_or_assign(std::string("llvm.struct"), fif_struct);
 		type_array.emplace_back();
+
 		types.insert_or_assign(std::string("struct"), fif_anon_struct);
 		type_array.emplace_back();
+
 		types.insert_or_assign(std::string("stack-token"), fif_stack_token);
 		type_array.emplace_back();
+		type_array.back().byte_size = 0;
+		type_array.back().cell_size = 0;
+
+		types.insert_or_assign(std::string("array"), fif_array);
+		type_array.emplace_back();
+		type_array.back().type_slots = 2;
 	}
 };
 
@@ -694,32 +854,15 @@ struct typecheck_3_record {
 	int32_t rstack_consumed = 0;
 };
 
-struct internal_lvar_data {
-	union {
-		int64_t data = 0; // only in interpreter mode
-		LLVMValueRef expression; // only in llvm mode
-	};
+struct lvar_description {
 	int32_t type = 0;
-	bool is_stack_variable = false;
-
-	internal_lvar_data() noexcept {
-		memset(this, 0, sizeof(internal_lvar_data));
-	}
-	internal_lvar_data(internal_lvar_data const& o) noexcept {
-		memcpy(this, &o, sizeof(internal_lvar_data));
-	}
-	internal_lvar_data(internal_lvar_data&& o) noexcept {
-		memcpy(this, &o, sizeof(internal_lvar_data));
-	}
-	internal_lvar_data& operator=(internal_lvar_data const& o) noexcept {
-		memcpy(this, &o, sizeof(internal_lvar_data));
-		return *this;
-	}
-	internal_lvar_data& operator=(internal_lvar_data&& o) noexcept {
-		memcpy(this, &o, sizeof(internal_lvar_data));
-		return *this;
-	}
+	int32_t offset = 0;
+	int32_t size = 0;
+	bool memory_variable = false;
 };
+
+using internal_locals_storage = std::vector<unsigned char>;
+
 class opaque_compiler_data {
 public:
 	opaque_compiler_data* parent = nullptr;
@@ -758,35 +901,34 @@ public:
 	virtual bool finish(environment& env) {
 		return true;
 	}
-	virtual int32_t get_var(std::string const& name) {
-		return parent ? parent->get_var(name) : -1;
+	virtual lvar_description get_var(std::string const& name) {
+		return parent ? parent->get_var(name) : lvar_description{ -1, -1, 0, false };
 	}
-	virtual int32_t create_var(std::string const& name, int32_t type) {
-		return parent ? parent->create_var(name, type) : -1;
-	}
-	virtual int32_t create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) {
-		return parent ? parent->create_let(name, type, data, expression) : -1;
-	}
-	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) {
-		return parent ? parent->re_let(index, type, data, expression) : true;
+	virtual int32_t create_var(std::string const& name, int32_t type, int32_t size, unsigned char* data, bool memory_variable, bool reassign) {
+		return parent ? parent->create_var(name, type, size, data, memory_variable, reassign) : -1;
 	}
 	virtual std::vector<int32_t>* type_substitutions() {
 		return parent ? parent->type_substitutions() : nullptr;
 	}
-	virtual internal_lvar_data* get_lvar_storage(int32_t offset) {
-		return parent ? parent->get_lvar_storage(offset) : nullptr;
+	virtual int32_t reserve_local_storage(uint32_t byte_size) {
+		return parent ? parent->reserve_local_storage(byte_size) : -1;
+	}
+	virtual unsigned char* local_bytes_at_offset(int32_t offset) {
+		return parent ? parent->local_bytes_at_offset(offset) : nullptr;
 	}
 	virtual void resize_lvar_storage(int32_t sz) {
 		if(parent) parent->resize_lvar_storage(sz);
 	}
-	virtual std::vector< internal_lvar_data> copy_lvar_storage() {
-		return parent ? parent->copy_lvar_storage() : std::vector< internal_lvar_data>{ };
-	}
-	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) {
-		if(parent) parent->set_lvar_storage(v);
-	}
 	virtual int32_t size_lvar_storage() {
-		return parent ? parent->size_lvar_storage() : 0;
+		if(parent) 
+			return parent->size_lvar_storage();
+		return 0;
+	}
+	virtual internal_locals_storage copy_lvar_storage() {
+		return parent ? parent->copy_lvar_storage() : internal_locals_storage{ };
+	}
+	virtual void set_lvar_storage(internal_locals_storage const& v) {
+		if(parent) parent->set_lvar_storage(v);
 	}
 	virtual void delete_locals() const { }
 };
@@ -888,6 +1030,15 @@ struct import_item {
 	std::string name;
 	void* ptr = nullptr;
 };
+
+int32_t index = 0;
+
+struct global_item {
+	std::unique_ptr<unsigned char[]> bytes;
+	std::unique_ptr<LLVMValueRef[]> cells;
+	int32_t type = 0;
+	bool constant = false;
+};
 class environment {
 public:
 	ankerl::unordered_dense::set<std::unique_ptr<char[]>, indirect_string_hash, indirect_string_eq> string_constants;
@@ -907,6 +1058,8 @@ public:
 	char* llvm_target_cpu_features = nullptr;
 #endif
 	dictionary dict;
+	std::vector<global_item> globals;
+	ankerl::unordered_dense::map<std::string, int32_t> global_names;
 
 	std::vector<std::unique_ptr<opaque_compiler_data>> compiler_stack;
 	std::vector<std::string_view> source_stack;
@@ -955,40 +1108,304 @@ public:
 	}
 };
 
-class compiler_globals_layer : public opaque_compiler_data {
-public:
-	ankerl::unordered_dense::map<std::string, std::unique_ptr<internal_lvar_data>> global_vars;
-	environment& env;
-	compiler_globals_layer(opaque_compiler_data* p, environment& env) : opaque_compiler_data(p), env(env) {
-	}
-
-	virtual control_structure get_type() override {
-		return control_structure::globals;
-	}
-
-	internal_lvar_data* get_global_var(std::string const& name) {
-		if(auto it = global_vars.find(name); it != global_vars.end()) {
-			return it->second.get();
-		}
-		return nullptr;
-	}
-	internal_lvar_data* create_global_var(std::string const& name, int32_t type) {
-		if(auto it = global_vars.find(name); it != global_vars.end()) {
-			if(it->second->type == type)
-				return it->second.get();
-			else
-				return nullptr;
-		}
-		auto added = global_vars.insert_or_assign(name, std::make_unique<internal_lvar_data>());
-		added.first->second->type = type;
-		added.first->second->data = 0;
 #ifdef USE_LLVM
-		added.first->second->expression = LLVMAddGlobal(env.llvm_module, env.dict.type_array[type].llvm_type, name.c_str());
-		LLVMSetInitializer(added.first->second->expression, env.dict.type_array[type].zero_constant(env.llvm_context, type, &env));
-#endif
-		return added.first->second.get();
+inline LLVMTypeRef llvm_type(int32_t t, environment& env) {
+	switch(t) {
+		case fif_i32:
+			return LLVMInt32TypeInContext(env.llvm_context);
+		case fif_f32:
+			return LLVMFloatTypeInContext(env.llvm_context);
+		case fif_bool:
+			return LLVMInt1TypeInContext(env.llvm_context);
+		case fif_type:
+			return LLVMInt32TypeInContext(env.llvm_context);
+		case fif_i64:
+			return LLVMInt64TypeInContext(env.llvm_context);
+		case fif_f64:
+			return LLVMDoubleTypeInContext(env.llvm_context);
+		case fif_u32:
+			return LLVMInt32TypeInContext(env.llvm_context);
+		case fif_u64:
+			return LLVMInt64TypeInContext(env.llvm_context);
+		case fif_i16:
+			return LLVMInt16TypeInContext(env.llvm_context);
+		case fif_u16:
+			return LLVMInt16TypeInContext(env.llvm_context);
+		case fif_i8:
+			return LLVMInt8TypeInContext(env.llvm_context);
+		case fif_u8:
+			return LLVMInt8TypeInContext(env.llvm_context);
+		case fif_nil:
+			return LLVMVoidTypeInContext(env.llvm_context);
+		case fif_ptr:
+			return LLVMPointerTypeInContext(env.llvm_context, 0);
+		case fif_opaque_ptr:
+			return LLVMPointerTypeInContext(env.llvm_context, 0);
+		case fif_struct:
+			return LLVMVoidTypeInContext(env.llvm_context);
+		case fif_anon_struct:
+			return LLVMVoidTypeInContext(env.llvm_context);
+		case fif_stack_token:
+			return LLVMVoidTypeInContext(env.llvm_context);
+		case fif_array:
+			return LLVMVoidTypeInContext(env.llvm_context);
+		default:
+			if(env.dict.type_array[t].is_struct_template()) {
+				return LLVMVoidTypeInContext(env.llvm_context);
+			} else if(env.dict.type_array[t].stateless()) {
+				return LLVMVoidTypeInContext(env.llvm_context);
+			} else if(env.dict.type_array[t].is_struct()) {
+				std::vector<LLVMTypeRef> zvals;
+				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+					auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
+					if(st == fif_bool)
+						zvals.push_back(LLVMInt8TypeInContext(env.llvm_context));
+					else if(env.dict.type_array[st].stateless() == false)
+						zvals.push_back(llvm_type(st, env));
+					
+				}
+				return LLVMStructTypeInContext(env.llvm_context, zvals.data(), uint32_t(zvals.size()), true);
+			} else if(env.dict.type_array[t].is_pointer()) {
+				return LLVMPointerTypeInContext(env.llvm_context, 0);
+			} else if(env.dict.type_array[t].is_array()) {
+				auto array_t = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + 1];
+				auto array_sz = env.dict.type_array[env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + 2]].ntt_data;
+				return LLVMArrayType2(llvm_type(array_t, env), uint64_t(array_sz));
+			} else {
+				assert(false);
+			}
 	}
-};
+	return nullptr;
+}
+#else
+inline void* llvm_type(int32_t t, environment& env) {
+	return nullptr;
+}
+#endif
+
+
+#ifdef USE_LLVM
+inline void enum_llvm_type(int32_t t, std::vector< LLVMTypeRef>& ov, environment& env) {
+	switch(t) {
+		case fif_i32:
+			ov.push_back(LLVMInt32TypeInContext(env.llvm_context)); return;
+		case fif_f32:
+			ov.push_back(LLVMFloatTypeInContext(env.llvm_context)); return;
+		case fif_bool:
+			ov.push_back(LLVMInt1TypeInContext(env.llvm_context)); return;
+		case fif_type:
+			ov.push_back(LLVMInt32TypeInContext(env.llvm_context)); return;
+		case fif_i64:
+			ov.push_back(LLVMInt64TypeInContext(env.llvm_context)); return;
+		case fif_f64:
+			ov.push_back(LLVMDoubleTypeInContext(env.llvm_context)); return;
+		case fif_u32:
+			ov.push_back(LLVMInt32TypeInContext(env.llvm_context)); return;
+		case fif_u64:
+			ov.push_back(LLVMInt64TypeInContext(env.llvm_context)); return;
+		case fif_i16:
+			ov.push_back(LLVMInt16TypeInContext(env.llvm_context)); return;
+		case fif_u16:
+			ov.push_back(LLVMInt16TypeInContext(env.llvm_context)); return;
+		case fif_i8:
+			ov.push_back(LLVMInt8TypeInContext(env.llvm_context)); return;
+		case fif_u8:
+			ov.push_back(LLVMInt8TypeInContext(env.llvm_context)); return;
+		case fif_nil:
+			return;
+		case fif_ptr:
+			ov.push_back(LLVMPointerTypeInContext(env.llvm_context, 0)); return;
+		case fif_opaque_ptr:
+			ov.push_back(LLVMPointerTypeInContext(env.llvm_context, 0)); return;
+		case fif_struct:
+			return;
+		case fif_anon_struct:
+			return;
+		case fif_stack_token:
+			return;
+		case fif_array:
+			return;
+		default:
+			if(env.dict.type_array[t].is_struct_template()) {
+				return;
+			} else if(env.dict.type_array[t].stateless()) {
+				return;
+			} else if(env.dict.type_array[t].is_struct()) {
+				if(env.dict.type_array[t].is_memory_type()) {
+					ov.push_back(LLVMPointerTypeInContext(env.llvm_context, 0));
+					return;
+				} else {
+					for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+						auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
+						if(env.dict.type_array[st].stateless() == false)
+							enum_llvm_type(st, ov, env);
+					}
+					return;
+				}
+			} else if(env.dict.type_array[t].is_pointer()) {
+				ov.push_back(LLVMPointerTypeInContext(env.llvm_context, 0));
+				return;
+			} else if(env.dict.type_array[t].is_array()) {
+				if(env.dict.type_array[t].is_memory_type()) {
+					ov.push_back(LLVMPointerTypeInContext(env.llvm_context, 0));
+					return;
+				} else {
+					assert(false);
+				}
+			} else {
+				assert(false);
+			}
+	}
+}
+#else
+inline void enum_llvm_type(int32_t t, std::vector< void*>& ov, environment& env) {
+
+}
+#endif
+
+inline LLVMValueRef llvm_zero_constant(int32_t t, environment& env) {
+#ifdef USE_LLVM
+	switch(t) {
+		case fif_i32:
+			return LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), 0, false);
+		case fif_f32:
+			return LLVMConstReal(LLVMFloatTypeInContext(env.llvm_context), 0.0);
+		case fif_bool:
+			return LLVMConstInt(LLVMInt1TypeInContext(env.llvm_context), 0, false);
+		case fif_type:
+			return LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), 0, false);
+		case fif_i64:
+			return LLVMConstInt(LLVMInt64TypeInContext(env.llvm_context), 0, false);
+		case fif_f64:
+			return LLVMConstReal(LLVMDoubleTypeInContext(env.llvm_context), 0.0);
+		case fif_u32:
+			return LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), 0, false);
+		case fif_u64:
+			return LLVMConstInt(LLVMInt64TypeInContext(env.llvm_context), 0, false);
+		case fif_i16:
+			return LLVMConstInt(LLVMInt16TypeInContext(env.llvm_context), 0, false);
+		case fif_u16:
+			return LLVMConstInt(LLVMInt16TypeInContext(env.llvm_context), 0, false);
+		case fif_i8:
+			return LLVMConstInt(LLVMInt8TypeInContext(env.llvm_context), 0, false);
+		case fif_u8:
+			return LLVMConstInt(LLVMInt8TypeInContext(env.llvm_context), 0, false);
+		case fif_nil:
+			return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
+		case fif_ptr:
+			return LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0));
+		case fif_opaque_ptr:
+			return LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0));
+		case fif_struct:
+			return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
+		case fif_anon_struct:
+			return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
+		case fif_stack_token:
+			return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
+		case fif_array:
+			return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
+		default:
+			if(env.dict.type_array[t].is_struct_template()) {
+				return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
+			} else if(env.dict.type_array[t].stateless()) {
+				return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
+			} else if(env.dict.type_array[t].is_struct()) {
+				std::vector<LLVMValueRef> zvals;
+				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+					auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
+					if(st == fif_bool)
+						zvals.push_back(LLVMConstInt(LLVMInt8TypeInContext(env.llvm_context), 0, false));
+					else if(env.dict.type_array[st].stateless() == false)
+						zvals.push_back(llvm_zero_constant(st, env));
+				}
+				return LLVMConstStructInContext(env.llvm_context, zvals.data(), uint32_t(zvals.size()), true);
+			} else if(env.dict.type_array[t].is_pointer()) {
+				return LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0));
+			} else if(env.dict.type_array[t].is_array()) {
+				auto array_t = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + 1];
+				auto array_sz = env.dict.type_array[env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + 2]].ntt_data;
+				std::vector<LLVMValueRef> zvals;
+				zvals.resize(array_sz, llvm_zero_constant(array_t, env));
+				return LLVMConstArray2(llvm_type(array_t, env), zvals.data(), zvals.size());
+			} else {
+				assert(false);
+			}
+	}
+	return nullptr;
+#else
+	return nullptr;
+#endif
+}
+
+inline void enum_llvm_zero_constant(int32_t t, std::vector< LLVMValueRef>& ov, environment& env) {
+#ifdef USE_LLVM
+	switch(t) {
+		case fif_i32:
+			ov.push_back(LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_f32:
+			ov.push_back(LLVMConstReal(LLVMFloatTypeInContext(env.llvm_context), 0.0)); return;
+		case fif_bool:
+			ov.push_back(LLVMConstInt(LLVMInt1TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_type:
+			ov.push_back(LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_i64:
+			ov.push_back(LLVMConstInt(LLVMInt64TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_f64:
+			ov.push_back(LLVMConstReal(LLVMDoubleTypeInContext(env.llvm_context), 0.0)); return;
+		case fif_u32:
+			ov.push_back(LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_u64:
+			ov.push_back(LLVMConstInt(LLVMInt64TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_i16:
+			ov.push_back(LLVMConstInt(LLVMInt16TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_u16:
+			ov.push_back(LLVMConstInt(LLVMInt16TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_i8:
+			ov.push_back(LLVMConstInt(LLVMInt8TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_u8:
+			ov.push_back(LLVMConstInt(LLVMInt8TypeInContext(env.llvm_context), 0, false)); return;
+		case fif_nil:
+			ov.push_back(LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context))); return;
+		case fif_ptr:
+			ov.push_back(LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0))); return;
+		case fif_opaque_ptr:
+			ov.push_back(LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0))); return;
+		case fif_struct:
+			ov.push_back(LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context))); return;
+		case fif_anon_struct:
+			ov.push_back(LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context))); return;
+		case fif_stack_token:
+			ov.push_back(LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context))); return;
+		case fif_array:
+			ov.push_back(LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context))); return;
+		default:
+			if(env.dict.type_array[t].is_struct_template()) {
+				return;
+			} else if(env.dict.type_array[t].stateless()) {
+				return;
+			} else if(env.dict.type_array[t].is_struct()) {
+				if(env.dict.type_array[t].is_memory_type()) {
+					ov.push_back(LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0))); return;
+				}
+				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+					auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
+					if(env.dict.type_array[st].stateless() == false)
+						enum_llvm_zero_constant(st, ov, env);
+				}
+				return;
+			} else if(env.dict.type_array[t].is_pointer()) {
+				ov.push_back(LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0))); return;
+			} else if(env.dict.type_array[t].is_array()) {
+				ov.push_back(LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0))); return;
+			} else {
+				assert(false);
+			}
+	}
+	return;
+#else
+	return;
+#endif
+}
 
 inline environment::environment() {
 #ifdef USE_LLVM
@@ -1010,11 +1427,7 @@ inline environment::environment() {
 	LLVMSetTarget(llvm_module, llvm_target_triple);
 	llvm_target_data = LLVMCreateTargetDataLayout(llvm_target_machine);
 	LLVMSetModuleDataLayout(llvm_module, llvm_target_data);
-
-	dict.ready_llvm_types(llvm_context);
 #endif
-
-	compiler_stack.push_back(std::make_unique<compiler_globals_layer>(nullptr, *this));
 }
 
 inline std::string word_name_from_id(int32_t w, environment const& e) {
@@ -1175,48 +1588,11 @@ struct variable_match_result {
 inline type_match resolve_span_type(std::span<int32_t const> tlist, std::vector<int32_t> const& type_subs, environment& env);
 inline variable_match_result fill_in_variable_types(int32_t source_type, std::span<int32_t const> match_span, std::vector<int32_t>& type_subs, environment& env);
 
-#ifdef USE_LLVM
-inline LLVMValueRef struct_zero_constant(LLVMContextRef c, int32_t t, environment* e) {
-	std::vector<LLVMValueRef> zvals;
-	for(int32_t j = 1; j < e->dict.type_array[t].decomposed_types_count; ++j) {
-		auto st = e->dict.all_stack_types[e->dict.type_array[t].decomposed_types_start + j];
-		if(e->dict.type_array[st].stateless() == false)
-			zvals.push_back(e->dict.type_array[st].zero_constant(c, st, e));
-	}
-	return LLVMConstNamedStruct(e->dict.type_array[t].llvm_type, zvals.data(), uint32_t(zvals.size()));
-}
-#endif
-
-inline int32_t interepreter_size(int32_t type, environment& env) {
-	if(env.dict.type_array[type].decomposed_types_count == 0)
-		return 8;
-	auto main_type = env.dict.all_stack_types[env.dict.type_array[type].decomposed_types_start];
-	return 8 * (env.dict.type_array[type].decomposed_types_count - 1 - env.dict.type_array[main_type].non_member_types);
-}
-
 inline int32_t struct_child_count(int32_t type, environment& env) {
 	if(env.dict.type_array[type].decomposed_types_count == 0)
 		return 0;
 	auto main_type = env.dict.all_stack_types[env.dict.type_array[type].decomposed_types_start];
 	return (env.dict.type_array[type].decomposed_types_count - 1 - env.dict.type_array[main_type].non_member_types);
-}
-
-inline int64_t interpreter_struct_zero_constant(int32_t t, environment* e) {
-	if(e->dict.type_array[t].stateless()) {
-		return 0;
-	} else if(e->dict.type_array[t].single_member_struct()) {
-		auto child_index = e->dict.type_array[t].decomposed_types_start + 1 + 0;
-		auto child_type = e->dict.all_stack_types[child_index];
-		if(e->dict.type_array[child_type].interpreter_zero)
-			return e->dict.type_array[child_type].interpreter_zero(child_type, e);
-		else
-			return 0;
-	} else {
-		auto bytes = interepreter_size(t, *e);
-		auto mem = (char*)malloc(bytes);
-		memset(mem, 0, bytes);
-		return (int64_t)mem;
-	}
 }
 
 inline uint32_t next_encoded_stack_type(std::span<int32_t const> desc) {
@@ -1298,48 +1674,33 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 	int32_t new_type = int32_t(env.dict.type_array.size());
 	env.dict.type_array.emplace_back();
 
-	std::vector<LLVMTypeRef> ctypes;
-	int32_t count_real_members = 0;
-	int32_t last_type = 0;
+	int32_t cells_count = 0;
+	int32_t byte_count = 0;
 	for(uint32_t j = 0; j < (final_subtype_list.size() - size_t(env.dict.type_array[template_base].non_member_types)); ++j) {
 		if(env.dict.type_array[final_subtype_list[j]].stateless() == false) {
-			ctypes.push_back(env.dict.type_array[final_subtype_list[j]].llvm_type);
-			++count_real_members;
-			last_type = final_subtype_list[j];
+			if(env.dict.type_array[final_subtype_list[j]].is_memory_type() == false) {
+				cells_count += env.dict.type_array[final_subtype_list[j]].cell_size;
+				byte_count += env.dict.type_array[final_subtype_list[j]].byte_size;
+			} else {
+				cells_count += 1;
+				byte_count += 8;
+			}
 		}
 	}
 
-	if(count_real_members == 0) {
-		// leave nullptrs
-	} else if(count_real_members > 1) {
-		std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
-#ifdef USE_LLVM
-		auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
-		LLVMStructSetBody(ty, ctypes.data(), uint32_t(ctypes.size()), false);
-		env.dict.type_array.back().llvm_type = ty;
-		env.dict.type_array.back().zero_constant = struct_zero_constant;
-#endif
-		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
-	} else {
-#ifdef USE_LLVM
-		env.dict.type_array.back().llvm_type = ctypes[0];
-		env.dict.type_array.back().zero_constant = env.dict.type_array[final_subtype_list[0]].zero_constant;
-#endif
-		env.dict.type_array.back().interpreter_zero = env.dict.type_array[final_subtype_list[0]].interpreter_zero;
-	}
-
+	
 	env.dict.type_array.back().decomposed_types_count = uint32_t(final_subtype_list.size() + 1);
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 	
-	if(count_real_members == 1)
-		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
-	else if(count_real_members == 0)
+	if(cells_count  == 0)
 		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
 
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
-	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+	env.dict.type_array.back().flags |= type::FLAG_STRUCT;
 
 	env.dict.type_array.back().type_slots = 0;
+	env.dict.type_array.back().cell_size = cells_count;
+	env.dict.type_array.back().byte_size = byte_count;
 	env.dict.all_stack_types.push_back(template_base);
 	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), final_subtype_list.begin(), final_subtype_list.end());
 
@@ -1367,6 +1728,9 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 	env.dict.type_array.emplace_back();
 	env.dict.types.insert_or_assign(std::string(name), new_type);
 
+	int32_t cells_count = 0;
+	int32_t byte_count = 0;
+
 	if(template_types == 0 && extra_count == 0) {
 		std::vector<LLVMTypeRef> ctypes;
 		int32_t count_real_members = 0;
@@ -1379,51 +1743,31 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 				return -1;
 			}
 			if(env.dict.type_array[subtypes[j]].stateless() == false) {
-				ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
-				++count_real_members;
-				last_type = subtypes[j];
+				if(env.dict.type_array[subtypes[j]].is_memory_type() == false) {
+					cells_count += env.dict.type_array[subtypes[j]].cell_size;
+					byte_count += env.dict.type_array[subtypes[j]].byte_size;
+				} else {
+					cells_count += 1;
+					byte_count += 8;
+				}
 			}
-		}
-		if(count_real_members == 0) {
-			//leave null
-		} else if(count_real_members > 1) {
-			std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
-#ifdef USE_LLVM
-			auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
-			LLVMStructSetBody(ty, ctypes.data(), uint32_t(ctypes.size()), false);
-			env.dict.type_array.back().llvm_type = ty;
-			env.dict.type_array.back().zero_constant = struct_zero_constant;
-#endif
-			env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
-		} else {
-#ifdef USE_LLVM
-			env.dict.type_array.back().llvm_type = ctypes[0];
-			env.dict.type_array.back().zero_constant = env.dict.type_array[subtypes[0]].zero_constant;
-#endif
-			env.dict.type_array.back().interpreter_zero = env.dict.type_array[subtypes[0]].interpreter_zero;
 		}
 
 		env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
-		env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
+		env.dict.type_array.back().flags |= type::FLAG_STRUCT;
 
-		if(count_real_members == 1) {
-			env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
-		} else if(count_real_members == 0) {
+		if(cells_count == 0) {
 			env.dict.type_array.back().flags |= type::FLAG_STATELESS;
 		}
 	} else {
-#ifdef USE_LLVM
-		env.dict.type_array.back().llvm_type = LLVMVoidTypeInContext(env.llvm_context);
-		env.dict.type_array.back().zero_constant = struct_zero_constant;
-#endif
-		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
 		env.dict.type_array.back().non_member_types = extra_count;
-
 		env.dict.type_array.back().flags |= type::FLAG_TEMPLATE;
 	}
 
 	env.dict.type_array.back().decomposed_types_count = uint32_t(subtypes.size() + (template_types + extra_count == 0 ? 1 : extra_count));
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
+	env.dict.type_array.back().cell_size = cells_count;
+	env.dict.type_array.back().byte_size = byte_count;
 
 	auto add_child_types = [&]() {
 		if(template_types + extra_count > 0) {
@@ -1435,7 +1779,6 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 			env.dict.all_stack_types.push_back(-1);
 		}
 	};
-
 
 	env.dict.type_array.back().type_slots = template_types + extra_count;
 	if(template_types + extra_count == 0)
@@ -1611,50 +1954,36 @@ inline int32_t make_anon_struct_type(std::span<int32_t const> subtypes, environm
 	int32_t new_type = int32_t(env.dict.type_array.size());
 	env.dict.type_array.emplace_back();
 
-	std::vector<LLVMTypeRef> ctypes;
-	int32_t count_real_members = 0;
-	int32_t last_type = 0;
+	int32_t cells_count = 0;
+	int32_t byte_count = 0;
+
 	for(uint32_t j = 0; j < subtypes.size(); ++j) {
 		if(env.dict.type_array[subtypes[j]].stateless() == false) {
-			ctypes.push_back(env.dict.type_array[subtypes[j]].llvm_type);
-			++count_real_members;
-			last_type = subtypes[j];
+			if(env.dict.type_array[subtypes[j]].is_memory_type() == false) {
+				cells_count += env.dict.type_array[subtypes[j]].cell_size;
+				byte_count += env.dict.type_array[subtypes[j]].byte_size;
+			} else {
+				cells_count += 1;
+				byte_count += 8;
+			}
 		}
 	}
 
-	if(count_real_members == 0) {
-		// leave null
-	} else if(count_real_members > 1) {
-		std::string autoname = "struct#" + std::to_string(env.dict.type_array.size());
-#ifdef USE_LLVM
-		auto ty = LLVMStructCreateNamed(env.llvm_context, autoname.c_str());
-		LLVMStructSetBody(ty, ctypes.data(), uint32_t(ctypes.size()), false);
-		env.dict.type_array.back().llvm_type = ty;
-		env.dict.type_array.back().zero_constant = struct_zero_constant;
-#endif
-		env.dict.type_array.back().interpreter_zero = interpreter_struct_zero_constant;
-	} else {
-#ifdef USE_LLVM
-		env.dict.type_array.back().llvm_type = ctypes[0];
-		env.dict.type_array.back().zero_constant = env.dict.type_array[subtypes[0]].zero_constant;
-#endif
-		env.dict.type_array.back().interpreter_zero = env.dict.type_array[subtypes[0]].interpreter_zero;
-	}
 
 	env.dict.type_array.back().decomposed_types_count = uint32_t(subtypes.size() + 1);
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
-	env.dict.type_array.back().flags |= type::FLAG_REFCOUNTED;
-	if(count_real_members == 1) {
-		env.dict.type_array.back().flags |= type::FLAG_SINGLE_MEMBER;
-	} else if(count_real_members == 0) {
+	env.dict.type_array.back().flags |= type::FLAG_STRUCT;
+	if(cells_count == 0) {
 		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
 	}
 
+	env.dict.type_array.back().cell_size = cells_count;
+	env.dict.type_array.back().byte_size = byte_count;
 	env.dict.type_array.back().type_slots = 0;
-	env.dict.all_stack_types.push_back(fif_anon_struct);
 
+	env.dict.all_stack_types.push_back(fif_anon_struct);
 	env.dict.all_stack_types.insert(env.dict.all_stack_types.end(), subtypes.begin(), subtypes.end());
 
 	int32_t start_types = int32_t(env.dict.all_stack_types.size());
@@ -1811,6 +2140,66 @@ inline int32_t make_anon_struct_type(std::span<int32_t const> subtypes, environm
 	return new_type;
 }
 
+inline int32_t make_array_type(int32_t of_type, size_t sz, int32_t sz_as_type, environment& env) {
+	int32_t new_type = int32_t(env.dict.type_array.size());
+	env.dict.type_array.emplace_back();
+
+	env.dict.type_array.back().flags |= type::FLAG_ARRAY;
+	env.dict.type_array.back().flags |= type::FLAG_MEMORY_TYPE;
+	if(env.dict.type_array[of_type].cell_size == 0) {
+		env.dict.type_array.back().flags |= type::FLAG_STATELESS;
+		env.dict.type_array.back().cell_size = 0;
+	} else {
+		env.dict.type_array.back().cell_size = 1;
+	}
+
+	env.dict.type_array.back().decomposed_types_count = uint32_t(3);
+	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
+	env.dict.type_array.back().type_slots = 0;
+	env.dict.type_array.back().byte_size = int32_t(env.dict.type_array[of_type].byte_size * sz);
+	env.dict.all_stack_types.push_back(fif_array);
+	env.dict.all_stack_types.push_back(of_type);
+	env.dict.all_stack_types.push_back(sz_as_type);
+
+	return new_type;
+}
+
+inline int32_t make_pointer_type(int32_t to_type, environment& env) {
+	int32_t new_type = int32_t(env.dict.type_array.size());
+	env.dict.type_array.emplace_back();
+	env.dict.type_array.back().decomposed_types_count = uint32_t(2);
+	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
+	env.dict.type_array.back().byte_size = int32_t(sizeof(void*));
+	env.dict.type_array.back().cell_size = 1;
+	env.dict.type_array.back().flags = type::FLAG_POINTER;
+	env.dict.type_array.back().type_slots = 0;
+
+	env.dict.all_stack_types.push_back(fif_ptr);
+	env.dict.all_stack_types.push_back(to_type);
+	
+	return new_type;
+}
+
+inline int32_t find_existing_type_match(int32_t main_type, std::span<int32_t> subtypes, environment& env) {
+	for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
+		if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
+			auto ta_start = env.dict.type_array[i].decomposed_types_start;
+			if(env.dict.all_stack_types[ta_start] == main_type) {
+				bool match = true;
+				for(uint32_t j = 0; j < subtypes.size(); ++j) {
+					if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
+						match = false;
+						break;
+					}
+				}
+				if(match) {
+					return  int32_t(i);
+				}
+			}
+		}
+	}
+	return -1;
+}
 inline type_match internal_resolve_type(std::string_view text, environment& env, std::vector<int32_t>* type_subs) {
 	uint32_t mt_end = 0;
 	if(text.starts_with("ptr(nil)")) {
@@ -1843,10 +2232,9 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		}
 		int32_t new_type = int32_t(env.dict.type_array.size());
 		env.dict.type_array.emplace_back();
-		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_i32].llvm_type;
 		env.dict.type_array.back().ntt_data = dat;
 		env.dict.type_array.back().ntt_base_type = fif_i32;
-		env.dict.type_array.back().ntt_llvm_constant = LLVMConstInt(LLVMInt32TypeInContext(env.llvm_context), uint64_t(dat), true);
+		env.dict.type_array.back().flags = type::FLAG_STATELESS;
 
 		return type_match{ new_type, mt_end };
 	} else if(is_fp(text.data(), text.data() + mt_end)) {
@@ -1860,10 +2248,9 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		}
 		int32_t new_type = int32_t(env.dict.type_array.size());
 		env.dict.type_array.emplace_back();
-		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_f32].llvm_type;
 		env.dict.type_array.back().ntt_data = dat;
 		env.dict.type_array.back().ntt_base_type = fif_f32;
-		env.dict.type_array.back().ntt_llvm_constant = LLVMConstReal(LLVMFloatTypeInContext(env.llvm_context), fdat);
+		env.dict.type_array.back().flags = type::FLAG_STATELESS;
 
 		return type_match{ new_type, mt_end };
 	} else if(text.substr(0, mt_end) == "true") {
@@ -1874,10 +2261,9 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		}
 		int32_t new_type = int32_t(env.dict.type_array.size());
 		env.dict.type_array.emplace_back();
-		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_bool].llvm_type;
 		env.dict.type_array.back().ntt_data = 1;
 		env.dict.type_array.back().ntt_base_type = fif_bool;
-		env.dict.type_array.back().ntt_llvm_constant = LLVMConstInt(LLVMInt1TypeInContext(env.llvm_context), 1, true);
+		env.dict.type_array.back().flags = type::FLAG_STATELESS;
 
 		return type_match{ new_type, mt_end };
 	} else if(text.substr(0, mt_end) == "false") {
@@ -1888,10 +2274,9 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		}
 		int32_t new_type = int32_t(env.dict.type_array.size());
 		env.dict.type_array.emplace_back();
-		env.dict.type_array.back().llvm_type = env.dict.type_array[fif_bool].llvm_type;
 		env.dict.type_array.back().ntt_data = 0;
 		env.dict.type_array.back().ntt_base_type = fif_bool;
-		env.dict.type_array.back().ntt_llvm_constant = LLVMConstInt(LLVMInt1TypeInContext(env.llvm_context), 0, true);
+		env.dict.type_array.back().flags = type::FLAG_STATELESS;
 
 		return type_match{ new_type, mt_end };
 	} else if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
@@ -1912,25 +2297,8 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 			++mt_end;
 
 		if(it->second == fif_anon_struct) {
-			// try to find existing matching anon struct
-			for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
-				if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
-					auto ta_start = env.dict.type_array[i].decomposed_types_start;
-					if(env.dict.all_stack_types[ta_start] == it->second) {
-						bool match = true;
-						for(uint32_t j = 0; j < subtypes.size(); ++j) {
-							if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
-								match = false;
-								break;
-							}
-						}
-						if(match) {
-							return type_match{ int32_t(i), mt_end };
-						}
-					}
-				}
-			}
-			// else 
+			if(auto m = find_existing_type_match(it->second, subtypes,env); m != -1)
+				return type_match{ m, mt_end };
 			return type_match{ make_anon_struct_type(subtypes, env), mt_end };
 		} else if(env.dict.type_array[it->second].type_slots != int32_t(subtypes.size())) {
 			env.report_error("attempted to instantiate a type with the wrong number of parameters");
@@ -1942,41 +2310,23 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 			env.report_error("attempted to instantiate a pointer to a non-type");
 			env.mode = fif_mode::error;
 			return type_match{ -1, mt_end };
+		} else if(it->second == fif_array && env.dict.type_array[subtypes[1]].ntt_base_type != fif_i32) {
+			env.report_error("attempted to instantiate an array with a non-integral size");
+			env.mode = fif_mode::error;
+			return type_match{ -1, mt_end };
+		} else if(it->second == fif_array) {
+			if(auto m = find_existing_type_match(it->second, subtypes, env); m != -1)
+				return type_match{ m, mt_end };
+			auto array_size = std::max(int64_t(0), env.dict.type_array[subtypes[1]].ntt_data);
+			return type_match{ make_array_type(subtypes[0], size_t(array_size), subtypes[1], env), mt_end };
+		} else if(it->second == fif_ptr) {
+			if(auto m = find_existing_type_match(it->second, subtypes, env); m != -1)
+				return type_match{ m, mt_end };
+			return type_match{ make_pointer_type(subtypes[1], env), mt_end };
 		} else {
-			for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
-				if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
-					auto ta_start = env.dict.type_array[i].decomposed_types_start;
-					if(env.dict.all_stack_types[ta_start] == it->second) {
-						bool match = true;
-						for(uint32_t j = 0; j < subtypes.size(); ++j) {
-							if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
-								match = false;
-								break;
-							}
-						}
-
-						if(match) {
-							return type_match{ int32_t(i), mt_end };
-						}
-					}
-				}
-			}
-
-			int32_t new_type = int32_t(env.dict.type_array.size());
-			env.dict.type_array.emplace_back();
-			env.dict.type_array.back().llvm_type = env.dict.type_array[it->second].llvm_type;
-			env.dict.type_array.back().decomposed_types_count = uint32_t(1 + subtypes.size());
-			env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
-			env.dict.type_array.back().flags = env.dict.type_array[it->second].flags;
-			env.dict.type_array.back().zero_constant = env.dict.type_array[it->second].zero_constant;
-			env.dict.type_array.back().type_slots = 0;
-
-			env.dict.all_stack_types.push_back(it->second);
-			for(auto t : subtypes) {
-				env.dict.all_stack_types.push_back(t);
-			}
-
-			return type_match{ new_type, mt_end };
+			env.report_error("attempted to instantiate a type without an instantiation guide");
+			env.mode = fif_mode::error;
+			return type_match{ -1, mt_end };
 		}
 	}
 
@@ -2110,66 +2460,26 @@ inline type_match resolve_span_type(std::span<int32_t const> tlist, std::vector<
 
 	
 	if(base_type == fif_anon_struct) {
-		// try to find existing matching anon struct
-		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
-			if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
-				auto ta_start = env.dict.type_array[i].decomposed_types_start;
-				if(env.dict.all_stack_types[ta_start] == base_type) {
-					bool match = true;
-					for(uint32_t j = 0; j < subtypes.size(); ++j) {
-						if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
-							match = false;
-							break;
-						}
-					}
-					if(match) {
-						return type_match{ int32_t(i), mt_end };
-					}
-				}
-			}
-		}
-		// else 
+		if(auto m = find_existing_type_match(base_type, subtypes, env); m != -1)
+			return type_match{ m, mt_end };
 		return type_match{ make_anon_struct_type(subtypes, env), mt_end };
 	} else if(base_type == fif_ptr && !subtypes.empty() && subtypes[0] == fif_nil) {
 		return type_match{ fif_opaque_ptr, mt_end };
 	} else if(env.dict.type_array[base_type].is_struct_template()) {
 		return type_match{ instantiate_templated_struct_full(base_type, subtypes, env), mt_end };
+	} else if(base_type == fif_array && subtypes.size() == 2) {
+		if(auto m = find_existing_type_match(base_type, subtypes, env); m != -1)
+			return type_match{ m, mt_end };
+		auto array_size = std::max(int64_t(0), env.dict.type_array[subtypes[1]].ntt_data);
+		return type_match{ make_array_type(subtypes[0], size_t(array_size), subtypes[1], env), mt_end };
+	} else if(base_type == fif_ptr) {
+		if(auto m = find_existing_type_match(base_type, subtypes, env); m != -1)
+			return type_match{ m, mt_end };
+		return type_match{ make_pointer_type(subtypes[1], env), mt_end };
 	} else {
-		for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
-			if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
-				auto ta_start = env.dict.type_array[i].decomposed_types_start;
-				if(env.dict.all_stack_types[ta_start] == base_type) {
-					bool match = true;
-					for(uint32_t j = 0; j < subtypes.size(); ++j) {
-						if(env.dict.all_stack_types[ta_start + 1 + j] != subtypes[j]) {
-							match = false;
-							break;
-						}
-					}
-
-					if(match) {
-						return type_match{ int32_t(i), mt_end };
-					}
-				}
-			}
-		}
-
-		int32_t new_type = int32_t(env.dict.type_array.size());
-		env.dict.type_array.emplace_back();
-
-		env.dict.type_array.back().llvm_type = env.dict.type_array[base_type].llvm_type;
-		env.dict.type_array.back().decomposed_types_count = uint32_t(1 + subtypes.size());
-		env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
-		env.dict.type_array.back().zero_constant = env.dict.type_array[base_type].zero_constant;
-		env.dict.type_array.back().flags = env.dict.type_array[base_type].flags;
-		env.dict.type_array.back().type_slots = 0;
-
-		env.dict.all_stack_types.push_back(base_type);
-		for(auto t : subtypes) {
-			env.dict.all_stack_types.push_back(t);
-		}
-
-		return type_match{ new_type, mt_end };
+		env.report_error("attempted to instantiate a type without an instantiation guide");
+		env.mode = fif_mode::error;
+		return type_match{ -1, mt_end };
 	}
 }
 
@@ -2320,35 +2630,45 @@ inline std::vector<int32_t> make_parameter_permutation(std::span<int32_t const> 
 		++ret_added;
 	}
 
-	permutation.resize(output_stack_types + ret_added, -1);
+	auto ind_bytes = initial_state.main_byte_back_at(parameter_count);
+	auto inr_bytes = initial_state.return_byte_back_at(rparameter_count);
+	auto outd_bytes = final_state.main_byte_back_at(output_stack_types);
+	auto outr_bytes = final_state.return_byte_back_at(ret_added);
+
+	int64_t* input_dptr = (int64_t * )(initial_state.main_back_ptr_at(parameter_count));
+	int64_t* input_rptr = (int64_t*)(initial_state.return_back_ptr_at(rparameter_count));
+	int64_t* output_dptr = (int64_t*)(final_state.main_back_ptr_at(output_stack_types));
+	int64_t* output_rptr = (int64_t*)(final_state.return_back_ptr_at(ret_added));
+
+	permutation.resize((outd_bytes + outr_bytes) / 8, -1);
 
 	uint32_t pinsert_index = 0;
 
-	for(int32_t i = output_stack_types - 1; i >= 0; --i) {
-		for(int32_t j = 0; j < parameter_count; ++j) {
-			if(initial_state.main_size() > uint32_t(j) && initial_state.main_data_back(size_t(j)) == final_state.main_data_back(size_t(i))) {
+	for(uint32_t i =  0; i < outd_bytes / 8; --i) {
+		for(uint32_t j = 0; j < ind_bytes/8; ++j) {
+			if(input_dptr[j] == output_dptr[i]) {
 				permutation[pinsert_index] = j;
 				break;
 			}
 		}
-		for(int32_t j = 0; j < rparameter_count; ++j) {
-			if(initial_state.return_size() > uint32_t(j) && initial_state.return_data_back(size_t(j)) == final_state.main_data_back(size_t(i))) {
-				permutation[pinsert_index] = j + parameter_count;
+		for(uint32_t j = 0; j < inr_bytes / 8; ++j) {
+			if(input_rptr[j] == output_dptr[i]) {
+				permutation[pinsert_index] = j + ind_bytes / 8;
 				break;
 			}
 		}
 		++pinsert_index;
 	}
-	for(int32_t i = ret_added - 1; i >= 0; --i) {
-		for(int32_t j = 0; j < parameter_count; ++j) {
-			if(initial_state.main_size() > uint32_t(j) && initial_state.main_data_back(size_t(j)) == final_state.return_data_back(size_t(i))) {
+	for(uint32_t i = 0; i < outr_bytes / 8; --i) {
+		for(uint32_t j = 0; j < ind_bytes / 8; ++j) {
+			if(input_dptr[j] == output_rptr[i]) {
 				permutation[pinsert_index] = j;
 				break;
 			}
 		}
-		for(int32_t j = 0; j < rparameter_count; ++j) {
-			if(initial_state.return_size() > uint32_t(j) && initial_state.return_data_back(size_t(j)) == final_state.return_data_back(size_t(i))) {
-				permutation[pinsert_index] = j + parameter_count;
+		for(uint32_t j = 0; j < inr_bytes / 8; ++j) {
+			if(input_rptr[j] == output_rptr[i]) {
+				permutation[pinsert_index] = j + ind_bytes / 8;
 				break;
 			}
 		}
@@ -2356,12 +2676,6 @@ inline std::vector<int32_t> make_parameter_permutation(std::span<int32_t const> 
 	}
 	while(!permutation.empty() && permutation.back() == -1)
 		permutation.pop_back();
-
-
-	// params array
-	// main_back 0 .... main_back n, return back 0 ... return back m
-	// permutation[ nth output ] -> if not -1 looks up and uses value in params array
-	// output 0 is first pushed to main ... output k is last pushed to return
 
 	return permutation;
 }
@@ -2378,7 +2692,6 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 		if(consumed_stack_cells >= ssize)
 			return;
 		auto match_result = fill_in_variable_types(ts.main_type_back(consumed_stack_cells), desc.subspan(match_position), type_subs, env);
-		params.push_back(ts.main_data_back(consumed_stack_cells));
 		if(!match_result.match_result)
 			return;
 		match_position += match_result.match_end;
@@ -2404,7 +2717,6 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 		if(consumed_rstack_cells >= rsize)
 			return;
 		auto match_result = fill_in_variable_types(ts.return_type_back(consumed_rstack_cells), desc.subspan(match_position), type_subs, env);
-		params.push_back(ts.return_data_back(consumed_rstack_cells));
 		if(!match_result.match_result)
 			return;
 		match_position += match_result.match_end;
@@ -2413,23 +2725,31 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 
 	++match_position; // skip -1
 
+
+	auto ind_bytes = ts.main_byte_back_at(consumed_stack_cells);
+	auto inr_bytes = ts.return_byte_back_at(consumed_rstack_cells);
+
+	int64_t* input_dptr = (int64_t*)(ts.main_back_ptr_at(consumed_stack_cells));
+	int64_t* input_rptr = (int64_t*)(ts.return_back_ptr_at(consumed_rstack_cells));
+
+	params.insert(params.end(), input_dptr, input_dptr + ind_bytes / 8);
+	params.insert(params.end(), input_rptr, input_rptr + inr_bytes / 8);
+
 	// drop consumed types
-	std::vector<int32_t> perm_data;
-	perm_data.resize(param_perm.size());
 	ts.resize(ssize - consumed_stack_cells, rsize - consumed_rstack_cells);
 
-	size_t output_counter = 0;
+	int32_t outd_bytes = 0;
+	int32_t outr_bytes = 0;
+	int32_t outm_slots = 0;
+	int32_t outr_slots = 0;
 
 	// add returned stack types
 	while(first_output_stack < int32_t(desc.size()) && desc[first_output_stack] != -1) {
 		auto result = resolve_span_type(desc.subspan(first_output_stack), type_subs, env);
 		first_output_stack += result.end_match_pos;
-		if(output_counter < param_perm.size() && param_perm[output_counter] != -1) {
-			ts.push_back_main(result.type, params[param_perm[output_counter]], nullptr);
-		} else {
-			ts.push_back_main(result.type, env.dict.type_array[result.type].stateless() ? 0 : env.new_ident(), nullptr);
-		}
-		++output_counter;
+		ts.push_back_main(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		outd_bytes += env.dict.type_array[result.type].cell_size * 8;
+		++outm_slots;
 	}
 
 	// output ret stack
@@ -2437,13 +2757,35 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 	//int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		auto result = resolve_span_type(desc.subspan(match_position), type_subs, env);
-		if(output_counter < param_perm.size() && param_perm[output_counter] != -1) {
-			ts.push_back_return(result.type, params[param_perm[output_counter]], nullptr);
-		} else {
-			ts.push_back_return(result.type, env.dict.type_array[result.type].stateless() ? 0 : env.new_ident(), nullptr);
-		}
 		match_position += result.end_match_pos;
-		++output_counter;
+		ts.push_back_return(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		outr_bytes += env.dict.type_array[result.type].cell_size * 8;
+		++outr_slots;
+	}
+
+	int64_t* output_dptr = (int64_t*)(ts.main_back_ptr_at(outm_slots));
+	int64_t* output_rptr = (int64_t*)(ts.return_back_ptr_at(outr_slots));
+
+	int32_t pinsert_index = 0;
+	for(int32_t i = 0; i < outd_bytes / 8; --i) {
+		if(pinsert_index >= int32_t(param_perm.size()) || param_perm[pinsert_index] == -1) {
+			output_dptr[i] = env.new_ident();
+		} else if(param_perm[pinsert_index] < int32_t(ind_bytes / 8)) {
+			output_dptr[i] = input_dptr[param_perm[pinsert_index]];
+		} else {
+			output_dptr[i] = input_rptr[param_perm[pinsert_index] - ind_bytes / 8];
+		}
+		++pinsert_index;
+	}
+	for(int32_t i = 0; i < outr_bytes / 8; --i) {
+		if(pinsert_index >= int32_t(param_perm.size()) || param_perm[pinsert_index] == -1) {
+			output_rptr[i] = env.new_ident();
+		} else if(param_perm[pinsert_index] < int32_t(ind_bytes / 8)) {
+			output_rptr[i] = input_dptr[param_perm[pinsert_index]];
+		} else {
+			output_rptr[i] = input_rptr[param_perm[pinsert_index] - ind_bytes / 8];
+		}
+		++pinsert_index;
 	}
 }
 
@@ -2567,21 +2909,20 @@ inline void execute_fif_word(state_stack& ss, int32_t* ptr, environment& env) {
 }
 
 inline int32_t* immediate_i32(state_stack& s, int32_t* p, environment*) {
-	int32_t data = 0;
+	int32_t data = *(p + 2);
 	memcpy(&data, p + 2, 4);
-	s.push_back_main(fif_i32, data, nullptr);
+	s.push_back_main<int32_t>(fif_i32, data);
 	return p + 3;
 }
 inline int32_t* immediate_f32(state_stack& s, int32_t* p, environment*) {
-	int64_t data = 0;
+	float data = 0;
 	memcpy(&data, p + 2, 4);
-	s.push_back_main(fif_f32, data, nullptr);
+	s.push_back_main<float>(fif_f32, data);
 	return p + 3;
 }
 inline int32_t* immediate_bool(state_stack& s, int32_t* p, environment*) {
-	int32_t data = 0;
-	memcpy(&data, p + 2, 4);
-	s.push_back_main(fif_bool, data, nullptr);
+	int32_t data = *(p + 2);
+	s.push_back_main<bool>(fif_bool, data != 0);
 	return p + 3;
 }
 inline void do_immediate_i32(state_stack& s, int32_t value, environment* e) {
@@ -2596,22 +2937,25 @@ inline void do_immediate_i32(state_stack& s, int32_t value, environment* e) {
 		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 		compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 		compile_bytes->push_back(value);
-		s.push_back_main(fif_i32, 0, nullptr);
+		s.push_back_main(vsize_obj(fif_i32, 0));
 	} else if(e->mode == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		LLVMValueRef val = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint32_t(value), true);
-		s.push_back_main(fif_i32, 0, val);
+		s.push_back_main<LLVMValueRef>(fif_i32, val);
 #endif
 	} else if(e->mode == fif_mode::interpreting) {
-		s.push_back_main(fif_i32, value, nullptr);
+		s.push_back_main<int32_t>(fif_i32, value);
 	} else if(typechecking_mode(e->mode)) {
-		s.push_back_main(fif_i32, e->new_ident(), nullptr);
+		s.push_back_main<int64_t>(fif_i32, e->new_ident());
 	}
 }
-inline int32_t* immediate_type(state_stack& s, int32_t* p, environment*) {
-	int32_t data = 0;
-	memcpy(&data, p + 2, 4);
-	s.push_back_main(fif_type, data, nullptr);
+inline int32_t* immediate_type(state_stack& s, int32_t* p, environment* e) {
+	int32_t data = *(p +2);
+	if(data >= 0 && e->dict.type_array[data].ntt_base_type != -1) {
+		s.push_back_main(vsize_obj(e->dict.type_array[data].ntt_base_type, e->dict.type_array[e->dict.type_array[data].ntt_base_type].byte_size, (unsigned char*)( &(e->dict.type_array[data].ntt_data))));
+	} else {
+		s.push_back_main<int32_t>(fif_type, data);
+	}
 	return p + 3;
 }
 inline void do_immediate_type(state_stack& s, int32_t value, environment* e) {
@@ -2626,16 +2970,66 @@ inline void do_immediate_type(state_stack& s, int32_t value, environment* e) {
 		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 		compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 		compile_bytes->push_back(value);
-		s.push_back_main(fif_type, 0, nullptr);
+		s.push_back_main(vsize_obj(fif_type, 0));
 	} else if(e->mode == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
-		LLVMValueRef val = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint32_t(value), true);
-		s.push_back_main(fif_type, 0, val);
+		if(value >= 0 && e->dict.type_array[value].ntt_base_type != -1) {
+			LLVMValueRef val = nullptr;
+			switch(e->dict.type_array[value].ntt_base_type) {
+				case fif_i32:
+					val = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_f32:
+				{
+					float fval = 0.0f;
+					memcpy(&fval, &(e->dict.type_array[value].ntt_data), 4);
+					val = LLVMConstReal(LLVMFloatTypeInContext(e->llvm_context), fval);
+				}
+				case fif_bool:
+					val = LLVMConstInt(LLVMInt1TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_type:
+					val = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_i64:
+					val = LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_f64:
+				{
+					double fval = 0.0f;
+					memcpy(&fval, &(e->dict.type_array[value].ntt_data), 8);
+					val = LLVMConstReal(LLVMDoubleTypeInContext(e->llvm_context), fval);
+				}
+				case fif_u32:
+					val = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_u64:
+					val = LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_i16:
+					val = LLVMConstInt(LLVMInt16TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_u16:
+					val = LLVMConstInt(LLVMInt16TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_i8:
+					val = LLVMConstInt(LLVMInt8TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				case fif_u8:
+					val = LLVMConstInt(LLVMInt8TypeInContext(e->llvm_context), uint64_t(e->dict.type_array[value].ntt_data), false);
+				default:
+					assert(false);
+					break;
+			}
+			s.push_back_main<LLVMValueRef>(e->dict.type_array[value].ntt_base_type, val);
+		} else {
+			LLVMValueRef val = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint32_t(value), true);
+			s.push_back_main<LLVMValueRef>(e->dict.type_array[value].ntt_base_type, val);
+		}
 #endif
 	} else if(e->mode == fif_mode::interpreting) {
-		s.push_back_main(fif_type, value, nullptr);
+		if(value >= 0 && e->dict.type_array[value].ntt_base_type != -1) {
+			s.push_back_main(vsize_obj(e->dict.type_array[value].ntt_base_type, e->dict.type_array[e->dict.type_array[value].ntt_base_type].byte_size, (unsigned char*)(&(e->dict.type_array[value].ntt_data))));
+		} else {
+			s.push_back_main<int32_t>(fif_type, value);
+		}
 	} else if(typechecking_mode(e->mode)) {
-		s.push_back_main(fif_type, e->new_ident(), nullptr);
+		if(value >= 0 && e->dict.type_array[value].ntt_base_type != -1) {
+			s.push_back_main<int64_t>(e->dict.type_array[value].ntt_base_type, e->new_ident());
+		} else {
+			s.push_back_main<int64_t>(fif_type, e->new_ident());
+		}
 	}
 }
 inline void do_immediate_bool(state_stack& s, bool value, environment* e) {
@@ -2650,16 +3044,16 @@ inline void do_immediate_bool(state_stack& s, bool value, environment* e) {
 		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 		compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 		compile_bytes->push_back(int32_t(value));
-		s.push_back_main(fif_bool, 0, nullptr);
+		s.push_back_main(vsize_obj(fif_bool, 0));
 	} else if(e->mode == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		LLVMValueRef val = LLVMConstInt(LLVMInt1TypeInContext(e->llvm_context), uint32_t(value), true);
-		s.push_back_main(fif_bool, 0, val);
+		s.push_back_main(fif_bool, val);
 #endif
 	} else if(e->mode == fif_mode::interpreting) {
-		s.push_back_main(fif_bool, int64_t(value), nullptr);
+		s.push_back_main<bool>(fif_bool, value);
 	} else if(typechecking_mode(e->mode)) {
-		s.push_back_main(fif_bool, e->new_ident(), nullptr);
+		s.push_back_main<int64_t>(fif_bool, e->new_ident());
 	}
 }
 inline void do_immediate_f32(state_stack& s, float value, environment* e) {
@@ -2667,9 +3061,7 @@ inline void do_immediate_f32(state_stack& s, float value, environment* e) {
 		return;
 
 	int32_t v4 = 0;
-	int64_t v8 = 0;
 	memcpy(&v4, &value, 4);
-	memcpy(&v8, &value, 4);
 
 	auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 	if(compile_bytes && e->mode == fif_mode::compiling_bytecode) {
@@ -2679,16 +3071,16 @@ inline void do_immediate_f32(state_stack& s, float value, environment* e) {
 		compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 		compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 		compile_bytes->push_back(v4);
-		s.push_back_main(fif_f32, 0, nullptr);
+		s.push_back_main(vsize_obj(fif_f32, 0));
 	} else if(e->mode == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		LLVMValueRef val = LLVMConstReal(LLVMFloatTypeInContext(e->llvm_context), value);
-		s.push_back_main(fif_f32, 0, val);
+		s.push_back_main(fif_f32, val);
 #endif
 	} else if(e->mode == fif_mode::interpreting) {
-		s.push_back_main(fif_f32, v8, nullptr);
+		s.push_back_main<float>(fif_f32, value);
 	} else if(typechecking_mode(e->mode)) {
-		s.push_back_main(fif_f32, e->new_ident(), nullptr);
+		s.push_back_main<int64_t>(fif_f32, e->new_ident());
 	}
 }
 inline int32_t* function_return(state_stack& s, int32_t* p, environment*) {
@@ -2704,8 +3096,10 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 
 #ifdef USE_LLVM
 inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
-	std::vector<LLVMTypeRef> parameter_group;
-	std::vector<LLVMTypeRef> returns_group;
+	std::vector<LLVMTypeRef> parameter_dgroup;
+	std::vector<LLVMTypeRef> parameter_rgroup;
+	std::vector<LLVMTypeRef> return_group;
+	std::vector<LLVMTypeRef> temp_buffer;
 
 	/*
 	* NOTE: function assumes that description is fully resolved
@@ -2716,36 +3110,30 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 
 	//int32_t consumed_stack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(env.dict.type_array[desc[match_position]].stateless() == false)
-			parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		temp_buffer.clear();
+		enum_llvm_type(desc[match_position], temp_buffer, env);
+		parameter_dgroup.insert(parameter_dgroup.begin(), temp_buffer.begin(), temp_buffer.end());
 		++match_position;
-		//++consumed_stack_cells;
 	}
 
 	++match_position; // skip -1
-
-	int32_t output_counter = 0;
 
 	// output stack
 	int32_t first_output_stack = match_position;
 	//int32_t output_stack_types = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false)
-				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-		}
+		enum_llvm_type(desc[match_position], return_group, env);
 		++match_position;
-		++output_counter;
 	}
 	++match_position; // skip -1
 
 	// return stack matching
 	//int32_t consumed_rstack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(env.dict.type_array[desc[match_position]].stateless() == false)
-			parameter_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
+		temp_buffer.clear();
+		enum_llvm_type(desc[match_position], temp_buffer, env);
+		parameter_rgroup.insert(parameter_rgroup.begin(), temp_buffer.begin(), temp_buffer.end());
 		++match_position;
-		//++consumed_rstack_cells;
 	}
 
 	++match_position; // skip -1
@@ -2753,23 +3141,32 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 	// output ret stack
 	//int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false)
-				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-		}
+		enum_llvm_type(desc[match_position], return_group, env);
 		++match_position;
-		++output_counter;
 	}
 
-	LLVMTypeRef ret_type = nullptr;
-	if(returns_group.size() == 0) {
-		ret_type = LLVMVoidTypeInContext(env.llvm_context);
-	} else if(returns_group.size() == 1) {
-		ret_type = returns_group[0];
-	} else {
-		ret_type = LLVMStructTypeInContext(env.llvm_context, returns_group.data(), uint32_t(returns_group.size()), false);
+	assert(return_group.size() >= param_perm.size());
+
+	parameter_dgroup.insert(parameter_dgroup.end(), parameter_rgroup.begin(), parameter_rgroup.end());
+	for(auto pi = param_perm.size(); pi-- > 0; ) {
+		if(param_perm[pi] != -1) {
+			return_group.erase(return_group.begin() + pi);
+		}
 	}
-	return LLVMFunctionType(ret_type, parameter_group.data(), uint32_t(parameter_group.size()), false);
+	LLVMTypeRef ret_type = nullptr;
+	if(return_group.size() == 0) {
+		ret_type = LLVMVoidTypeInContext(env.llvm_context);
+	} else if(return_group.size() == 1) {
+		ret_type = return_group[0];
+	} else {
+		for(auto& t : return_group) {
+			if(t == llvm_type(fif_bool, env)) {
+				t = LLVMInt8TypeInContext(env.llvm_context);
+			}
+		}
+		ret_type = LLVMStructTypeInContext(env.llvm_context, return_group.data(), uint32_t(return_group.size()), true);
+	}
+	return LLVMFunctionType(ret_type, parameter_dgroup.data(), uint32_t(parameter_dgroup.size()), false);
 }
 
 inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, state_stack& ws, std::span<int32_t const> desc) {
@@ -2781,51 +3178,54 @@ inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, sta
 	int32_t match_position = 0;
 	// stack matching
 
-	int32_t consumed_stack_cells = 0;
-	int32_t params_consumed = 0;
+	int32_t parameter_count = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(env.dict.type_array[desc[match_position]].stateless() == false) {
-			auto ex = LLVMGetParam(fn, uint32_t(params_consumed));
-			ws.set_main_ex_back(consumed_stack_cells, ex);
-			++params_consumed;
-		}
 		++match_position;
-		++consumed_stack_cells;
+		++parameter_count;
 	}
 
 	++match_position; // skip -1
 
 	// output stack
-	int32_t first_output_stack = match_position;
-	//int32_t output_stack_types = 0;
+	int32_t output_stack_types = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		++match_position;
-		//++output_stack_types;
+		++output_stack_types;
 	}
 	++match_position; // skip -1
 
 	// return stack matching
-	int32_t consumed_rstack_cells = 0;
+	int32_t rparameter_count = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(env.dict.type_array[desc[match_position]].stateless() == false) {
-			auto ex = LLVMGetParam(fn, uint32_t(params_consumed));
-			ws.set_return_ex_back(consumed_rstack_cells, ex);
-			++params_consumed;
-		}
-		++match_position;
-		++consumed_rstack_cells;
+		++rparameter_count;
 	}
 
 	++match_position; // skip -1
 
 	// output ret stack
-	//int32_t ret_added = 0;
+	int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		++match_position;
-		//++ret_added;
+		++ret_added;
 	}
 
-	ws.trim_to(size_t(consumed_stack_cells), size_t(consumed_rstack_cells));
+	auto ind_bytes = ws.main_byte_back_at(parameter_count);
+	auto inr_bytes = ws.return_byte_back_at(rparameter_count);
+
+	LLVMValueRef* input_dptr = (LLVMValueRef*)(ws.main_back_ptr_at(parameter_count));
+	LLVMValueRef* input_rptr = (LLVMValueRef*)(ws.return_back_ptr_at(rparameter_count));
+
+	uint32_t pindex = 0;
+	for(uint32_t i = 0; i < ind_bytes / 8; ++i) {
+		input_dptr[i] = LLVMGetParam(fn, uint32_t(pindex));
+		++pindex;
+	}
+	for(uint32_t i = 0; i < inr_bytes / 8; ++i) {
+		input_rptr[i] = LLVMGetParam(fn, uint32_t(pindex));
+		++pindex;
+	}
+
+	ws.trim_to(size_t(parameter_count), size_t(rparameter_count));
 }
 
 struct brief_fn_return {
@@ -2836,7 +3236,7 @@ struct brief_fn_return {
 };
 
 inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
-	std::vector<LLVMTypeRef> returns_group;
+	std::vector<LLVMTypeRef> return_group;
 
 	/*
 	* NOTE: function assumes that description is fully resolved
@@ -2852,54 +3252,59 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 
 	++match_position; // skip -1
 
-	int32_t output_counter = 0;
-	int32_t output_stack_types = 0;
 	// output stack
 	int32_t first_output_stack = match_position;
+	int32_t output_stack_types = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false)
-				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-			++output_stack_types;
-		}
+		enum_llvm_type(desc[match_position], return_group, env);
 		++match_position;
-		++output_counter;
+		++output_stack_types;
 	}
 	++match_position; // skip -1
 
 	// return stack matching
+	//int32_t consumed_rstack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		++match_position;
 	}
 
 	++match_position; // skip -1
 
-	// output ret stack
 	int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false)
-				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-			++ret_added;
-		}
+		enum_llvm_type(desc[match_position], return_group, env);
 		++match_position;
-		++output_counter;
+		++ret_added;
+	}
+
+	assert(return_group.size() >= param_perm.size());
+	for(auto pi = param_perm.size(); pi-- > 0; ) {
+		if(param_perm[pi] != -1) {
+			return_group.erase(return_group.begin() + pi);
+		}
 	}
 
 	LLVMTypeRef ret_type = nullptr;
-	if(returns_group.size() == 0) {
-		
-	} else if(returns_group.size() == 1) {
-		ret_type = returns_group[0];
+	if(return_group.size() == 0) {
+		ret_type = LLVMVoidTypeInContext(env.llvm_context);
+	} else if(return_group.size() == 1) {
+		ret_type = return_group[0];
 	} else {
-		ret_type = LLVMStructTypeInContext(env.llvm_context, returns_group.data(), uint32_t(returns_group.size()), false);
+		for(auto& t : return_group) {
+			if(t == llvm_type(fif_bool, env)) {
+				t = LLVMInt8TypeInContext(env.llvm_context);
+			}
+		}
+		ret_type = LLVMStructTypeInContext(env.llvm_context, return_group.data(), uint32_t(return_group.size()), true);
 	}
-	return brief_fn_return{ ret_type , output_stack_types, ret_added, returns_group.size()  > 1};
+	return brief_fn_return{ ret_type , output_stack_types, ret_added, return_group.size()  > 1};
 }
 
 inline void llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
-	std::vector<LLVMTypeRef> returns_group;
+	std::vector<LLVMTypeRef> return_group;
 	std::vector<LLVMValueRef> returns_vals;
+
+	auto* ws = env.compiler_stack.back()->working_state();
 
 	/*
 	* NOTE: function assumes that description is fully resolved
@@ -2915,59 +3320,68 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 
 	++match_position; // skip -1
 
-	int32_t output_counter = 0;
-	int32_t output_stack_types = 0;
 	// output stack
 	int32_t first_output_stack = match_position;
+	int32_t output_stack_types = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false) {
-				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-				returns_vals.push_back(env.compiler_stack.back()->working_state()->main_ex_back(size_t(output_stack_types)));
-				++output_stack_types;
-			}
-		}
+		enum_llvm_type(desc[match_position], return_group, env);
 		++match_position;
-		++output_counter;
+		++output_stack_types;
 	}
 	++match_position; // skip -1
 
 	// return stack matching
+	//int32_t consumed_rstack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		++match_position;
 	}
 
 	++match_position; // skip -1
 
-	// output ret stack
 	int32_t ret_added = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		if(output_counter >= param_perm.size() || param_perm[output_counter] == -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false) {
-				returns_group.push_back(env.dict.type_array[desc[match_position]].llvm_type);
-				returns_vals.push_back(env.compiler_stack.back()->working_state()->return_ex_back(size_t(ret_added)));
-				++ret_added;
-			}
-		}
+		enum_llvm_type(desc[match_position], return_group, env);
 		++match_position;
-		++output_counter;
+		++ret_added;
+	}
+
+	auto outd_bytes = ws->main_byte_back_at(output_stack_types);
+	auto outr_bytes = ws->return_byte_back_at(ret_added);
+
+	LLVMValueRef* output_dptr = (LLVMValueRef*)(ws->main_back_ptr_at(output_stack_types));
+	LLVMValueRef* output_rptr = (LLVMValueRef*)(ws->return_back_ptr_at(ret_added));
+	returns_vals.insert(returns_vals.end(), output_dptr, output_dptr + outd_bytes / 8);
+	returns_vals.insert(returns_vals.end(), output_rptr, output_rptr + outr_bytes / 8);
+
+	assert(return_group.size() >= param_perm.size());
+	assert(return_group.size() == returns_vals.size());
+
+	for(auto pi = param_perm.size(); pi-- > 0; ) {
+		if(param_perm[pi] != -1) {
+			return_group.erase(return_group.begin() + pi);
+			returns_vals.erase(returns_vals.begin() + pi);
+		}
 	}
 
 	LLVMTypeRef ret_type = nullptr;
-	if(returns_group.size() == 0) {
-
-	} else if(returns_group.size() == 1) {
-		ret_type = returns_group[0];
+	if(return_group.size() == 0) {
+		
+	} else if(return_group.size() == 1) {
+		ret_type = return_group[0];
 	} else {
-		ret_type = LLVMStructTypeInContext(env.llvm_context, returns_group.data(), uint32_t(returns_group.size()), false);
+		for(auto& t : return_group) {
+			if(t == llvm_type(fif_bool, env)) {
+				t = LLVMInt8TypeInContext(env.llvm_context);
+			}
+		}
+		ret_type = LLVMStructTypeInContext(env.llvm_context, return_group.data(), uint32_t(return_group.size()), true);
 	}
-	
 
 	if(ret_type == nullptr) {
 		LLVMBuildRetVoid(env.llvm_builder);
 		return;
 	}
-	if(returns_group.size() == 1) {
+	if(return_group.size() == 1) {
 		LLVMBuildRet(env.llvm_builder, returns_vals[0]);
 		return;
 	}
@@ -2975,133 +3389,155 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 	auto rstruct = LLVMGetUndef(ret_type);
 	uint32_t insert_index = 0;
 
-	for(int32_t i = output_stack_types - 1; i >= 0; --i) {
-		rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, returns_vals[i], insert_index, "");
-		++insert_index;
+	for(uint32_t i = 0; i < returns_vals.size(); ++i) {
+		assert(return_group[i] == LLVMTypeOf(returns_vals[i]));
+		if(LLVMTypeOf(returns_vals[i]) == llvm_type(fif_bool, env)) {
+			rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, LLVMBuildZExt(env.llvm_builder, returns_vals[i], LLVMInt8TypeInContext(env.llvm_context), ""), i, "");
+		} else {
+			rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, returns_vals[i], i, "");
+		}
 	}
-	for(int32_t i = ret_added - 1; i >= 0;  --i) {
-		rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, returns_vals[output_stack_types + i], insert_index, "");
-		++insert_index;
-	}
-	LLVMBuildRet(env.llvm_builder, rstruct);
 
+	LLVMBuildRet(env.llvm_builder, rstruct);
 	return;
 }
 
 inline void llvm_make_function_call(environment& env, interpreted_word_instance& wi, std::span<int32_t const> desc) {
+	state_stack& ts = *(env.compiler_stack.back()->working_state());
+
+	// stack matching
+	int32_t match_position = 0;
+	std::vector<int32_t> type_subs;
 	std::vector<LLVMValueRef> params;
-	int32_t count_return_values = 0;
+	std::vector<LLVMTypeRef> return_group;
 
-	{
-		int32_t match_position = 0;
-		int32_t output_counter = 0;
-		// stack matching
-
-		//int32_t consumed_stack_cells = 0;
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false) {
-				params.push_back(env.compiler_stack.back()->working_state()->main_ex_back(0));
-			}
-			env.compiler_stack.back()->working_state()->pop_main();
-			++match_position;
-			//++consumed_stack_cells;
-		}
-
-		++match_position; // skip -1
-
-		// output stack
-		int32_t first_output_stack = match_position;
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(output_counter >= wi.llvm_parameter_permutation.size() || wi.llvm_parameter_permutation[output_counter] == -1) {
-				++count_return_values;
-			}
-			++match_position;
-			++output_counter;
-		}
-		++match_position; // skip -1
-
-		// return stack matching
-		//int32_t consumed_rstack_cells = 0;
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(env.dict.type_array[desc[match_position]].stateless() == false) {
-				params.push_back(env.compiler_stack.back()->working_state()->return_ex_back(0));
-			}
-			env.compiler_stack.back()->working_state()->pop_return();
-			++match_position;
-			//++consumed_rstack_cells;
-		}
-
-		++match_position; // skip -1
-
-		// output ret stack
-		int32_t ret_added = 0;
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(output_counter >= wi.llvm_parameter_permutation.size() || wi.llvm_parameter_permutation[output_counter] == -1) {
-				++count_return_values;
-			} 
-			++match_position;
-			++output_counter;
-		}
+	auto const ssize = int32_t(ts.main_size());
+	int32_t consumed_stack_cells = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		if(consumed_stack_cells >= ssize)
+			return;
+		auto match_result = fill_in_variable_types(ts.main_type_back(consumed_stack_cells), desc.subspan(match_position), type_subs, env);
+		if(!match_result.match_result)
+			return;
+		match_position += match_result.match_end;
+		++consumed_stack_cells;
 	}
+
+	++match_position; // skip -1
+
+	// skip over output stack
+	int32_t first_output_stack = match_position;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		enum_llvm_type(desc[match_position], return_group, env);
+		match_position += next_encoded_stack_type(desc.subspan(match_position));
+	}
+	//int32_t last_output_stack = match_position;
+	++match_position; // skip -1
+
+	// return stack matching
+	auto const rsize = int32_t(ts.return_size());
+	int32_t consumed_rstack_cells = 0;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		if(consumed_rstack_cells >= rsize)
+			return;
+		auto match_result = fill_in_variable_types(ts.return_type_back(consumed_rstack_cells), desc.subspan(match_position), type_subs, env);
+		if(!match_result.match_result)
+			return;
+		match_position += match_result.match_end;
+		++consumed_rstack_cells;
+	}
+
+	++match_position; // skip -1
+
+	auto ret_stack_start = match_position;
+	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
+		enum_llvm_type(desc[match_position], return_group, env);
+		++match_position;
+	}
+
+
+	auto ind_bytes = ts.main_byte_back_at(consumed_stack_cells);
+	auto inr_bytes = ts.return_byte_back_at(consumed_rstack_cells);
+
+	LLVMValueRef* input_dptr = (LLVMValueRef*)(ts.main_back_ptr_at(consumed_stack_cells));
+	LLVMValueRef* input_rptr = (LLVMValueRef*)(ts.return_back_ptr_at(consumed_rstack_cells));
+
+	params.insert(params.end(), input_dptr, input_dptr + ind_bytes / 8);
+	params.insert(params.end(), input_rptr, input_rptr + inr_bytes / 8);
+
+	// drop consumed types
+	ts.resize(ssize - consumed_stack_cells, rsize - consumed_rstack_cells);
 
 	assert(wi.llvm_function);
 	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation), wi.llvm_function, params.data(), uint32_t(params.size()), "");
 	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
 
-	{
-		int32_t match_position = 0;
-		uint32_t extract_index = 0;
-		// stack matching
+	int32_t outd_bytes = 0;
+	int32_t outr_bytes = 0;
+	int32_t outm_slots = 0;
+	int32_t outr_slots = 0;
 
-		//int32_t consumed_stack_cells = 0;
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			++match_position;
-		}
+	// add returned stack types
+	while(first_output_stack < int32_t(desc.size()) && desc[first_output_stack] != -1) {
+		auto result = resolve_span_type(desc.subspan(first_output_stack), type_subs, env);
+		first_output_stack += result.end_match_pos;
+		ts.push_back_main(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		outd_bytes += env.dict.type_array[result.type].cell_size * 8;
+		++outm_slots;
+	}
 
-		++match_position; // skip -1
+	// output ret stack
+	// add new types
+	//int32_t ret_added = 0;
+	while(ret_stack_start < int32_t(desc.size()) && desc[ret_stack_start] != -1) {
+		auto result = resolve_span_type(desc.subspan(ret_stack_start), type_subs, env);
+		ret_stack_start += result.end_match_pos;
+		ts.push_back_return(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		outr_bytes += env.dict.type_array[result.type].cell_size * 8;
+		++outr_slots;
+	}
 
-		int32_t output_counter = 0;
-		// output stack
-		int32_t first_output_stack = match_position;
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(env.dict.type_array[desc[match_position]].stateless()) {
-				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, nullptr);
-			} else if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
-				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, params[wi.llvm_parameter_permutation[output_counter]]);
-			} else if(count_return_values > 1) {
-				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, LLVMBuildExtractValue(env.llvm_builder, retvalue, extract_index, ""));
-				++extract_index;
+	LLVMValueRef* output_dptr = (LLVMValueRef*)(ts.main_back_ptr_at(outm_slots));
+	LLVMValueRef* output_rptr = (LLVMValueRef*)(ts.return_back_ptr_at(outr_slots));
+
+	bool multiple_returns = (outd_bytes + outr_bytes) > 8;
+
+	int32_t pinsert_index = 0;
+	uint32_t grabbed_o_index = 0;
+
+	for(int32_t i = 0; i < outd_bytes / 8; --i) {
+		if(pinsert_index >= int32_t(wi.llvm_parameter_permutation.size()) || wi.llvm_parameter_permutation[pinsert_index] == -1) {
+			if(multiple_returns) {
+				if(return_group[pinsert_index] == llvm_type(fif_bool, env)) {
+					output_dptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+				} else {
+					output_dptr[i] = LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, "");
+				}
 			} else {
-				env.compiler_stack.back()->working_state()->push_back_main(desc[match_position], 0, retvalue);
+				output_dptr[i] = retvalue;
 			}
-			++match_position;
-			++output_counter;
+			++grabbed_o_index;
+		} else {
+			output_dptr[i] = params[wi.llvm_parameter_permutation[pinsert_index]];
 		}
-		++match_position; // skip -1
-
-		// return stack matching
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			++match_position;
-		}
-
-		++match_position; // skip -1
-
-		// output ret stack
-		int32_t ret_added = 0;
-		while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-			if(env.dict.type_array[desc[match_position]].stateless()) {
-				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, nullptr);
-			}if(output_counter < wi.llvm_parameter_permutation.size() && wi.llvm_parameter_permutation[output_counter] != -1) {
-				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, params[wi.llvm_parameter_permutation[output_counter]]);
-			} else if(count_return_values > 1) {
-				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, LLVMBuildExtractValue(env.llvm_builder, retvalue, extract_index, ""));
-				++extract_index;
+		++pinsert_index;
+	}
+	for(int32_t i = 0; i < outr_bytes / 8; --i) {
+		if(pinsert_index >= int32_t(wi.llvm_parameter_permutation.size()) || wi.llvm_parameter_permutation[pinsert_index] == -1) {
+			if(multiple_returns) {
+				if(return_group[pinsert_index] == llvm_type(fif_bool, env)) {
+					output_rptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+				} else {
+					output_rptr[i] = LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, "");
+				}
 			} else {
-				env.compiler_stack.back()->working_state()->push_back_return(desc[match_position], 0, retvalue);
+				output_dptr[i] = retvalue;
 			}
-			++match_position;
-			++output_counter;
+			++grabbed_o_index;
+		} else {
+			output_rptr[i] = params[wi.llvm_parameter_permutation[pinsert_index]];
 		}
+		++pinsert_index;
 	}
 }
 #endif
@@ -3109,9 +3545,432 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 inline std::vector<int32_t> expand_stack_description(state_stack& initial_stack_state, std::span<const int32_t> desc, int32_t stack_consumed, int32_t rstack_consumed);
 inline bool compare_stack_description(std::span<const int32_t> a, std::span<const int32_t> b);
 
+
+inline void load_from_llvm_pointer(int32_t struct_type, state_stack& ws, LLVMValueRef ptr_expression, environment& env) {
+#ifdef USE_LLVM
+	switch(struct_type) {
+		case fif_i32:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_f32:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_bool:
+		{
+			auto expr = LLVMBuildTrunc(env.llvm_builder, LLVMBuildLoad2(env.llvm_builder, LLVMInt8TypeInContext(env.llvm_context), ptr_expression, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_type:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_i64:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_f64:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_u32:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_u64:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_i16:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_u16:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_i8:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_u8:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_nil:
+			break;
+		case fif_ptr:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_opaque_ptr:
+		{
+			auto expr = LLVMBuildLoad2(env.llvm_builder, llvm_type(struct_type, env), ptr_expression, "");
+			ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+			break;
+		}
+		case fif_struct:
+			break;
+		case fif_anon_struct:
+			break;
+		case fif_stack_token:
+			break;
+		case fif_array:
+			break;
+		default:
+			if(env.dict.type_array[struct_type].is_struct_template()) {
+				break;
+			} else if(env.dict.type_array[struct_type].stateless()) {
+				break;
+			} else if(env.dict.type_array[struct_type].is_struct()) {
+				if(env.dict.type_array[struct_type].is_memory_type()) {
+					auto expr = LLVMBuildLoad2(env.llvm_builder, LLVMPointerTypeInContext(env.llvm_context, 0), ptr_expression, "");
+					ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+					break;
+				} else {
+					auto current_ds_size = ws.main_size();
+					auto current_ds_byte = ws.main_byte_size();
+
+					auto ltype = llvm_type(struct_type, env);
+					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count; ++j) {
+						auto st = env.dict.all_stack_types[env.dict.type_array[struct_type].decomposed_types_start + j];
+						if(env.dict.type_array[st].stateless() == false) {
+							// recurse
+							auto sub_ptr = LLVMBuildStructGEP2(env.llvm_builder, ltype, ptr_expression, uint32_t(j - 1), "");
+							load_from_llvm_pointer(st, ws, sub_ptr, env);
+						}
+					}
+
+					assert(size_t(env.dict.type_array[struct_type].cell_size * 8) == ws.main_byte_size() - current_ds_byte);
+					vsize_obj condensed_struct(struct_type, uint32_t(env.dict.type_array[struct_type].cell_size * 8), ws.main_ptr_at(current_ds_size));
+					ws.resize(current_ds_size, ws.return_size());
+					ws.push_back_main(condensed_struct);
+				}
+			} else if(env.dict.type_array[struct_type].is_pointer()) {
+				auto expr = LLVMBuildLoad2(env.llvm_builder, LLVMPointerTypeInContext(env.llvm_context, 0), ptr_expression, "");
+				ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+				break;
+			} else if(env.dict.type_array[struct_type].is_array()) {
+				if(env.dict.type_array[struct_type].is_memory_type()) {
+					auto expr = LLVMBuildLoad2(env.llvm_builder, LLVMPointerTypeInContext(env.llvm_context, 0), ptr_expression, "");
+					ws.push_back_main(vsize_obj(struct_type, 8, (unsigned char*)(&expr)));
+					break;
+				} else {
+					assert(false);
+				}
+			} else {
+				assert(false);
+			}
+	}
+#endif
+}
+
+inline void store_to_llvm_pointer(int32_t struct_type, state_stack& ws, LLVMValueRef ptr_expression, environment& env) {
+#ifdef USE_LLVM
+	switch(struct_type) {
+		case fif_i32:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_f32:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_bool:
+		{
+			auto extended = LLVMBuildZExt(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), LLVMInt8TypeInContext(env.llvm_context), "");
+			LLVMBuildStore(env.llvm_builder, extended, ptr_expression);
+			break;
+		}
+		case fif_type:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_i64:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_f64:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_u32:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_u64:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_i16:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_u16:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_i8:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_u8:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_nil:
+			break;
+		case fif_ptr:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_opaque_ptr:
+		{
+			LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+			break;
+		}
+		case fif_struct:
+			break;
+		case fif_anon_struct:
+			break;
+		case fif_stack_token:
+			break;
+		case fif_array:
+			break;
+		default:
+			if(env.dict.type_array[struct_type].is_struct_template()) {
+				break;
+			} else if(env.dict.type_array[struct_type].stateless()) {
+				break;
+			} else if(env.dict.type_array[struct_type].is_struct()) {
+				if(env.dict.type_array[struct_type].is_memory_type()) {
+					LLVMBuildMemCpy(env.llvm_builder, ptr_expression, 1, ws.popr_main().as<LLVMValueRef>(), 1, LLVMSizeOf(llvm_type(struct_type, env)));
+					break;
+				} else {
+					auto current_ds_size = ws.main_size();
+					auto current_ds_byte = ws.main_byte_size();
+
+					auto ltype = llvm_type(struct_type, env);
+					auto svalue = ws.popr_main();
+					int32_t consumed_cells = 0;
+
+					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count; ++j) {
+						auto st = env.dict.all_stack_types[env.dict.type_array[struct_type].decomposed_types_start + j];
+						if(env.dict.type_array[st].stateless() == false) {
+							// recurse
+							ws.push_back_main(vsize_obj(st, env.dict.type_array[st].cell_size * 8, svalue.data() + consumed_cells * 8));
+							auto sub_ptr = LLVMBuildStructGEP2(env.llvm_builder, ltype, ptr_expression, uint32_t(j - 1), "");
+							store_to_llvm_pointer(st, ws, sub_ptr, env);
+
+							consumed_cells += env.dict.type_array[st].cell_size;
+						}
+					}
+				}
+			} else if(env.dict.type_array[struct_type].is_pointer()) {
+				LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+				break;
+			} else if(env.dict.type_array[struct_type].is_array()) {
+				if(env.dict.type_array[struct_type].is_memory_type()) {
+					LLVMBuildMemCpy(env.llvm_builder, ptr_expression, 1, ws.popr_main().as<LLVMValueRef>(), 1, LLVMSizeOf(llvm_type(struct_type, env)));
+					break;
+				} else {
+					assert(false);
+				}
+			} else {
+				assert(false);
+			}
+	}
+#endif
+}
+
+inline void store_difference_to_llvm_pointer(int32_t struct_type, state_stack& ws, vsize_obj original, LLVMValueRef ptr_expression, environment& env) {
+#ifdef USE_LLVM
+	switch(struct_type) {
+		case fif_i32:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_f32:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_bool:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>()) {
+				auto extended = LLVMBuildZExt(env.llvm_builder, ex, LLVMInt8TypeInContext(env.llvm_context), "");
+				LLVMBuildStore(env.llvm_builder, extended, ptr_expression);
+			}
+			break;
+		}
+		case fif_type:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_i64:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_f64:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_u32:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_u64:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_i16:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_u16:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_i8:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_u8:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_nil:
+			break;
+		case fif_ptr:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_opaque_ptr:
+		{
+			if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+				LLVMBuildStore(env.llvm_builder, ex, ptr_expression);
+			break;
+		}
+		case fif_struct:
+			break;
+		case fif_anon_struct:
+			break;
+		case fif_stack_token:
+			break;
+		case fif_array:
+			break;
+		default:
+			if(env.dict.type_array[struct_type].is_struct_template()) {
+				break;
+			} else if(env.dict.type_array[struct_type].stateless()) {
+				break;
+			} else if(env.dict.type_array[struct_type].is_struct()) {
+				if(env.dict.type_array[struct_type].is_memory_type()) {
+					assert(false);
+					break;
+				} else {
+					auto current_ds_size = ws.main_size();
+					auto current_ds_byte = ws.main_byte_size();
+
+					auto ltype = llvm_type(struct_type, env);
+					auto svalue = ws.popr_main();
+					int32_t consumed_cells = 0;
+
+					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count; ++j) {
+						auto st = env.dict.all_stack_types[env.dict.type_array[struct_type].decomposed_types_start + j];
+						if(env.dict.type_array[st].stateless() == false) {
+							// recurse
+							ws.push_back_main(vsize_obj(st, env.dict.type_array[st].cell_size * 8, svalue.data() + consumed_cells * 8));
+							vsize_obj old_subobj(st, env.dict.type_array[st].cell_size * 8, original.data() + consumed_cells * 8);
+							auto sub_ptr = LLVMBuildStructGEP2(env.llvm_builder, ltype, ptr_expression, uint32_t(j - 1), "");
+							store_difference_to_llvm_pointer(st, ws, old_subobj, sub_ptr, env);
+
+							consumed_cells += env.dict.type_array[st].cell_size;
+						}
+					}
+				}
+			} else if(env.dict.type_array[struct_type].is_pointer()) {
+				if(auto ex = ws.popr_main().as<LLVMValueRef>(); ex != original.as<LLVMValueRef>())
+					LLVMBuildStore(env.llvm_builder, ws.popr_main().as<LLVMValueRef>(), ptr_expression);
+				break;
+			} else if(env.dict.type_array[struct_type].is_array()) {
+				if(env.dict.type_array[struct_type].is_memory_type()) {
+					assert(false);
+					break;
+				} else {
+					assert(false);
+				}
+			} else {
+				assert(false);
+			}
+	}
+#endif
+}
+
 class locals_holder : public opaque_compiler_data {
 public:
-	ankerl::unordered_dense::map<std::string, int32_t> vars;
+	ankerl::unordered_dense::map<std::string, lvar_description> vars;
 	environment& env;
 	const bool llvm_mode;
 	int32_t initial_bank_offset = 0;
@@ -3120,79 +3979,68 @@ public:
 		initial_bank_offset = env.compiler_stack.back()->size_lvar_storage();
 	}
 
-	virtual int32_t get_var(std::string const& name)override {
+	virtual lvar_description get_var(std::string const& name) override {
 		if(auto it = vars.find(name); it != vars.end()) {
 			return it->second;
 		}
-		return parent ? parent->get_var(name) : -1;
+		return parent ? parent->get_var(name) : lvar_description{ -1, -1, 0, false };
 	}
-	virtual int32_t create_var(std::string const& name, int32_t type) override {
-		if(auto it = vars.find(name); it != vars.end()) {
-			return -1;
+	virtual int32_t create_var(std::string const& name, int32_t type, int32_t size, unsigned char* data, bool memory_variable, bool reassign) override {
+		if(reassign) {
+			auto it = vars.find(name); 
+			if(it == vars.end()) {
+				return parent->create_var(name, type, size, data, memory_variable, reassign);
+			}
+			if(it->second.type != type || it->second.size != size || it->second.memory_variable) {
+				return -1;
+			}
+			auto ptr = env.compiler_stack.back()->local_bytes_at_offset(it->second.offset);
+			memcpy(ptr, data, size);
+
+			return it->second.offset;
+		} else {
+			if(auto it = vars.find(name); it != vars.end() || parent->get_var(name).type != -1) {
+				return -1;
+			}
+			auto offset = env.compiler_stack.back()->reserve_local_storage(size);
+			auto ptr = env.compiler_stack.back()->local_bytes_at_offset(offset);
+			memcpy(ptr, data, size);
+
+			vars.insert_or_assign(name, lvar_description{ type, offset, size, memory_variable });
+
+			return offset;
 		}
-		
-		auto new_pos = env.compiler_stack.back()->size_lvar_storage();
-		env.compiler_stack.back()->resize_lvar_storage(new_pos + 1);
-		auto data_ptr = env.compiler_stack.back()->get_lvar_storage(new_pos);
-
-		vars.insert_or_assign(name, new_pos);
-		data_ptr->is_stack_variable = true;
-		data_ptr->type = type;
-#ifdef USE_LLVM
-		data_ptr->expression = llvm_mode ? LLVMBuildAlloca(env.llvm_builder, env.dict.type_array[type].llvm_type, name.c_str()) : nullptr;
-#endif
-		return new_pos;
-	}
-	virtual int32_t create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression) override {
-		if(auto it = vars.find(name); it != vars.end()) {
-			return -1;
-		}
-
-		auto new_pos = env.compiler_stack.back()->size_lvar_storage();
-		env.compiler_stack.back()->resize_lvar_storage(new_pos + 1);
-		auto data_ptr = env.compiler_stack.back()->get_lvar_storage(new_pos);
-
-		vars.insert_or_assign(name, new_pos);
-		data_ptr->is_stack_variable = false;
-		data_ptr->type = type;
-		if(!expression)
-			data_ptr->data = data;
-		else
-			data_ptr->expression = expression;
-
-		return new_pos;
 	}
 
 	virtual void delete_locals() const override {
 		auto* ws = env.compiler_stack.back()->working_state();
+		auto const mode = env.mode;
 		for(auto& l : vars) {
-			auto data_ptr = env.compiler_stack.back()->get_lvar_storage(l.second);
-			if(env.dict.type_array[data_ptr->type].stateless() == false) {
-				if(env.mode == fif_mode::compiling_bytecode) {
-					if(env.dict.type_array[data_ptr->type].flags != 0) {
-						if(data_ptr->is_stack_variable) {
-							ws->push_back_main(data_ptr->type, data_ptr->data, nullptr);
-							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-						} else {
-							ws->push_back_main(data_ptr->type, data_ptr->data, nullptr);
-							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-						}
-					}
-				} else if(env.mode == fif_mode::compiling_llvm) {
-					if(env.dict.type_array[data_ptr->type].flags != 0) {
-						if(data_ptr->is_stack_variable) {
-#ifdef USE_LLVM
-							auto iresult = LLVMBuildLoad2(env.llvm_builder, env.dict.type_array[data_ptr->type].llvm_type, data_ptr->expression, "");
-#else
-							void* iresult = nullptr;
-#endif
-							ws->push_back_main(data_ptr->type, 0, iresult);
-							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-						} else {
-							ws->push_back_main(data_ptr->type, 0, data_ptr->expression);
-							execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-						}
-					}
+			auto data_ptr = env.compiler_stack.back()->local_bytes_at_offset(l.second.offset);
+			if(mode == fif_mode::compiling_bytecode) {
+				if(l.second.memory_variable) {
+					ws->push_back_main(vsize_obj(l.second.type, l.second.size, data_ptr));
+					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				} else {
+					ws->push_back_main(vsize_obj(l.second.type, l.second.size, data_ptr));
+					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				}
+			} else if(mode == fif_mode::interpreting) {
+				if(l.second.memory_variable) {
+					ws->push_back_main(vsize_obj(l.second.type, l.second.size, data_ptr));
+					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				} else {
+					ws->push_back_main(vsize_obj(l.second.type, l.second.size, data_ptr));
+					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				}
+			} else if(mode == fif_mode::compiling_llvm) {
+				if(l.second.memory_variable) {
+					vsize_obj temp(l.second.type, l.second.size, data_ptr);
+					load_from_llvm_pointer(l.second.type, *ws, temp.as<LLVMValueRef>(), env);
+					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				} else {
+					ws->push_back_main(vsize_obj(l.second.type, l.second.size, data_ptr));
+					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 				}
 			}
 		}
@@ -3222,16 +4070,14 @@ public:
 		if(typechecking_mode(env.mode)) {
 			return true;
 		}
-		if(!skip_compilation(env.mode))
-			release_locals();
-
+		release_locals();
 		return true;
 	}
 };
 
 class runtime_function_scope : public locals_holder {
 public:
-	std::vector< internal_lvar_data> lvar_store;
+	std::vector<unsigned char> lvar_store;
 
 	runtime_function_scope(opaque_compiler_data* p, environment& e) : locals_holder(p, e) {
 	}
@@ -3242,32 +4088,26 @@ public:
 	virtual control_structure get_type() override {
 		return control_structure::rt_function;
 	}
-	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
-		return &(lvar_store[offset]);
+
+	virtual int32_t reserve_local_storage(uint32_t byte_size) override {
+		auto sz = lvar_store.size();
+		lvar_store.resize(sz + byte_size, 0);
+		return int32_t(sz);
+	}
+	virtual unsigned char* local_bytes_at_offset(int32_t offset) override {
+		return lvar_store.data() + offset;
 	}
 	virtual void resize_lvar_storage(int32_t sz) override {
-		if(sz > 0 && uint32_t(sz) > lvar_store.size())
-			lvar_store.resize(uint32_t(sz));
-	}
-	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
-		return lvar_store;
-	}
-	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
-		for(auto sz = v.size(); sz-->0;)
-			lvar_store[sz] = v[sz];
+		lvar_store.resize(size_t(sz));
 	}
 	virtual int32_t size_lvar_storage() override {
 		return int32_t(lvar_store.size());
 	}
-	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
-		if(lvar_store[index].type != type)
-			return false;
-
-		if(!expression)
-			lvar_store[index].data = data;
-		else
-			lvar_store[index].expression = expression;
-		return true;
+	virtual internal_locals_storage copy_lvar_storage() override {
+		return lvar_store;
+	}
+	virtual void set_lvar_storage(internal_locals_storage const& v) override {
+		lvar_store = v;
 	}
 };
 inline int32_t* call_function(state_stack& s, int32_t* p, environment* env) {
@@ -3330,26 +4170,32 @@ public:
 	virtual state_stack* working_state() override {
 		return interpreted_link ? interpreted_link->working_state() : nullptr;
 	}
-	virtual int32_t get_var(std::string const& name) override {
-		return interpreted_link ? interpreted_link->get_var(name) : -1;
+
+	virtual int32_t reserve_local_storage(uint32_t byte_size) override {
+		return interpreted_link ? interpreted_link->reserve_local_storage(byte_size) : -1;
 	}
-	virtual int32_t create_var(std::string const& name, int32_t type) override {
-		return interpreted_link ? interpreted_link->create_var(name, type) : -1;
+	virtual unsigned char* local_bytes_at_offset(int32_t offset) override {
+		return interpreted_link ? interpreted_link->local_bytes_at_offset(offset) : nullptr;
 	}
-	virtual int32_t create_let(std::string const& name, int32_t type, int64_t data, LLVMValueRef expression)override {
-		return interpreted_link ? interpreted_link->create_let(name, type, data, expression) : -1;
+	virtual void resize_lvar_storage(int32_t sz) override {
+		if(interpreted_link)
+			interpreted_link->resize_lvar_storage(sz);
 	}
-	virtual internal_lvar_data* get_lvar_storage(int32_t offset) {
-		return interpreted_link ? interpreted_link->get_lvar_storage(offset) : nullptr;
+	virtual int32_t size_lvar_storage() override {
+		return interpreted_link ? interpreted_link->size_lvar_storage() : 0;
 	}
-	virtual void resize_lvar_storage(int32_t sz) {
-		if(interpreted_link) interpreted_link->resize_lvar_storage(sz);
+	virtual internal_locals_storage copy_lvar_storage() override {
+		return interpreted_link ? interpreted_link->copy_lvar_storage() : internal_locals_storage{ };
 	}
-	virtual std::vector< internal_lvar_data> copy_lvar_storage() {
-		return interpreted_link ? interpreted_link->copy_lvar_storage() : std::vector< internal_lvar_data>{ };
+	virtual void set_lvar_storage(internal_locals_storage const& v) override {
+		if(interpreted_link)
+			interpreted_link->set_lvar_storage(v);
 	}
-	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
-		if(interpreted_link) interpreted_link->set_lvar_storage(v);
+	virtual int32_t create_var(std::string const& name, int32_t type, int32_t size, unsigned char* data, bool memory_variable, bool reassign) override {
+		return interpreted_link ? interpreted_link->create_var(name, type, size, data, memory_variable, reassign) : -1;
+	}
+	virtual lvar_description get_var(std::string const& name) override {
+		return interpreted_link ? interpreted_link->get_var(name) : lvar_description{ -1, -1, 0, false };
 	}
 	virtual void set_working_state(state_stack&& p) override {
 		if(interpreted_link)
@@ -3375,40 +4221,33 @@ inline void restore_compiler_stack_mode(environment& env) {
 	env.compiler_stack.back()->finish(env);
 	env.compiler_stack.pop_back();
 }
+
 class outer_interpreter : public locals_holder {
 public:
 	state_stack interpreter_state;
-	std::vector< internal_lvar_data> lvar_store;
+	std::vector<unsigned char> lvar_store;
 
 	outer_interpreter(environment& env) : locals_holder(nullptr, env) {
 	}
-
-	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
-		return &(lvar_store[offset]);
+	virtual int32_t reserve_local_storage(uint32_t byte_size) override {
+		auto sz = lvar_store.size();
+		lvar_store.resize(sz + byte_size, 0);
+		return int32_t(sz);
+	}
+	virtual unsigned char* local_bytes_at_offset(int32_t offset) override {
+		return lvar_store.data() + offset;
 	}
 	virtual void resize_lvar_storage(int32_t sz) override {
-		if(sz > 0)
-			lvar_store.resize(uint32_t(sz));
-	}
-	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
-		return lvar_store;
+		lvar_store.resize(size_t(sz));
 	}
 	virtual int32_t size_lvar_storage() override {
 		return int32_t(lvar_store.size());
 	}
-
-	virtual int32_t create_var(std::string const& name, int32_t type) override {
-		return -1;
+	virtual internal_locals_storage copy_lvar_storage() override {
+		return lvar_store;
 	}
-
-	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
-		if(lvar_store[index].type != type)
-			return false;
-		if(!expression)
-			lvar_store[index].data = data;
-		else
-			lvar_store[index].expression = expression;
-		return true;
+	virtual void set_lvar_storage(internal_locals_storage const& v) override {
+		lvar_store = v;
 	}
 	virtual control_structure get_type() override {
 		return control_structure::none;
@@ -3548,17 +4387,15 @@ inline bool stack_types_match(state_stack& a, state_stack& b) {
 }
 
 inline int32_t* conditional_jump(state_stack& s, int32_t* p, environment* env) {
-	auto value = s.main_data_back(0);
-	s.pop_main();
-	if(value == 0)
+	auto value = s.popr_main().as<bool>();
+	if(!value)
 		return p + *(p + 2);
 	else
 		return p + 3;
 }
 inline int32_t* reverse_conditional_jump(state_stack& s, int32_t* p, environment* env) {
-	auto value = s.main_data_back(0);
-	s.pop_main();
-	if(value != 0)
+	auto value = s.popr_main().as<bool>();
+	if(value)
 		return p + *(p + 2);
 	else
 		return p + 3;
@@ -3569,7 +4406,7 @@ inline int32_t* unconditional_jump(state_stack& s, int32_t* p, environment* env)
 
 struct branch_source {
 	state_stack stack;
-	std::vector< internal_lvar_data> locals_state;
+	std::vector<unsigned char> locals_state;
 	LLVMBasicBlockRef from_block = nullptr;
 	LLVMValueRef conditional_expression = nullptr;
 	LLVMBasicBlockRef untaken_block = nullptr;
@@ -3777,50 +4614,57 @@ inline void branch_target::materialize(environment& env) {
 	} else if(typechecking_mode(env.mode) && !skip_compilation(env.mode)) {
 		if(branches_to_here.size() > 0) {
 			auto new_state = branches_to_here[0].stack;
+			auto bsize = new_state.main_byte_size();
+			int64_t* ptr = (int64_t*)(new_state.main_ptr_at(0));
 
-			for(uint32_t i = 0; i < new_state.main_size(); ++i) {
+			for(uint32_t i = 0; i < bsize / 8; ++i) {
 				bool mismatch = false;
-				auto base_expr = branches_to_here[0].stack.main_data(i);
+				auto base_expr = ptr[i];
 				for(auto& b : branches_to_here) {
-					if(base_expr != b.stack.main_data(i)) {
+					int64_t* optr = (int64_t*)(b.stack.main_ptr_at(0));
+					if(base_expr != optr[i]) {
 						mismatch = true;
 						break;
 					}
 				}
 				if(mismatch) {
-					new_state.set_main_data(i, env.new_ident());
+					ptr[i] = env.new_ident();
 				}
 			}
-			for(uint32_t i = 0; i < new_state.return_size(); ++i) {
+
+			auto rbsize = new_state.return_byte_size();
+			int64_t* rptr = (int64_t*)(new_state.return_ptr_at(0));
+
+			for(uint32_t i = 0; i < rbsize / 8; ++i) {
 				bool mismatch = false;
-				auto base_expr = branches_to_here[0].stack.return_data(i);
+				auto base_expr = rptr[i];
 				for(auto& b : branches_to_here) {
-					if(base_expr != b.stack.return_data(i)) {
+					int64_t* optr = (int64_t*)(b.stack.return_ptr_at(0));
+					if(base_expr != optr[i]) {
 						mismatch = true;
 						break;
 					}
 				}
 				if(mismatch) {
-					new_state.set_return_data(i, env.new_ident());
+					rptr[i] = env.new_ident();
 				}
 			}
+
 			auto lsz = env.compiler_stack.back()->size_lvar_storage();
-			uint32_t i = 0;
-			for(; i < uint32_t(lsz); ++i) {
+			int32_t i = 0;
+			for(; i < lsz / 8; ++i) {
 				bool mismatch = false;
-				int32_t type = 0;
-				auto base_expr = i < branches_to_here[0].locals_state.size() ? branches_to_here[0].locals_state[i].data : 0;
+				auto base_expr = i * 8 < branches_to_here[0].locals_state.size() ? *((int64_t*)(branches_to_here[0].locals_state.data() + i * 8)) : 0;
 				for(auto& b : branches_to_here) {
-					if(i < b.locals_state.size() && b.locals_state[i].data != base_expr) {
-						type = b.locals_state[i].type;
+					if(i * 8 < b.locals_state.size() && *((int64_t*)(b.locals_state.data() + i * 8)) != base_expr) {
 						mismatch = true;
 						break;
 					}
 				}
 				if(mismatch) {
-					env.compiler_stack.back()->get_lvar_storage(int32_t(i))->data = env.new_ident();
+					*((int64_t*)(env.compiler_stack.back()->local_bytes_at_offset(i * 8))) = env.new_ident();
 				} else if(i < branches_to_here[0].locals_state.size()) {
-					env.compiler_stack.back()->get_lvar_storage(int32_t(i))->data = branches_to_here[0].locals_state[i].data;
+					*((int64_t*)(env.compiler_stack.back()->local_bytes_at_offset(i * 8))) = *((int64_t*)(branches_to_here[0].locals_state.data() + i * 8));
 				}
 			}
 			env.compiler_stack.back()->set_working_state(std::move(new_state));
@@ -3844,55 +4688,61 @@ inline void branch_target::materialize(environment& env) {
 			LLVMPositionBuilderAtEnd(env.llvm_builder, block_location);
 			auto new_state = s->stack;
 			
-			for(uint32_t i = 0; i < new_state.main_size(); ++i) {
+			auto bsize = new_state.main_byte_size();
+			LLVMValueRef* ptr = (LLVMValueRef*)(new_state.main_ptr_at(0));
+
+			for(uint32_t i = 0; i < bsize / 8; ++i) {
 				bool mismatch = false;
-				auto base_expr = s->stack.main_ex(i);
+				auto base_expr = ptr[i];
 				for(auto& b : branches_to_here) {
-					if(base_expr != b.stack.main_ex(i)) {
+					LLVMValueRef* optr = (LLVMValueRef*)(b.stack.main_ptr_at(0));
+					if(base_expr != optr[i]) {
 						mismatch = true;
 						break;
 					}
 				}
 				if(mismatch) {
-					auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[new_state.main_type(i)].llvm_type, "auto-d-phi");
+					auto node = LLVMBuildPhi(env.llvm_builder, LLVMTypeOf(ptr[i]), "auto-d-phi");
 					phi_nodes.push_back(branch_target::pending_phi_node{ node, branch_target::node_source::data_stack, int32_t(i) });
-					new_state.set_main_ex(i, node);
+					ptr[i] = node;
 				}
 			}
-			for(uint32_t i = 0; i < new_state.return_size(); ++i) {
+
+			auto rbsize = new_state.return_byte_size();
+			LLVMValueRef* rptr = (LLVMValueRef*)(new_state.return_ptr_at(0));
+			for(uint32_t i = 0; i < rbsize / 8; ++i) {
 				bool mismatch = false;
-				auto base_expr = s->stack.return_ex(i);
+				auto base_expr = rptr[i];
 				for(auto& b : branches_to_here) {
-					if(base_expr != b.stack.return_ex(i)) {
+					LLVMValueRef* optr = (LLVMValueRef*)(b.stack.return_ptr_at(0));
+					if(base_expr != optr[i]) {
 						mismatch = true;
 						break;
 					}
 				}
 				if(mismatch) {
-					auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[new_state.return_type(i)].llvm_type, "auto-r-phi");
+					auto node = LLVMBuildPhi(env.llvm_builder, LLVMTypeOf(rptr[i]), "auto-r-phi");
 					phi_nodes.push_back(branch_target::pending_phi_node{ node, branch_target::node_source::return_stack, int32_t(i) });
-					new_state.set_return_ex(i, node);
+					rptr[i] = node;
 				}
 			}
 			auto lsz = env.compiler_stack.back()->size_lvar_storage();
 			uint32_t i = 0;
-			for(; i < uint32_t(lsz); ++i) {
+			for(; i < uint32_t(lsz / 8); ++i) {
 				bool mismatch = false;
-				int32_t type = 0;
-				auto base_expr = i < s->locals_state.size() ? s->locals_state[i].expression : nullptr;
+				auto base_expr = i * 8 < s->locals_state.size() ? *((LLVMValueRef*)(s->locals_state.data() + i * 8)) : 0;
 				for(auto& b : branches_to_here) {
-					if(i < b.locals_state.size() && b.locals_state[i].expression != base_expr) {
-						type = b.locals_state[i].type;
+					if(i * 8 < b.locals_state.size() && *((LLVMValueRef*)(b.locals_state.data() + i * 8)) != base_expr) {
 						mismatch = true;
 						break;
 					}
 				}
 				if(mismatch) {
-					auto node = LLVMBuildPhi(env.llvm_builder, env.dict.type_array[env.compiler_stack.back()->get_lvar_storage(int32_t(i))->type].llvm_type, "auto-l-phi");
+					auto node = LLVMBuildPhi(env.llvm_builder, LLVMTypeOf(*((LLVMValueRef*)(env.compiler_stack.back()->local_bytes_at_offset(i * 8)))), "auto-l-phi");
 					phi_nodes.push_back(branch_target::pending_phi_node{ node, branch_target::node_source::locals, int32_t(i) });
-					env.compiler_stack.back()->get_lvar_storage(int32_t(i))->expression = node;
-				} else if(i < s->locals_state.size()) {
-					env.compiler_stack.back()->get_lvar_storage(int32_t(i))->expression = s->locals_state[i].expression;
+					*((LLVMValueRef*)(env.compiler_stack.back()->local_bytes_at_offset(i * 8))) = node;
+				} else if(i * 8 < s->locals_state.size()) {
+					*((LLVMValueRef*)(env.compiler_stack.back()->local_bytes_at_offset(i * 8))) = *((LLVMValueRef*)(s->locals_state.data() + i * 8));
 				}
 			}
 			env.compiler_stack.back()->set_working_state(std::move(new_state));
@@ -3947,24 +4797,34 @@ inline void branch_target::finalize(environment& env) {
 					case branch_target::node_source::data_stack:
 						inc_vals.clear();
 						for(auto& br : branches_to_here) {
-							if(!br.speculative_branch)
-								inc_vals.push_back(br.stack.main_ex(size_t(pn.index)));
+							if(!br.speculative_branch) {
+								LLVMValueRef* ptr = (LLVMValueRef*)(br.stack.main_ptr_at(0));
+								inc_vals.push_back(ptr[pn.index]);
+							}
 						}
 						LLVMAddIncoming(pn.vref, inc_vals.data(), inc_blocks.data(), uint32_t(inc_blocks.size()));
 						break;
 					case branch_target::node_source::return_stack:
 						inc_vals.clear();
 						for(auto& br : branches_to_here) {
-							if(!br.speculative_branch)
-								inc_vals.push_back(br.stack.return_ex(size_t(pn.index)));
+							if(!br.speculative_branch) {
+								LLVMValueRef* ptr = (LLVMValueRef*)(br.stack.return_ptr_at(0));
+								inc_vals.push_back(ptr[pn.index]);
+							}
 						}
 						LLVMAddIncoming(pn.vref, inc_vals.data(), inc_blocks.data(), uint32_t(inc_blocks.size()));
 						break;
 					case branch_target::node_source::locals:
 						inc_vals.clear();
 						for(auto& br : branches_to_here) {
-							if(!br.speculative_branch)
-								inc_vals.push_back(br.locals_state[pn.index].expression);
+							if(!br.speculative_branch) {
+								if(size_t(pn.index * 8) < br.locals_state.size()) {
+									LLVMValueRef* ptr = (LLVMValueRef*)(br.locals_state.data());
+									inc_vals.push_back(ptr[pn.index]);
+								} else {
+									inc_vals.push_back(LLVMGetPoison(LLVMTypeOf(pn.vref)));
+								}
+							}
 						}
 						LLVMAddIncoming(pn.vref, inc_vals.data(), inc_blocks.data(), uint32_t(inc_blocks.size()));
 						break;
@@ -3986,7 +4846,7 @@ public:
 	state_stack iworking_state;
 	std::vector<int32_t> compiled_bytes;
 	std::vector<int32_t> type_subs;
-	std::vector< internal_lvar_data> lvar_store;
+	std::vector< unsigned char> lvar_store;
 	LLVMValueRef llvm_fn = nullptr;
 	LLVMBasicBlockRef current_block = nullptr;
 	size_t locals_size_position = 0;
@@ -4052,11 +4912,19 @@ public:
 			current_block = entry_block;
 #endif
 		} else if(typechecking_mode(env.mode)) {
-			for(auto i = iworking_state.main_size(); i-- > 0;) {
-				iworking_state.set_main_data(i, env.new_ident());
+			{
+				auto bsize = iworking_state.main_byte_size();
+				int64_t* ptr = (int64_t*)(iworking_state.main_ptr_at(0));
+				for(size_t i = 0; i < bsize / 8; ++i) {
+					ptr[i] = env.new_ident();
+				}
 			}
-			for(auto i = iworking_state.return_size(); i-- > 0;) {
-				iworking_state.set_return_data(i, env.new_ident());
+			{
+				auto bsize = iworking_state.return_byte_size();
+				int64_t* ptr = (int64_t*)(iworking_state.return_ptr_at(0));
+				for(size_t i = 0; i < bsize / 8; ++i) {
+					ptr[i] = env.new_ident();
+				}
 			}
 			iworking_state.min_main_depth = int32_t(iworking_state.main_size());
 			iworking_state.min_return_depth = int32_t(iworking_state.return_size());
@@ -4064,33 +4932,28 @@ public:
 		}
 
 	}
-	virtual internal_lvar_data* get_lvar_storage(int32_t offset) override {
-		return &(lvar_store[offset]);
+
+	virtual int32_t reserve_local_storage(uint32_t byte_size) override {
+		auto sz = lvar_store.size();
+		lvar_store.resize(sz + byte_size, 0);
+		max_locals_size = std::max(max_locals_size, int32_t(sz + byte_size));
+		return int32_t(sz);
+	}
+	virtual unsigned char* local_bytes_at_offset(int32_t offset) override {
+		return lvar_store.data() + offset;
 	}
 	virtual void resize_lvar_storage(int32_t sz) override {
-		max_locals_size = std::max(max_locals_size, sz);
-		if(sz > 0)
-			lvar_store.resize(uint32_t(sz));
-	}
-	virtual std::vector< internal_lvar_data> copy_lvar_storage() override {
-		return lvar_store;
-	}
-	virtual void set_lvar_storage(std::vector< internal_lvar_data> const& v) override {
-		max_locals_size = std::max(max_locals_size, int32_t(v.size()));
-		lvar_store = v;
+		lvar_store.resize(size_t(sz));
 	}
 	virtual int32_t size_lvar_storage() override {
 		return int32_t(lvar_store.size());
 	}
-	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
-		if(lvar_store[index].type != type)
-			return false;
-
-		if(!expression)
-			lvar_store[index].data = data;
-		else
-			lvar_store[index].expression = expression;
-		return true;
+	virtual internal_locals_storage copy_lvar_storage() override {
+		return lvar_store;
+	}
+	virtual void set_lvar_storage(internal_locals_storage const& v) override {
+		max_locals_size = std::max(max_locals_size, int32_t(v.size()));
+		lvar_store = v;
 	}
 	virtual std::vector<int32_t>* type_substitutions() override {
 		return &type_subs;
@@ -4340,7 +5203,7 @@ public:
 class conditional_scope : public locals_holder {
 public:
 	state_stack initial_state;
-	std::vector< internal_lvar_data> entry_locals_state;
+	std::vector< unsigned char> entry_locals_state;
 
 	branch_target scope_end;
 	branch_target else_target;
@@ -4362,7 +5225,7 @@ public:
 		entry_mode = env.mode;
 		entry_locals_state = env.compiler_stack.back()->copy_lvar_storage();
 		if(env.mode == fif_mode::interpreting) {
-			if(entry_state.main_data_back(0) != 0) {
+			if(entry_state.popr_main().as<bool>()) {
 				interpreter_first_branch = true;
 				interpreter_second_branch = false;
 			} else {
@@ -4370,11 +5233,9 @@ public:
 				interpreter_second_branch = true;
 				env.mode = surpress_branch(env.mode);
 			}
-			entry_state.pop_main();
 		} else if(env.mode == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
-			auto branch_condition = entry_state.main_ex_back(0);
-			entry_state.pop_main();
+			auto branch_condition = entry_state.popr_main().as<LLVMValueRef>();
 
 			if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
 				auto parent_block = *pb;
@@ -4399,14 +5260,11 @@ public:
 
 		initial_state = entry_state;
 	}
-	virtual bool re_let(int32_t index, int32_t type, int64_t data, LLVMValueRef expression) override {
-		return parent ? parent->re_let(index, type, data, expression) : true;
-	}
 	void and_if() {
 		auto wstate = env.compiler_stack.back()->working_state();
 
 		if(env.mode == fif_mode::interpreting) {
-			if(wstate->main_data_back(0) != 0) {
+			if(wstate->popr_main().as<bool>()) {
 				interpreter_first_branch = true;
 				interpreter_second_branch = false;
 			} else {
@@ -4415,7 +5273,6 @@ public:
 				release_locals();
 				env.mode = surpress_branch(env.mode);
 			}
-			wstate->pop_main();
 			return;
 		}
 
@@ -4426,8 +5283,7 @@ public:
 
 			if(env.mode == fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
-				auto branch_condition = wstate->main_ex_back(0);
-				wstate->pop_main();
+				auto branch_condition = wstate->popr_main().as<LLVMValueRef>();
 
 				if(auto pb = env.compiler_stack.back()->llvm_block(); pb) {
 					auto parent_block = *pb;
@@ -4464,8 +5320,7 @@ public:
 					return;
 				}
 
-				auto branch_condition = wstate->main_ex_back(0);
-				wstate->pop_main();
+				auto branch_condition = wstate->popr_main().as<LLVMValueRef>();
 
 				LLVMBasicBlockRef continuation = nullptr;
 #ifdef USE_LLVM
@@ -4595,7 +5450,7 @@ public:
 class while_loop_scope : public locals_holder {
 public:
 	state_stack initial_state;
-	std::vector< internal_lvar_data> entry_locals_state;
+	std::vector<unsigned char> entry_locals_state;
 
 	branch_target loop_start;
 	branch_target loop_exit;
@@ -4680,8 +5535,7 @@ public:
 				return;
 			}
 			
-			auto branch_condition = wstate->main_ex_back(0);
-			wstate->pop_main();
+			auto branch_condition = wstate->popr_main().as<LLVMValueRef>();
 
 			LLVMBasicBlockRef continuation = nullptr;
 #ifdef USE_LLVM
@@ -4704,11 +5558,10 @@ public:
 			}
 			return;
 		} else if(env.mode == fif_mode::interpreting) {
-			if(env.compiler_stack.back()->working_state()->main_data_back(0) == 0) {
+			if(env.compiler_stack.back()->working_state()->popr_main().as<bool>() == false) {
 				intepreter_skip_body = true;
 				env.mode = surpress_branch(env.mode);
 			}
-			env.compiler_stack.back()->working_state()->pop_main();
 			return;
 		}
 	}
@@ -4724,12 +5577,10 @@ public:
 
 		if(env.mode == fif_mode::interpreting) {
 			if(!saw_conditional && wstate->main_type_back(0) == fif_bool) {
-				if(wstate->main_data_back(0) == 0) {
-					wstate->pop_main();
+				if(wstate->popr_main().as<bool>() == false) {
 					release_locals();
 					return true;
 				}
-				wstate->pop_main();
 			}
 			if(!saw_conditional && wstate->main_type_back(0) != fif_bool) {
 				env.report_error("while loop terminated with an inappropriate conditional");
@@ -4805,8 +5656,7 @@ public:
 					}
 					return true;
 				}
-				auto branch_condition = wstate->main_ex_back(0);
-				wstate->pop_main();
+				auto branch_condition = wstate->popr_main().as<LLVMValueRef>();
 
 				LLVMBasicBlockRef continuation_block = nullptr;
 #ifdef USE_LLVM
@@ -4865,7 +5715,7 @@ public:
 class do_loop_scope : public locals_holder {
 public:
 	state_stack initial_state;
-	std::vector< internal_lvar_data> entry_locals_state;
+	std::vector< unsigned char> entry_locals_state;
 
 	branch_target loop_start;
 	branch_target loop_exit;
@@ -4934,12 +5784,10 @@ public:
 		auto wstate = env.compiler_stack.back()->working_state();
 		if(env.mode == fif_mode::interpreting) {
 			if(wstate->main_size() > 0 && wstate->main_type_back(0) == fif_bool) {
-				if(wstate->main_data_back(0) != 0) {
-					wstate->pop_main();
+				if(wstate->popr_main().as<bool>()) {
 					release_locals();
 					return true;
 				}
-				wstate->pop_main();
 			} else {
 				env.report_error("do loop terminated with an inappropriate conditional");
 				env.mode = fif_mode::error;
@@ -5011,8 +5859,7 @@ public:
 					}
 					return true;
 				}
-				auto branch_condition = wstate->main_ex_back(0);
-				wstate->pop_main();
+				auto branch_condition = wstate->popr_main().as<LLVMValueRef>();
 
 				LLVMBasicBlockRef continuation_block = nullptr;
 #ifdef USE_LLVM
@@ -5454,60 +6301,51 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 	return true;
 }
 
-inline internal_lvar_data* get_global_var(environment& env, std::string const& name) {
-	for(auto& p : env.compiler_stack) {
-		if(p->get_type() == control_structure::globals)
-			return static_cast<compiler_globals_layer*>(p.get())->get_global_var(name);
-	}
-	return nullptr;
-}
-
-inline int32_t* immediate_local(state_stack& s, int32_t* p, environment* e) {
-	int32_t index = *(p + 2);
+inline int32_t* immediate_mem_var(state_stack& s, int32_t* p, environment* e) {
+	int32_t index = *(p +2);
 	int32_t type = *(p + 3);
-	auto* l = e->compiler_stack.back()->get_lvar_storage(index);
+	auto* l = e->compiler_stack.back()->local_bytes_at_offset(index);
 	if(!l) {
 		e->report_error("unable to find local var");
 		return nullptr;
 	}
-	s.push_back_main(type, (int64_t)l, nullptr);
+	s.push_back_main(vsize_obj(type, uint32_t(sizeof(void*)), (unsigned char*)(&l)));
 	return p + 4;
 }
 
 inline int32_t* immediate_let(state_stack& s, int32_t* p, environment* e) {
-	auto index = *(p + 2);
-	auto ds = e->compiler_stack.back()->get_lvar_storage(index);
-	if(!ds) {
+	int32_t index = *(p + 2);
+	int32_t type = *(p + 3);
+	auto* l = e->compiler_stack.back()->local_bytes_at_offset(index);
+	if(!l) {
 		e->report_error("unable to find local let");
 		return nullptr;
 	}
-	s.push_back_main(ds->type, ds->data, nullptr);
-
-	execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-	
-	auto type_b = s.main_type_back(0);
-	auto dat_b = s.main_data_back(0);
-	ds->data = s.main_data_back(1);
-
-	s.pop_main();
-	s.pop_main();
-	s.push_back_main(type_b, dat_b, nullptr);
-
-	return p + 3;
+	s.push_back_main(vsize_obj(type, uint32_t(e->dict.type_array[type].byte_size), l));
+	return p + 4;
 }
 
 inline int32_t* immediate_global(state_stack& s, int32_t* p, environment* e) {
-	char* name = 0;
-	memcpy(&name, p + 2, 8);
-	auto* v = get_global_var(*e, std::string(name));
-	if(!v) {
+	int32_t gi = *(p + 2);
+	
+	auto* l = e->globals[gi].bytes.get();
+	if(l) {
+		if(e->globals[gi].constant) {
+			s.push_back_main(vsize_obj(e->globals[gi].type, uint32_t(e->dict.type_array[e->globals[gi].type].byte_size), l));
+		} else if(e->dict.type_array[e->globals[gi].type].is_memory_type() == false) {
+			int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), e->globals[gi].type, -1 };
+			std::vector<int32_t> subs;
+			auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, *e);
+
+			s.push_back_main(vsize_obj(mem_type.type, uint32_t(sizeof(void*)), (unsigned char*)(&l)));
+		} else {
+			s.push_back_main(vsize_obj(e->globals[gi].type, uint32_t(sizeof(void*)), (unsigned char*)(&l)));
+		}
+	} else {
 		e->report_error("unable to find global");
 		return nullptr;
 	}
-	int32_t type = 0;
-	memcpy(&type, p + 4, 4);
-	s.push_back_main(type, (int64_t)v, nullptr);
-	return p + 5;
+	return p + 3;
 }
 
 inline void execute_fif_word(parse_result word, environment& env, bool ignore_specializations) {
@@ -5750,78 +6588,68 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 				}
 			}
 		}
-	} else if(auto var = env.compiler_stack.back()->get_var(content_string); word.is_string == false && var != -1) {
-		auto vdata = env.compiler_stack.back()->get_lvar_storage(var);
-		if(vdata->is_stack_variable) {
-			int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), vdata->type, -1 };
+	} else if(auto var = env.compiler_stack.back()->get_var(content_string); word.is_string == false && var.type != -1) {
+		auto vdata = env.compiler_stack.back()->local_bytes_at_offset(var.offset);
+		if(var.memory_variable) {
+			int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), var.type, -1 };
 			std::vector<int32_t> subs;
 			auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
 
 			if(skip_compilation(env.mode)) {
 
 			} else if(typechecking_mode(env.mode)) {
-				ws->push_back_main(mem_type.type, (int64_t)(vdata), 0);
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), vdata));
 			} else if(env.mode == fif_mode::compiling_llvm) {
-				ws->push_back_main(mem_type.type, 0, vdata->expression);
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(LLVMValueRef), vdata));
 			} else if(env.mode == fif_mode::interpreting) {
-				ws->push_back_main(mem_type.type, (int64_t)(vdata), 0);
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(void*), (unsigned char*)(&vdata)));
 			} else if(env.mode == fif_mode::compiling_bytecode) {
 				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
 				if(cbytes) {
-					fif_call imm = immediate_local;
+					fif_call imm = immediate_mem_var;
 					uint64_t imm_bytes = 0;
 					memcpy(&imm_bytes, &imm, 8);
 					cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 					cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 
-					cbytes->push_back(var); // index
+					cbytes->push_back(var.offset); // index
 					cbytes->push_back(mem_type.type);
 				}
-				ws->push_back_main(mem_type.type, 0, 0);
+				ws->push_back_main(vsize_obj(mem_type.type, 0));
 			}
 		} else {
 			if(skip_compilation(env.mode)) {
 
 			} else if(typechecking_mode(env.mode)) {
-				auto data_in = vdata->data;
-				ws->push_back_main(vdata->type, vdata->data, nullptr);
-
+				ws->push_back_main(vsize_obj(var.type, var.size, vdata));
 				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
-				auto type_b = ws->main_type_back(0);
-				auto dat_b = ws->main_data_back(0);
-				if(vdata->data != ws->main_data_back(1)) {
-					if(!env.compiler_stack.back()->re_let(var, ws->main_type_back(1), ws->main_data_back(1), nullptr))
-						env.mode = fail_typechecking(env.mode);
-				}
 
-				ws->pop_main();
-				ws->pop_main();
-				ws->push_back_main(type_b, dat_b, nullptr);
+				auto new_copy = ws->popr_main();
+				auto old_copy = ws->popr_main();
+				if(old_copy.data()) {
+					memcpy(vdata, old_copy.data(), std::min(uint32_t(var.size), old_copy.size));
+				}
+				ws->push_back_main(new_copy);
 			} else if(env.mode == fif_mode::compiling_llvm) {
-				ws->push_back_main(vdata->type, 0, vdata->expression);
-
+				ws->push_back_main(vsize_obj(var.type, var.size, vdata));
 				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
-				auto type_b = ws->main_type_back(0);
-				auto dat_b = ws->main_ex_back(0);
-				if(vdata->expression != ws->main_ex_back(1)) {
-					if(!env.compiler_stack.back()->re_let(var, ws->main_type_back(1), 0, ws->main_ex_back(1)))
-						env.mode = fail_typechecking(env.mode);
+
+				auto new_copy = ws->popr_main();
+				auto old_copy = ws->popr_main();
+				if(old_copy.data()) {
+					memcpy(vdata, old_copy.data(), std::min(uint32_t(var.size), old_copy.size));
 				}
-
-				ws->pop_main();
-				ws->pop_main();
-				ws->push_back_main(type_b, 0, dat_b);
+				ws->push_back_main(new_copy);
 			} else if(env.mode == fif_mode::interpreting) {
-				ws->push_back_main(vdata->type, vdata->data, nullptr);
-
+				ws->push_back_main(vsize_obj(var.type, var.size, vdata));
 				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
-				auto type_b = ws->main_type_back(0);
-				auto dat_b = ws->main_data_back(0);
-				vdata->data = ws->main_data_back(1);
-				
-				ws->pop_main();
-				ws->pop_main();
-				ws->push_back_main(type_b, dat_b, nullptr);
+
+				auto new_copy = ws->popr_main();
+				auto old_copy = ws->popr_main();
+				if(old_copy.data()) {
+					memcpy(vdata, old_copy.data(), std::min(uint32_t(var.size), old_copy.size));
+				}
+				ws->push_back_main(new_copy);
 			} else if(env.mode == fif_mode::compiling_bytecode) {
 				// implement let
 				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
@@ -5831,26 +6659,47 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 					memcpy(&imm_bytes, &imm, 8);
 					cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 					cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-					cbytes->push_back(var);
+					cbytes->push_back(var.offset); // index
+					cbytes->push_back(var.type);
 				}
-				ws->push_back_main(vdata->type, 0, 0);
+				ws->push_back_main(vsize_obj(var.type, 0));
 			}
 		}
-	} else if(auto varb = get_global_var(env, content_string); word.is_string == false && varb) {
-		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), varb->type, -1 };
+	} else if(auto varb = env.global_names.find(content_string); word.is_string == false && varb != env.global_names.end()) {
+		auto base_type = env.globals[varb->second].type;
+		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), env.globals[varb->second].type, -1 };
 		std::vector<int32_t> subs;
 		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
 
 		if(skip_compilation(env.mode)) {
 
 		} else if(typechecking_mode(env.mode)) {
-			ws->push_back_main(mem_type.type, (int64_t)(varb), 0);
+			if(env.globals[varb->second].constant) {
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].cell_size * 8), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else {
+				ws->push_back_main(vsize_obj(base_type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			}
 		} else if(env.mode == fif_mode::compiling_llvm) {
-			ws->push_back_main(mem_type.type, 0, varb->expression);
+			if(env.globals[varb->second].constant) {
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].cell_size * 8), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else  if(env.dict.type_array[base_type].is_memory_type() == false) {
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else {
+				ws->push_back_main(vsize_obj(base_type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			}
 		} else if(env.mode == fif_mode::interpreting) {
-			ws->push_back_main(mem_type.type, (int64_t)(varb), 0);
+			if(env.globals[varb->second].constant) {
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].byte_size), (unsigned char*)(env.globals[varb->second].bytes.get())));
+			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(void*), (unsigned char*)(&ptr)));
+			} else {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(base_type, sizeof(void*), (unsigned char*)(&ptr)));
+			}
 		} else if(env.mode == fif_mode::compiling_bytecode) {
-			// implement let
 			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
 			if(cbytes) {
 				fif_call imm = immediate_global;
@@ -5859,16 +6708,17 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 				cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 				cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 
-				auto string_constant = env.get_string_constant(word.content);
-				char const* cptr = string_constant.data();
-				uint64_t let_addr = 0;
-				memcpy(&let_addr, &cptr, 8);
-				cbytes->push_back(int32_t(let_addr & 0xFFFFFFFF));
-				cbytes->push_back(int32_t((let_addr >> 32) & 0xFFFFFFFF));
-
-				cbytes->push_back(mem_type.type);
+				cbytes->push_back(varb->second);
 			}
-			ws->push_back_main(mem_type.type, 0, 0);
+			if(env.globals[varb->second].constant) {
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, 0));
+			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(mem_type.type, 0));
+			} else {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(base_type, 0));
+			}
 		}
 	} else if(auto rtype = resolve_type(word.content, env, env.compiler_stack.back()->type_substitutions()); rtype != -1) {
 		do_immediate_type(*ws, rtype, &env);
@@ -5907,14 +6757,14 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 
 	llvm_stack ts;
 	ts.resize(param_stack.size(), return_stack.size());
-	for(auto i = param_stack.size(); i-- > 0; ) {
-		ts.set_main_type(i, param_stack[i]);
+	for(size_t i = 0; i < param_stack.size(); ++i) {
+		ts.push_back_main(vsize_obj(param_stack[i], env.dict.type_array[param_stack[i]].cell_size * 8));
 	}
-	for(auto i = return_stack.size(); i-- > 0; ) {
-		ts.set_return_type(i, return_stack[i]);
+	for(size_t i = 0; i < return_stack.size(); ++i) {
+		ts.push_back_return(vsize_obj(return_stack[i], env.dict.type_array[return_stack[i]].cell_size * 8));
 	}
 	ts.min_main_depth = int32_t(param_stack.size());
-	ts.min_return_depth = int32_t(param_stack.size());
+	ts.min_return_depth = int32_t(return_stack.size());
 
 	std::vector<int32_t> typevars;
 	auto match = get_basic_type_match(w, ts, env, typevars, false);
@@ -5954,11 +6804,13 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	int32_t match_position = 0;
 	// stack matching
 
-	int32_t consumed_stack_cells = 0;
+	int32_t added_param = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		params.push_back(LLVMGetParam(compiled_fn, uint32_t(consumed_stack_cells)));
+		for(auto j = env.dict.type_array[desc[match_position]].cell_size; j-- > 0;) {
+			params.push_back(LLVMGetParam(compiled_fn, uint32_t(added_param)));
+			++added_param;
+		}
 		++match_position;
-		++consumed_stack_cells;
 	}
 
 	++match_position; // skip -1
@@ -5974,11 +6826,12 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	++match_position; // skip -1
 
 	// return stack matching
-	int32_t consumed_rstack_cells = 0;
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
-		params.push_back(LLVMGetParam(compiled_fn, uint32_t(consumed_stack_cells + consumed_rstack_cells)));
+		for(auto j = env.dict.type_array[desc[match_position]].cell_size; j-- > 0;) {
+			params.push_back(LLVMGetParam(compiled_fn, uint32_t(added_param)));
+			++added_param;
+		}
 		++match_position;
-		++consumed_rstack_cells;
 	}
 
 	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation), wi.llvm_function, params.data(), uint32_t(params.size()), "");
@@ -6219,6 +7072,58 @@ inline void perform_jit(environment& e) {
 	}
 }
 #endif
+
+
+inline dup_evaluation check_dup(int32_t type, fif::environment& env) {
+	dup_evaluation result;
+
+	if(env.dict.type_array[type].duptype) {
+		result = *(env.dict.type_array[type].duptype);
+		return result;
+	}
+
+	std::vector<int64_t> initial_cells;
+	for(int32_t i = 0; i < env.dict.type_array[type].cell_size; ++i) {
+		initial_cells.push_back(-i);
+	}
+	auto old_mode = env.mode;
+	env.mode = fif_mode::tc_level_2;
+
+	auto* ws = env.compiler_stack.back()->working_state();
+
+	ws->push_back_main(vsize_obj(type, uint32_t(env.dict.type_array[type].cell_size * 8), (unsigned char*)(initial_cells.data())));
+	execute_fif_word(fif::parse_result{ "dup", false }, env, false);
+
+	auto copy = ws->popr_main();
+	auto original = ws->popr_main();
+	if(original.type != type) {
+		result.alters_source = true;
+	} else {
+		int64_t* odat = (int64_t*)(original.data());
+		for(int32_t i = 0; i < env.dict.type_array[type].cell_size; ++i) {
+			if(odat[i] != initial_cells[i]) {
+				result.alters_source = true;
+				break;
+			}
+		}
+	}
+	if(copy.type != type) {
+		result.copy_altered = true;
+	} else {
+		int64_t* odat = (int64_t*)(copy.data());
+		for(int32_t i = 0; i < env.dict.type_array[type].cell_size; ++i) {
+			if(odat[i] != initial_cells[i]) {
+				result.copy_altered = true;
+				break;
+			}
+		}
+	}
+	env.mode = old_mode;
+
+	env.dict.type_array[type].duptype = result;
+	return result;
+}
+
 
 }
 
