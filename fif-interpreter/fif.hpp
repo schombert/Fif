@@ -2741,7 +2741,10 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 	while(first_output_stack < int32_t(desc.size()) && desc[first_output_stack] != -1) {
 		auto result = resolve_span_type(desc.subspan(first_output_stack), type_subs, env);
 		first_output_stack += result.end_match_pos;
-		ts.push_back_main(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		if(env.mode != fif_mode::compiling_bytecode)
+			ts.push_back_main(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		else
+			ts.push_back_main(vsize_obj(result.type, 0));
 		outd_bytes += env.dict.type_array[result.type].cell_size * 8;
 		++outm_slots;
 	}
@@ -2750,30 +2753,35 @@ inline void apply_stack_description(std::span<int32_t const> desc, state_stack& 
 	while(match_position < int32_t(desc.size()) && desc[match_position] != -1) {
 		auto result = resolve_span_type(desc.subspan(match_position), type_subs, env);
 		match_position += result.end_match_pos;
-		ts.push_back_return(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		if(env.mode != fif_mode::compiling_bytecode)
+			ts.push_back_return(vsize_obj(result.type, env.dict.type_array[result.type].cell_size * 8));
+		else
+			ts.push_back_main(vsize_obj(result.type, 0));
 		outr_bytes += env.dict.type_array[result.type].cell_size * 8;
 		++outr_slots;
 	}
 
-	int64_t* output_dptr = (int64_t*)(ts.main_back_ptr_at(outm_slots));
-	int64_t* output_rptr = (int64_t*)(ts.return_back_ptr_at(outr_slots));
+	if(env.mode != fif_mode::compiling_bytecode) {
+		int64_t* output_dptr = (int64_t*)(ts.main_back_ptr_at(outm_slots));
+		int64_t* output_rptr = (int64_t*)(ts.return_back_ptr_at(outr_slots));
 
-	int32_t pinsert_index = 0;
-	for(int32_t i = 0; i < outd_bytes / 8; ++i) {
-		if(pinsert_index >= int32_t(param_perm.size()) || param_perm[pinsert_index] == -1) {
-			output_dptr[i] = env.new_ident();
-		} else {
-			output_dptr[i] = params[param_perm[pinsert_index]];
+		int32_t pinsert_index = 0;
+		for(int32_t i = 0; i < outd_bytes / 8; ++i) {
+			if(pinsert_index >= int32_t(param_perm.size()) || param_perm[pinsert_index] == -1) {
+				output_dptr[i] = env.new_ident();
+			} else {
+				output_dptr[i] = params[param_perm[pinsert_index]];
+			}
+			++pinsert_index;
 		}
-		++pinsert_index;
-	}
-	for(int32_t i = 0; i < outr_bytes / 8; ++i) {
-		if(pinsert_index >= int32_t(param_perm.size()) || param_perm[pinsert_index] == -1) {
-			output_rptr[i] = env.new_ident();
-		} else {
-			output_rptr[i] = params[param_perm[pinsert_index]];
+		for(int32_t i = 0; i < outr_bytes / 8; ++i) {
+			if(pinsert_index >= int32_t(param_perm.size()) || param_perm[pinsert_index] == -1) {
+				output_rptr[i] = env.new_ident();
+			} else {
+				output_rptr[i] = params[param_perm[pinsert_index]];
+			}
+			++pinsert_index;
 		}
-		++pinsert_index;
 	}
 }
 
@@ -5664,6 +5672,10 @@ public:
 				}
 #endif
 				auto bmatch = loop_exit.add_concrete_branch(branch_source{ wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, false, false, true, false }, env);
+
+				*pb = continuation_block;
+				LLVMPositionBuilderAtEnd(env.llvm_builder, continuation_block);
+
 				if(bmatch != add_branch_result::ok) {
 					if(!typechecking_mode(env.mode)) {
 						env.mode = fif_mode::error;
@@ -5867,6 +5879,9 @@ public:
 #endif
 				loop_exit.add_concrete_branch(branch_source{ wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, branch_condition, continuation_block, 0, true, false, true, false }, env);
 
+				*pb = continuation_block;
+				LLVMPositionBuilderAtEnd(env.llvm_builder, continuation_block);
+
 				auto bmatch = loop_start.add_concrete_branch(branch_source{
 					wstate->copy(), parent->copy_lvar_storage(), pb ? *pb : nullptr, nullptr, nullptr,
 					0, false, true, true, false }, env);
@@ -6050,6 +6065,38 @@ inline void run_to_function_end(environment& env) { // execute/compile source co
 	}
 }
 
+inline state_stack make_type_checking_stack(state_stack& initial_stack, environment& env) {
+	state_stack transformed_copy;
+	std::vector<int64_t> scratch;
+	for(size_t i = 0; i < initial_stack.main_size(); ++i) {
+		scratch.clear();
+		auto t = initial_stack.main_type(i);
+		for(int32_t j = 0; j < env.dict.type_array[t].cell_size; ++j) {
+			scratch.push_back(env.new_ident());
+		}
+		if(env.dict.type_array[t].cell_size > 0) {
+			transformed_copy.push_back_main(vsize_obj(t, uint32_t(env.dict.type_array[t].cell_size * 8), (unsigned char*)(scratch.data())));
+		} else {
+			transformed_copy.push_back_main(vsize_obj(t, 0));
+		}
+	}
+	for(size_t i = 0; i < initial_stack.return_size(); ++i) {
+		scratch.clear();
+		auto t = initial_stack.return_type(i);
+		for(int32_t j = 0; j < env.dict.type_array[t].cell_size; ++j) {
+			scratch.push_back(env.new_ident());
+		}
+		if(env.dict.type_array[t].cell_size > 0) {
+			transformed_copy.push_back_return(vsize_obj(t, uint32_t(env.dict.type_array[t].cell_size * 8), (unsigned char*)(scratch.data())));
+		} else {
+			transformed_copy.push_back_return(vsize_obj(t, 0));
+		}
+	}
+	transformed_copy.min_main_depth = int32_t(transformed_copy.main_size());
+	transformed_copy.min_return_depth = int32_t(transformed_copy.return_size());
+	return transformed_copy;
+}
+
 inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations) {
 	while(word_index != -1) {
 		specialize_t_subs.clear();
@@ -6071,12 +6118,14 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 					if(env.dict.word_array[w].being_typechecked) { // already being typechecked -- mark as un checkable recursive branch
 						env.mode = make_recursive(env.mode);
 					} else if(env.dict.word_array[w].source.length() > 0) { // try to typecheck word as level 1
+						auto tcstack = make_type_checking_stack(current_type_state, env);
+
 						env.dict.word_array[w].being_typechecked = true;
 
 						switch_compiler_stack_mode(env, fif_mode::tc_level_1);
 
 						env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-						auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, -1);
+						auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, tcstack, w, -1);
 						fnscope->type_subs = specialize_t_subs;
 						env.compiler_stack.emplace_back(std::move(fnscope));
 
@@ -6084,7 +6133,7 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 						env.source_stack.pop_back();
 
 						env.dict.word_array[w].being_typechecked = false;
-						match = match_word(env.dict.word_array[w], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
+						match = match_word(env.dict.word_array[w], tcstack, env.dict.all_instances, env.dict.all_stack_types, env);
 						match.substitution_version = word_index;
 
 						restore_compiler_stack_mode(env);
@@ -6103,8 +6152,10 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 					switch_compiler_stack_mode(env, fif_mode::tc_level_1);
 					env.dict.word_array[w].being_typechecked = true;
 
+					auto tcstack = make_type_checking_stack(current_type_state, env);
+
 					env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-					auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, -1);
+					auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, tcstack, w, -1);
 					fnscope->type_subs = specialize_t_subs;
 					env.compiler_stack.emplace_back(std::move(fnscope));
 
@@ -6115,7 +6166,7 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 
 					restore_compiler_stack_mode(env);
 
-					match = match_word(env.dict.word_array[w], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
+					match = match_word(env.dict.word_array[w], tcstack, env.dict.all_instances, env.dict.all_stack_types, env);
 					match.substitution_version = word_index;
 
 					if(!match.matched) {
@@ -6137,13 +6188,18 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 }
 
 inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word_instance& wi, state_stack& current_type_state, environment& env, std::vector<int32_t>& tsubs) {
+	if(wi.typechecking_level >= 3)
+		return true;
+
+	auto tcstack = make_type_checking_stack(current_type_state, env);
+	
 	if(wi.typechecking_level == 1) {
 		// perform level 2 typechecking
 
 		switch_compiler_stack_mode(env, fif_mode::tc_level_2);
 
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, word_index);
+		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, tcstack, w, word_index);
 		fnscope->type_subs = tsubs;
 		env.compiler_stack.emplace_back(std::move(fnscope));
 
@@ -6169,7 +6225,7 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 
 		switch_compiler_stack_mode(env, fif_mode::tc_level_3);
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, current_type_state, w, word_index);
+		auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, tcstack, w, word_index);
 		function_scope* sptr = fnscope.get();
 		fnscope->type_subs = tsubs;
 		env.compiler_stack.emplace_back(std::move(fnscope));
@@ -6195,8 +6251,8 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 
 		if(auto erb = record_holder->tr.find((uint64_t(w) << 32) | uint64_t(word_index)); erb != record_holder->tr.end()) {
 			typecheck_3_record r;
-			r.stack_height_added_at = int32_t(current_type_state.main_size());
-			r.rstack_height_added_at = int32_t(current_type_state.return_size());
+			r.stack_height_added_at = int32_t(tcstack.main_size());
+			r.rstack_height_added_at = int32_t(tcstack.return_size());
 
 			auto c = get_stack_consumption(w, word_index, env);
 			r.stack_consumed = std::max(c.stack, erb->second.stack_consumed);
@@ -6205,8 +6261,8 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 			record_holder->tr.insert_or_assign((uint64_t(w) << 32) | uint64_t(word_index), r);
 		} else {
 			typecheck_3_record r;
-			r.stack_height_added_at = int32_t(current_type_state.main_size());
-			r.rstack_height_added_at = int32_t(current_type_state.return_size());
+			r.stack_height_added_at = int32_t(tcstack.main_size());
+			r.rstack_height_added_at = int32_t(tcstack.return_size());
 
 			auto c = get_stack_consumption(w, word_index, env);
 			r.stack_consumed = c.stack;
@@ -6218,15 +6274,15 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 		/*
 		process results of typechecking
 		*/
-		auto min_stack_depth = int32_t(current_type_state.main_size());
-		auto min_rstack_depth = int32_t(current_type_state.return_size());
+		auto min_stack_depth = int32_t(tcstack.main_size());
+		auto min_rstack_depth = int32_t(tcstack.return_size());
 		for(auto& s : record_holder->tr) {
 			min_stack_depth = std::min(min_stack_depth, s.second.stack_height_added_at - s.second.stack_consumed);
 			min_rstack_depth = std::min(min_rstack_depth, s.second.rstack_height_added_at - s.second.rstack_consumed);
 		}
 
 		auto existing_description = std::span<int32_t const>(env.dict.all_stack_types.data() + wi.stack_types_start, wi.stack_types_count);
-		auto revised_description = expand_stack_description(current_type_state, existing_description, int32_t(current_type_state.main_size()) - min_stack_depth, int32_t(current_type_state.return_size()) - min_rstack_depth);
+		auto revised_description = expand_stack_description(tcstack, existing_description, int32_t(tcstack.main_size()) - min_stack_depth, int32_t(tcstack.return_size()) - min_rstack_depth);
 
 		if(!compare_stack_description(existing_description, std::span<int32_t const>(revised_description.data(), revised_description.size()))) {
 			wi.stack_types_start = int32_t(env.dict.all_stack_types.size());
@@ -6472,9 +6528,10 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 
 							if(std::get<interpreted_word_instance>(*wi).typechecking_level < 2) {
 								switch_compiler_stack_mode(env, fif_mode::tc_level_2);
+								auto tcstack = make_type_checking_stack(*ws, env);
 
 								env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-								auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, *ws, w, match.word_index);
+								auto fnscope = std::make_unique<function_scope>(env.compiler_stack.back().get(), env, tcstack, w, match.word_index);
 								fnscope->type_subs = called_tsub_types;
 								env.compiler_stack.emplace_back(std::move(fnscope));
 
