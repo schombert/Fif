@@ -1897,6 +1897,10 @@ inline int32_t* do_local_assign(fif::state_stack& s, int32_t* p, fif::environmen
 	int32_t offset = *(p + 2);
 	auto dest = e->compiler_stack.back()->local_bytes_at_offset(offset);
 	auto val = s.popr_main();
+
+	s.push_back_main(vsize_obj(val.type, val.size, dest));
+	execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+
 	memcpy(dest, val.data(), size_t(val.size));
 	return p + 3;
 }
@@ -2073,8 +2077,7 @@ inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e)
 		}
 	} else if(e->mode == fif_mode::compiling_llvm) {
 		auto type = s.main_type_back(0);
-		auto new_expr = LLVMBuildAlloca(e->llvm_builder, 
-			e->dict.type_array[type].is_memory_type() ? LLVMPointerTypeInContext(e->llvm_context, 0) : llvm_type(type, *e), "");
+		auto new_expr = e->compiler_stack.back()->build_alloca(e->dict.type_array[type].is_memory_type() ? LLVMPointerTypeInContext(e->llvm_context, 0) : llvm_type(type, *e));
 		if(e->compiler_stack.back()->create_var(std::string(name.content), type, 8, (unsigned char*)(&new_expr), true, false) == -1) {
 			e->report_error("could not make a var with given name");
 			e->mode = fif_mode::error;
@@ -3010,7 +3013,7 @@ inline int32_t* do_make(state_stack& s, int32_t* p, environment* env) {
 			}
 			s.push_back_main(vsize_obj(resolved_type, 0));
 		} else if(env->mode == fif_mode::compiling_llvm) {
-			auto new_expr = LLVMBuildAlloca(env->llvm_builder, llvm_type(resolved_type, *env), "");
+			auto new_expr = env->compiler_stack.back()->build_alloca(llvm_type(resolved_type, *env));
 			s.push_back_main(vsize_obj(resolved_type, new_expr, vsize_obj::by_value{ }));
 		} else if(env->mode == fif_mode::interpreting) {
 			env->mode = fif_mode::error;
@@ -4865,7 +4868,7 @@ inline int32_t* arrayify(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		} else {
 			auto array_type = llvm_type(resolved_ar_type.type, *e);
 			auto member_type = llvm_type(types[2], *e);
-			auto new_expr = LLVMBuildAlloca(e->llvm_builder, array_type, "");
+			auto new_expr = e->compiler_stack.back()->build_alloca(array_type);
 			s.push_back_main(vsize_obj(resolved_ar_type.type, new_expr, vsize_obj::by_value{ }));
 
 			uint32_t i = 0;

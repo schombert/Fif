@@ -553,6 +553,8 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 		CHECK(error_count == 0);
 		CHECK(error_list == "");
 
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
 		fif::perform_jit(fif_env);
 
 		REQUIRE(bool(fif_env.llvm_jit));
@@ -570,7 +572,7 @@ TEST_CASE("basic colon defs JIT", "fif jit tests") {
 			REQUIRE(bare_address != 0);
 			using ftype = int32_t(*)(int32_t, int32_t);
 			ftype fn = (ftype)bare_address;
-			CHECK(fn(3, 2) == 8);
+			CHECK(fn(2, 3) == 8);
 		}
 	}
 	SECTION("conditional a") {
@@ -3229,7 +3231,7 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		REQUIRE(values.main_size() == 1);
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) != 0);
-		CHECK(values.popr_main().byte_size == 0);
+		CHECK(values.popr_main().size == 0);
 	}
 
 	SECTION("partially empty struct B") {
