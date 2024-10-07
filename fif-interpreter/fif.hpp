@@ -1155,7 +1155,7 @@ inline LLVMTypeRef llvm_type(int32_t t, environment& env) {
 				return LLVMVoidTypeInContext(env.llvm_context);
 			} else if(env.dict.type_array[t].is_struct()) {
 				std::vector<LLVMTypeRef> zvals;
-				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count - env.dict.type_array[t].non_member_types; ++j) {
 					auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
 					if(st == fif_bool)
 						zvals.push_back(LLVMInt8TypeInContext(env.llvm_context));
@@ -1234,7 +1234,7 @@ inline void enum_llvm_type(int32_t t, std::vector< LLVMTypeRef>& ov, environment
 					ov.push_back(LLVMPointerTypeInContext(env.llvm_context, 0));
 					return;
 				} else {
-					for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+					for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count - env.dict.type_array[t].non_member_types; ++j) {
 						auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
 						if(env.dict.type_array[st].stateless() == false)
 							enum_llvm_type(st, ov, env);
@@ -1310,7 +1310,7 @@ inline LLVMValueRef llvm_zero_constant(int32_t t, environment& env) {
 				return LLVMGetUndef(LLVMVoidTypeInContext(env.llvm_context));
 			} else if(env.dict.type_array[t].is_struct()) {
 				std::vector<LLVMValueRef> zvals;
-				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count - env.dict.type_array[t].non_member_types; ++j) {
 					auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
 					if(st == fif_bool)
 						zvals.push_back(LLVMConstInt(LLVMInt8TypeInContext(env.llvm_context), 0, false));
@@ -1386,7 +1386,7 @@ inline void enum_llvm_zero_constant(int32_t t, std::vector< LLVMValueRef>& ov, e
 				if(env.dict.type_array[t].is_memory_type()) {
 					ov.push_back(LLVMConstNull(LLVMPointerTypeInContext(env.llvm_context, 0))); return;
 				}
-				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count; ++j) {
+				for(int32_t j = 1; j < env.dict.type_array[t].decomposed_types_count - env.dict.type_array[t].non_member_types; ++j) {
 					auto st = env.dict.all_stack_types[env.dict.type_array[t].decomposed_types_start + j];
 					if(env.dict.type_array[st].stateless() == false)
 						enum_llvm_zero_constant(st, ov, env);
@@ -1697,6 +1697,7 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
 	env.dict.type_array.back().flags |= type::FLAG_STRUCT;
 
+	env.dict.type_array.back().non_member_types = env.dict.type_array[template_base].non_member_types;
 	env.dict.type_array.back().type_slots = 0;
 	env.dict.type_array.back().cell_size = cells_count;
 	env.dict.type_array.back().byte_size = byte_count;
@@ -3273,7 +3274,7 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 
 	LLVMTypeRef ret_type = nullptr;
 	if(return_group.size() == 0) {
-		ret_type = LLVMVoidTypeInContext(env.llvm_context);
+		// ret_type = LLVMVoidTypeInContext(env.llvm_context);
 	} else if(return_group.size() == 1) {
 		ret_type = return_group[0];
 	} else {
@@ -3482,7 +3483,12 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 	LLVMValueRef* output_dptr = (LLVMValueRef*)(ts.main_back_ptr_at(outm_slots));
 	LLVMValueRef* output_rptr = (LLVMValueRef*)(ts.return_back_ptr_at(outr_slots));
 
-	bool multiple_returns = (outd_bytes + outr_bytes) > 8;
+	auto return_count = (outd_bytes + outr_bytes) / 8;
+	for(auto i : wi.llvm_parameter_permutation) {
+		if(i != -1)
+			--return_count;
+	}
+	bool multiple_returns = return_count > 1;
 
 	int32_t pinsert_index = 0;
 	uint32_t grabbed_o_index = 0;
@@ -3640,7 +3646,7 @@ inline void load_from_llvm_pointer(int32_t struct_type, state_stack& ws, LLVMVal
 					auto current_ds_byte = ws.main_byte_size();
 
 					auto ltype = llvm_type(struct_type, env);
-					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count; ++j) {
+					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count - env.dict.type_array[struct_type].non_member_types; ++j) {
 						auto st = env.dict.all_stack_types[env.dict.type_array[struct_type].decomposed_types_start + j];
 						if(env.dict.type_array[st].stateless() == false) {
 							// recurse
@@ -3774,7 +3780,7 @@ inline void store_to_llvm_pointer(int32_t struct_type, state_stack& ws, LLVMValu
 					auto svalue = ws.popr_main();
 					int32_t consumed_cells = 0;
 
-					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count; ++j) {
+					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count - env.dict.type_array[struct_type].non_member_types; ++j) {
 						auto st = env.dict.all_stack_types[env.dict.type_array[struct_type].decomposed_types_start + j];
 						if(env.dict.type_array[st].stateless() == false) {
 							// recurse
@@ -3920,7 +3926,7 @@ inline void store_difference_to_llvm_pointer(int32_t struct_type, state_stack& w
 					auto svalue = ws.popr_main();
 					int32_t consumed_cells = 0;
 
-					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count; ++j) {
+					for(int32_t j = 1; j < env.dict.type_array[struct_type].decomposed_types_count - env.dict.type_array[struct_type].non_member_types; ++j) {
 						auto st = env.dict.all_stack_types[env.dict.type_array[struct_type].decomposed_types_start + j];
 						if(env.dict.type_array[st].stateless() == false) {
 							// recurse
@@ -3950,6 +3956,17 @@ inline void store_difference_to_llvm_pointer(int32_t struct_type, state_stack& w
 			}
 	}
 #endif
+}
+
+inline int32_t* do_local_drop(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	int32_t offset = *(p + 2);
+	int32_t type = *(p + 3);
+	auto dest = e->compiler_stack.back()->local_bytes_at_offset(offset);
+
+	s.push_back_main(vsize_obj(type, e->dict.type_array[type].byte_size, dest));
+	execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+
+	return p + 4;
 }
 
 class locals_holder : public opaque_compiler_data {
@@ -4008,12 +4025,30 @@ public:
 		for(auto& l : vars) {
 			auto data_ptr = env.compiler_stack.back()->local_bytes_at_offset(l.second.offset);
 			if(mode == fif_mode::compiling_bytecode) {
-				if(l.second.memory_variable) {
-					ws->push_back_main(vsize_obj(l.second.type, l.second.size, data_ptr));
-					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
-				} else {
-					ws->push_back_main(vsize_obj(l.second.type, l.second.size, data_ptr));
-					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+				if(env.dict.type_array[l.second.type].is_struct() || env.dict.type_array[l.second.type].is_array()) {
+					if(l.second.memory_variable) {
+						auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+						if(compile_bytes) {
+							fif_call imm = do_local_drop;
+							uint64_t imm_bytes = 0;
+							memcpy(&imm_bytes, &imm, 8);
+							compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+							compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+							compile_bytes->push_back(l.second.offset);
+							compile_bytes->push_back(l.second.type);
+						}
+					} else {
+						auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+						if(compile_bytes) {
+							fif_call imm = do_local_drop;
+							uint64_t imm_bytes = 0;
+							memcpy(&imm_bytes, &imm, 8);
+							compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+							compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+							compile_bytes->push_back(l.second.offset);
+							compile_bytes->push_back(l.second.type);
+						}
+					}
 				}
 			} else if(mode == fif_mode::interpreting) {
 				if(l.second.memory_variable) {

@@ -1790,26 +1790,6 @@ inline int32_t* impl_sizeof(fif::state_stack& s, int32_t* p, fif::environment* e
 	return p + 2;
 }
 
-inline int32_t* impl_index(fif::state_stack& s, int32_t* p, fif::environment* e) {
-	if(e->mode == fif::fif_mode::compiling_llvm) {
-#ifdef USE_LLVM
-		auto pval = s.popr_main().as<LLVMValueRef>();
-		auto index = s.popr_main().as<LLVMValueRef>();
-		auto iresult = LLVMBuildInBoundsGEP2(e->llvm_builder, LLVMInt8TypeInContext(e->llvm_context), pval, &index, 1, "");
-		s.push_back_main(vsize_obj(fif_opaque_ptr, iresult, vsize_obj::by_value{ }));
-#endif
-	} else if(e->mode == fif::fif_mode::interpreting) {
-		auto pval = s.popr_main().as<unsigned char*>();
-		auto index = s.popr_main().as<int32_t>();
-		s.push_back_main(vsize_obj(fif_opaque_ptr, pval + index, vsize_obj::by_value{ }));
-	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
-		s.pop_main();
-		s.pop_main();
-		s.push_back_main(vsize_obj(fif_opaque_ptr, e->new_ident(), vsize_obj::by_value{ }));
-	}
-	return p + 2;
-}
-
 int64_t generic_integer(vsize_obj const& o) {
 	switch(o.type) {
 		case fif_i8:
@@ -1831,6 +1811,26 @@ int64_t generic_integer(vsize_obj const& o) {
 		default:
 			return 0;
 	}
+}
+
+inline int32_t* impl_index(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+#ifdef USE_LLVM
+		auto pval = s.popr_main().as<LLVMValueRef>();
+		auto index = s.popr_main().as<LLVMValueRef>();
+		auto iresult = LLVMBuildInBoundsGEP2(e->llvm_builder, LLVMInt8TypeInContext(e->llvm_context), pval, &index, 1, "");
+		s.push_back_main(vsize_obj(fif_opaque_ptr, iresult, vsize_obj::by_value{ }));
+#endif
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto pval = s.popr_main().as<unsigned char*>();
+		auto index = generic_integer(s.popr_main());
+		s.push_back_main(vsize_obj(fif_opaque_ptr, pval + index, vsize_obj::by_value{ }));
+	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
+		s.pop_main();
+		s.pop_main();
+		s.push_back_main(vsize_obj(fif_opaque_ptr, e->new_ident(), vsize_obj::by_value{ }));
+	}
+	return p + 2;
 }
 
 inline int32_t* allocate_buffer(fif::state_stack& s, int32_t* p, fif::environment* e) {
@@ -1867,6 +1867,7 @@ inline int32_t* copy_buffer(fif::state_stack& s, int32_t* p, fif::environment* e
 		auto dest_ptr = s.popr_main().as<unsigned char*>();
 		auto source_ptr = s.popr_main().as<unsigned char*>();
 		memcpy(dest_ptr, source_ptr, size_t(bytes));
+		s.push_back_main(vsize_obj(fif_opaque_ptr, dest_ptr, vsize_obj::by_value{ }));
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
 		s.pop_main();
 		auto dest_ptr = s.popr_main();
@@ -1893,13 +1894,21 @@ inline int32_t* free_buffer(fif::state_stack& s, int32_t* p, fif::environment* e
 	return p + 2;
 }
 
-inline int32_t* do_local_assign(fif::state_stack& s, int32_t* p, fif::environment* e) {
+inline int32_t* do_local_reassign(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	int32_t offset = *(p + 2);
 	auto dest = e->compiler_stack.back()->local_bytes_at_offset(offset);
 	auto val = s.popr_main();
 
 	s.push_back_main(vsize_obj(val.type, val.size, dest));
 	execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
+
+	memcpy(dest, val.data(), size_t(val.size));
+	return p + 3;
+}
+inline int32_t* do_local_assign(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	int32_t offset = *(p + 2);
+	auto dest = e->compiler_stack.back()->local_bytes_at_offset(offset);
+	auto val = s.popr_main();
 
 	memcpy(dest, val.data(), size_t(val.size));
 	return p + 3;
@@ -1937,7 +1946,7 @@ inline int32_t* create_relet(fif::state_stack& s, int32_t* p, fif::environment* 
 		if(auto offset = e->compiler_stack.back()->create_var(std::string(name.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), false, true); offset != -1) {
 			auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 			if(compile_bytes) {
-				fif_call imm = do_local_assign;
+				fif_call imm = do_local_reassign;
 				uint64_t imm_bytes = 0;
 				memcpy(&imm_bytes, &imm, 8);
 				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
@@ -2201,14 +2210,14 @@ inline int32_t* forth_extract(fif::state_stack& s, int32_t* p, fif::environment*
 		return nullptr;
 	}
 
-	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types);
 	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
 	auto child_type = e->dict.all_stack_types[child_index];
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		int32_t coffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			coffset += e->dict.type_array[c].cell_size;
 		}
@@ -2226,7 +2235,7 @@ inline int32_t* forth_extract(fif::state_stack& s, int32_t* p, fif::environment*
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		int32_t boffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			boffset += e->dict.type_array[c].byte_size;
 		}
@@ -2244,7 +2253,7 @@ inline int32_t* forth_extract(fif::state_stack& s, int32_t* p, fif::environment*
 		execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
 		int32_t coffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			coffset += e->dict.type_array[c].cell_size;
 		}
@@ -2274,13 +2283,13 @@ inline int32_t* forth_extract(fif::state_stack& s, int32_t* p, fif::environment*
 inline int32_t* do_fextractc(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	int32_t index_value = *(p + 2);
 	auto stype = s.main_type_back(0);
-	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types);
 	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
 	auto child_type = e->dict.all_stack_types[child_index];
 
 	auto v = s.popr_main();
 	int32_t boffset = 0;
-	for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+	for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 		auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 		boffset += e->dict.type_array[c].byte_size;
 	}
@@ -2319,7 +2328,7 @@ inline int32_t* forth_extract_copy(fif::state_stack& s, int32_t* p, fif::environ
 		return nullptr;
 	}
 
-	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types);
 	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
 	auto child_type = e->dict.all_stack_types[child_index];
 
@@ -2327,7 +2336,7 @@ inline int32_t* forth_extract_copy(fif::state_stack& s, int32_t* p, fif::environ
 #ifdef USE_LLVM
 		auto v = s.popr_main();
 		int32_t coffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			coffset += e->dict.type_array[c].cell_size;
 		}
@@ -2344,7 +2353,7 @@ inline int32_t* forth_extract_copy(fif::state_stack& s, int32_t* p, fif::environ
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		auto v = s.popr_main();
 		int32_t boffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			boffset += e->dict.type_array[c].byte_size;
 		}
@@ -2371,7 +2380,7 @@ inline int32_t* forth_extract_copy(fif::state_stack& s, int32_t* p, fif::environ
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
 		auto v = s.popr_main();
 		int32_t coffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			coffset += e->dict.type_array[c].cell_size;
 		}
@@ -2402,12 +2411,12 @@ inline int32_t* forth_extract_copy(fif::state_stack& s, int32_t* p, fif::environ
 inline int32_t* do_finsert(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	int32_t index_value = *(p + 2);
 	auto stype = s.main_type_back(0);
-	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types);
 	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
 	auto child_type = e->dict.all_stack_types[child_index];
 
 	int32_t boffset = 0;
-	for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+	for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 		auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 		boffset += e->dict.type_array[c].byte_size;
 	}
@@ -2436,14 +2445,14 @@ inline int32_t* forth_insert(fif::state_stack& s, int32_t* p, fif::environment* 
 		return nullptr;
 	}
 
-	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types);
 	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
 	auto child_type = e->dict.all_stack_types[child_index];
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		int32_t coffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			coffset += e->dict.type_array[c].cell_size;
 		}
@@ -2460,7 +2469,7 @@ inline int32_t* forth_insert(fif::state_stack& s, int32_t* p, fif::environment* 
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		int32_t boffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			boffset += e->dict.type_array[c].byte_size;
 		}
@@ -2476,7 +2485,7 @@ inline int32_t* forth_insert(fif::state_stack& s, int32_t* p, fif::environment* 
 		s.push_back_main(v);
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
 		int32_t coffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			coffset += e->dict.type_array[c].cell_size;
 		}
@@ -2524,12 +2533,12 @@ inline int32_t* do_fgep(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	}
 	auto stype = e->dict.all_stack_types[decomp + 1];
 
-	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types);
 	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
 	auto child_type = e->dict.all_stack_types[child_index];
 
 	int32_t boffset = 0;
-	for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+	for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 		auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 		boffset += e->dict.type_array[c].byte_size;
 	}
@@ -2571,7 +2580,7 @@ inline int32_t* forth_gep(fif::state_stack& s, int32_t* p, fif::environment* e) 
 		return nullptr;
 	}
 
-	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count);
+	assert(1 + index_value < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types);
 	auto child_index = e->dict.type_array[stype].decomposed_types_start + 1 + index_value;
 	auto child_type = e->dict.all_stack_types[child_index];
 
@@ -2582,7 +2591,7 @@ inline int32_t* forth_gep(fif::state_stack& s, int32_t* p, fif::environment* e) 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		int32_t real_index = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			if(e->dict.type_array[c].stateless() == false)
 				++real_index;
@@ -2601,7 +2610,7 @@ inline int32_t* forth_gep(fif::state_stack& s, int32_t* p, fif::environment* e) 
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		int32_t boffset = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			boffset += e->dict.type_array[c].byte_size;
 		}
@@ -2614,7 +2623,7 @@ inline int32_t* forth_gep(fif::state_stack& s, int32_t* p, fif::environment* e) 
 		s.push_back_main(vsize_obj(child_ptr_type.type, ptr, vsize_obj::by_value{ }));
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
 		int32_t real_index = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			if(e->dict.type_array[c].stateless() == false)
 				++real_index;
@@ -2654,7 +2663,7 @@ inline int32_t* do_fsmz(fif::state_stack& s, int32_t* p, fif::environment* e) {
 
 	int32_t boffset = 0;
 	auto v = s.popr_main();
-	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 		auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 		
 		s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
@@ -2674,7 +2683,7 @@ inline int32_t* forth_struct_map_zero(fif::state_stack& s, int32_t* p, fif::envi
 #ifdef USE_LLVM
 		int32_t coffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].cell_size * 8, v.data() + coffset * 8));
@@ -2686,7 +2695,7 @@ inline int32_t* forth_struct_map_zero(fif::state_stack& s, int32_t* p, fif::envi
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		int32_t boffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
@@ -2727,7 +2736,7 @@ inline int32_t* do_fsmo(fif::state_stack& s, int32_t* p, fif::environment* e) {
 
 	int32_t boffset = 0;
 	auto v = s.popr_main();
-	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 		auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 		s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
@@ -2752,7 +2761,7 @@ inline int32_t* forth_struct_map_one(fif::state_stack& s, int32_t* p, fif::envir
 #ifdef USE_LLVM
 		int32_t coffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].cell_size * 8, v.data() + coffset * 8));
@@ -2768,7 +2777,7 @@ inline int32_t* forth_struct_map_one(fif::state_stack& s, int32_t* p, fif::envir
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		int32_t boffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
@@ -2789,7 +2798,7 @@ inline int32_t* forth_struct_map_one(fif::state_stack& s, int32_t* p, fif::envir
 	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
 		int32_t coffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].cell_size * 8, v.data() + coffset * 8));
@@ -2837,7 +2846,7 @@ inline int32_t* do_fsmt(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	auto v = s.popr_main();
 	std::vector<unsigned char> return_data;
 
-	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 		auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 		s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
@@ -2863,7 +2872,7 @@ inline int32_t* forth_struct_map_two(fif::state_stack& s, int32_t* p, fif::envir
 		auto v = s.popr_main();
 		std::vector<unsigned char> return_data;
 
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].cell_size * 8, v.data() + coffset * 8));
@@ -2883,7 +2892,7 @@ inline int32_t* forth_struct_map_two(fif::state_stack& s, int32_t* p, fif::envir
 		auto v = s.popr_main();
 		std::vector<unsigned char> return_data;
 
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
@@ -2907,7 +2916,7 @@ inline int32_t* forth_struct_map_two(fif::state_stack& s, int32_t* p, fif::envir
 		auto v = s.popr_main();
 		std::vector<unsigned char> return_data;
 
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].cell_size * 8, v.data() + coffset * 8));
@@ -3023,7 +3032,7 @@ inline int32_t* do_make(state_stack& s, int32_t* p, environment* env) {
 	} else {
 		if(typechecking_mode(env->mode)) {
 			if(env->dict.type_array[resolved_type].is_struct()) {
-				for(auto i = 1; i < env->dict.type_array[resolved_type].decomposed_types_count; ++i) {
+				for(auto i = 1; i < env->dict.type_array[resolved_type].decomposed_types_count - env->dict.type_array[resolved_type].non_member_types; ++i) {
 					auto c = env->dict.all_stack_types[env->dict.type_array[resolved_type].decomposed_types_start + i];
 					if(env->dict.type_array[c].is_memory_type()) {
 						env->mode = fail_typechecking(env->mode);
@@ -4999,7 +5008,7 @@ inline int32_t* comp_destruct(state_stack& s, int32_t* p, environment* e) {
 
 	int32_t boffset = 0;
 	auto v = s.popr_main();
-	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+	for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 		auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 		s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
 		boffset += e->dict.type_array[c].byte_size;
@@ -5038,7 +5047,7 @@ inline int32_t* de_struct(fif::state_stack& s, int32_t* p, fif::environment* e) 
 #ifdef USE_LLVM
 		int32_t coffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].cell_size * 8, v.data() + coffset * 8));
 			coffset += e->dict.type_array[c].cell_size;
@@ -5047,7 +5056,7 @@ inline int32_t* de_struct(fif::state_stack& s, int32_t* p, fif::environment* e) 
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		int32_t boffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].byte_size, v.data() + boffset));
 			boffset += e->dict.type_array[c].byte_size;
@@ -5055,14 +5064,14 @@ inline int32_t* de_struct(fif::state_stack& s, int32_t* p, fif::environment* e) 
 	} else if(fif::typechecking_mode(e->mode)) {
 		int32_t coffset = 0;
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			s.push_back_main(vsize_obj(c, e->dict.type_array[c].cell_size * 8, v.data() + coffset * 8));
 			coffset += e->dict.type_array[c].cell_size;
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto v = s.popr_main();
-		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count; ++i) {
+		for(auto i = 1; i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
 			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
 			s.push_back_main(vsize_obj(c, 0));
 		}
@@ -5414,12 +5423,9 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "break", fif_break, { }, true);
 	add_precompiled(fif_env, "return", fif_return, { }, true);
 
-	add_precompiled(fif_env, ">r", to_r, { -2, -1, -1, -1, -2 });
-	std::get< compiled_word_instance>(fif_env.dict.all_instances.back()).llvm_parameter_permutation = { 0 };
-	add_precompiled(fif_env, "r>", from_r, { -1, -2, -1, -2 });
-	std::get< compiled_word_instance>(fif_env.dict.all_instances.back()).llvm_parameter_permutation = { 0 };
-	add_precompiled(fif_env, "r@", r_at, { -1, -2, -1, -2, -1, -2 });
-	std::get< compiled_word_instance>(fif_env.dict.all_instances.back()).llvm_parameter_permutation = { 0, 0 };
+	add_precompiled(fif_env, ">r", to_r, { -2, -1, -1, -1, -2 }, true);
+	add_precompiled(fif_env, "r>", from_r, { -1, -2, -1, -2 }, true);
+	add_precompiled(fif_env, "r@", r_at, { -1, -2, -1, -2, -1, -2 }, true);
 	add_precompiled(fif_env, "immediate", make_immediate, { });
 	add_precompiled(fif_env, "[", open_bracket, { }, true);
 	add_precompiled(fif_env, "]", close_bracket, { }, true);
