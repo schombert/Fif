@@ -3164,7 +3164,7 @@ TEST_CASE("parameter permutation detection", "fif compiler tests") {
 		auto& wi = std::get<fif::interpreted_word_instance>(fif_env.dict.all_instances.back());
 		REQUIRE(wi.llvm_parameter_permutation.size() >= 1);
 		CHECK(wi.llvm_parameter_permutation.size() == 1);
-		CHECK(wi.llvm_parameter_permutation[0] == 1);
+		CHECK(wi.llvm_parameter_permutation[0] == 0);
 	}
 }
 

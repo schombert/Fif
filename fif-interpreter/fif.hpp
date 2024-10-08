@@ -2891,7 +2891,6 @@ inline void execute_fif_word(state_stack& ss, int32_t* ptr, environment& env) {
 
 inline int32_t* immediate_i32(state_stack& s, int32_t* p, environment*) {
 	int32_t data = *(p + 2);
-	memcpy(&data, p + 2, 4);
 	s.push_back_main<int32_t>(fif_i32, data);
 	return p + 3;
 }
@@ -3998,9 +3997,24 @@ public:
 			}
 			auto ptr = env.compiler_stack.back()->local_bytes_at_offset(it->second.offset);
 
-			auto ws = env.compiler_stack.back()->working_state();
-			ws->push_back_main(vsize_obj(type, size, ptr));
-			execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+			if(env.mode == fif_mode::compiling_bytecode) {
+				if(env.dict.type_array[it->second.type].is_struct() || env.dict.type_array[it->second.type].is_array()) {
+					auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+					if(compile_bytes) {
+						fif_call imm = do_local_drop;
+						uint64_t imm_bytes = 0;
+						memcpy(&imm_bytes, &imm, 8);
+						compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+						compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+						compile_bytes->push_back(it->second.offset);
+						compile_bytes->push_back(it->second.type);
+					}
+				}
+			} else if(env.mode == fif_mode::compiling_llvm) {
+				auto ws = env.compiler_stack.back()->working_state();
+				ws->push_back_main(vsize_obj(type, size, ptr));
+				execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+			}
 
 			memcpy(ptr, data, size);
 
@@ -4009,12 +4023,12 @@ public:
 			if(auto it = vars.find(name); it != vars.end() || parent->get_var(name).type != -1) {
 				return -1;
 			}
+
 			auto offset = env.compiler_stack.back()->reserve_local_storage(size);
 			auto ptr = env.compiler_stack.back()->local_bytes_at_offset(offset);
 			memcpy(ptr, data, size);
-
 			vars.insert_or_assign(name, lvar_description{ type, offset, size, memory_variable });
-
+			
 			return offset;
 		}
 	}
@@ -5517,8 +5531,15 @@ public:
 			return;
 		
 		if(!skip_compilation(env.mode)) {
-			phi_pass = true;
-			env.mode = fif_mode::tc_level_1;
+			if(env.mode == fif_mode::compiling_llvm) {
+				phi_pass = true;
+				env.mode = fif_mode::tc_level_1;
+			} else {
+				loop_start.add_concrete_branch(branch_source{
+					initial_state, parent->copy_lvar_storage(), nullptr, nullptr, nullptr,
+					0, false, true, true, false }, env);
+				loop_start.materialize(env);
+			}
 		}
 	}
 	virtual control_structure get_type()override {
@@ -5781,8 +5802,15 @@ public:
 			return;
 		
 		if(!skip_compilation(env.mode)) {
-			phi_pass = true;
-			env.mode = fif_mode::tc_level_1;
+			if(env.mode == fif_mode::compiling_llvm) {
+				phi_pass = true;
+				env.mode = fif_mode::tc_level_1;
+			} else {
+				loop_start.add_concrete_branch(branch_source{
+					initial_state, parent->copy_lvar_storage(), nullptr, nullptr, nullptr,
+					0, false, true, true, false }, env);
+				loop_start.materialize(env);
+			}
 		}
 	}
 	virtual control_structure get_type()override {

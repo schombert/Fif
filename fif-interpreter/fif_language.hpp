@@ -4935,7 +4935,9 @@ inline int32_t* structify(fif::state_stack& s, int32_t* p, fif::environment* e) 
 			break;
 		}
 		++st_depth;
-		types.push_back(s.main_type_back(i));
+	}
+	for(size_t j = i; j-- > 0;) {
+		types.push_back(s.main_type_back(j));
 	}
 	if(i == s.main_size()) {
 		if(typechecking_mode(e->mode)) {
@@ -5083,6 +5085,7 @@ inline int32_t* de_struct(fif::state_stack& s, int32_t* p, fif::environment* e) 
 			memcpy(&imm_bytes, &imm, 8);
 			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			compile_bytes->push_back(stype);
 		}
 	}
 	return p + 2;
