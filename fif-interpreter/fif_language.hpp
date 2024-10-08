@@ -570,18 +570,11 @@ inline int32_t* fif_swap(fif::state_stack& s, int32_t* p, fif::environment* e) {
 
 
 inline int32_t* lex_scope(fif::state_stack& s, int32_t* p, fif::environment* e) {
-	e->compiler_stack.emplace_back(std::make_unique<fif::lexical_scope>(e->compiler_stack.back().get(), *e));
+	lexical_new_scope(true, *e);
 	return p + 2;
 }
 inline int32_t* lex_scope_end(fif::state_stack& s, int32_t* p, fif::environment* e) {
-	if(e->compiler_stack.empty() || e->compiler_stack.back()->get_type() != fif::control_structure::lexical_scope) {
-		e->report_error("lexical scope ended in incorrect context");
-		e->mode = fif::fif_mode::error;
-		return nullptr;
-	} else {
-		e->compiler_stack.back()->finish(*e);
-		e->compiler_stack.pop_back();
-	}
+	lexical_end_scope(*e);
 	return p + 2;
 }
 
@@ -714,18 +707,6 @@ inline int32_t* fif_return(fif::state_stack& s, int32_t* p, fif::environment* e)
 				fif::function_scope* c = static_cast<fif::function_scope*>(s_top);
 				c->add_return();
 				return p + 2;
-			} else if(s_top->get_type() == fif::control_structure::rt_function) {
-				auto saved_fn = s_top;
-				s_top = e->compiler_stack.back().get();
-				while(s_top != saved_fn) {
-					s_top->delete_locals();
-					if(s_top->get_type() == control_structure::mode_switch)
-						s_top = static_cast<mode_switch_scope*>(s_top)->interpreted_link;
-					else
-						s_top = s_top->parent;
-				}
-				saved_fn->delete_locals();
-				return nullptr;
 			}
 			if(s_top->get_type() == control_structure::mode_switch)
 				s_top = static_cast<mode_switch_scope*>(s_top)->interpreted_link;
@@ -1896,7 +1877,7 @@ inline int32_t* free_buffer(fif::state_stack& s, int32_t* p, fif::environment* e
 
 inline int32_t* do_local_reassign(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	int32_t offset = *(p + 2);
-	auto dest = e->compiler_stack.back()->local_bytes_at_offset(offset);
+	auto dest = e->interpreter_stack_space.get() + e->frame_offset + offset;
 	auto val = s.popr_main();
 
 	s.push_back_main(vsize_obj(val.type, val.size, dest));
@@ -1907,7 +1888,7 @@ inline int32_t* do_local_reassign(fif::state_stack& s, int32_t* p, fif::environm
 }
 inline int32_t* do_local_assign(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	int32_t offset = *(p + 2);
-	auto dest = e->compiler_stack.back()->local_bytes_at_offset(offset);
+	auto dest = e->interpreter_stack_space.get() + e->frame_offset + offset;
 	auto val = s.popr_main();
 
 	memcpy(dest, val.data(), size_t(val.size));
@@ -1924,26 +1905,26 @@ inline int32_t* create_relet(fif::state_stack& s, int32_t* p, fif::environment* 
 
 	if(typechecking_mode(e->mode) && !skip_compilation(e->mode)) {
 		auto var = s.popr_main();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, var.size, var.data(), false, true) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, var.size, var.data(), false, true, *e) == -1) {
 			e->mode = fail_typechecking(e->mode);
 		}
 	} else if(e->mode == fif_mode::interpreting) {
 		auto var = s.popr_main();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, var.size, var.data(), false, true) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, var.size, var.data(), false, true, *e) == -1) {
 			e->report_error("could not find a let with given name and type");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
 	} else if(e->mode == fif_mode::compiling_llvm) {
 		auto var = s.popr_main();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, var.size, var.data(), false, true) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, var.size, var.data(), false, true, *e) == -1) {
 			e->report_error("could not find a let with given name and type");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto var = s.popr_main();
-		if(auto offset = e->compiler_stack.back()->create_var(std::string(name.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), false, true); offset != -1) {
+		if(auto offset = lexical_create_var(std::string(name.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), false, true, *e); offset != -1) {
 			auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 			if(compile_bytes) {
 				fif_call imm = do_local_reassign;
@@ -1973,26 +1954,26 @@ inline int32_t* create_let(fif::state_stack& s, int32_t* p, fif::environment* e)
 
 	if(typechecking_mode(e->mode) && !skip_compilation(e->mode)) {
 		auto var = s.popr_main();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, var.size, var.data(), false, false) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, var.size, var.data(), false, false, *e) == -1) {
 			e->mode = fail_typechecking(e->mode);
 		}
 	} else if(e->mode == fif_mode::interpreting) {
 		auto var = s.popr_main();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, var.size, var.data(), false, false) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, var.size, var.data(), false, false, *e) == -1) {
 			e->report_error("could not make a let with given name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
 	} else if(e->mode == fif_mode::compiling_llvm) {
 		auto var = s.popr_main();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, var.size, var.data(), false, false) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, var.size, var.data(), false, false, *e) == -1) {
 			e->report_error("could not make a let with given name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto var = s.popr_main();
-		if(auto offset = e->compiler_stack.back()->create_var(std::string(name.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), false, false); offset != -1) {
+		if(auto offset = lexical_create_var(std::string(name.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), false, false, *e); offset != -1) {
 			auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 			if(compile_bytes) {
 				fif_call imm = do_local_assign;
@@ -2031,26 +2012,26 @@ inline int32_t* create_params(fif::state_stack& s, int32_t* p, fif::environment*
 
 		if(typechecking_mode(e->mode) && !skip_compilation(e->mode)) {
 			auto var = s.popr_main();
-			if(e->compiler_stack.back()->create_var(std::string(n.content), var.type, var.size, var.data(), false, false) == -1) {
+			if(lexical_create_var(std::string(n.content), var.type, var.size, var.data(), false, false, *e) == -1) {
 				e->mode = fail_typechecking(e->mode);
 			}
 		} else if(e->mode == fif_mode::interpreting) {
 			auto var = s.popr_main();
-			if(e->compiler_stack.back()->create_var(std::string(n.content), var.type, var.size, var.data(), false, false) == -1) {
+			if(lexical_create_var(std::string(n.content), var.type, var.size, var.data(), false, false, *e) == -1) {
 				e->report_error("could not make a let with given name");
 				e->mode = fif_mode::error;
 				return nullptr;
 			}
 		} else if(e->mode == fif_mode::compiling_llvm) {
 			auto var = s.popr_main();
-			if(e->compiler_stack.back()->create_var(std::string(n.content), var.type, var.size, var.data(), false, false) == -1) {
+			if(lexical_create_var(std::string(n.content), var.type, var.size, var.data(), false, false, *e) == -1) {
 				e->report_error("could not make a let with given name");
 				e->mode = fif_mode::error;
 				return nullptr;
 			}
 		} else if(e->mode == fif_mode::compiling_bytecode) {
 			auto var = s.popr_main();
-			if(auto offset = e->compiler_stack.back()->create_var(std::string(n.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), false, false); offset != -1) {
+			if(auto offset = lexical_create_var(std::string(n.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), false, false, *e); offset != -1) {
 				auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 				if(compile_bytes) {
 					fif_call imm = do_local_assign;
@@ -2081,13 +2062,13 @@ inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e)
 	if(typechecking_mode(e->mode) && !skip_compilation(e->mode)) {
 		auto var = s.popr_main();
 		auto new_expr = e->new_ident();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, 8, (unsigned char*)(&new_expr), true, false) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, 8, (unsigned char*)(&new_expr), true, false, *e) == -1) {
 			e->mode = fail_typechecking(e->mode);
 		}
 	} else if(e->mode == fif_mode::compiling_llvm) {
 		auto type = s.main_type_back(0);
 		auto new_expr = e->compiler_stack.back()->build_alloca(e->dict.type_array[type].is_memory_type() ? LLVMPointerTypeInContext(e->llvm_context, 0) : llvm_type(type, *e));
-		if(e->compiler_stack.back()->create_var(std::string(name.content), type, 8, (unsigned char*)(&new_expr), true, false) == -1) {
+		if(lexical_create_var(std::string(name.content), type, 8, (unsigned char*)(&new_expr), true, false, *e) == -1) {
 			e->report_error("could not make a var with given name");
 			e->mode = fif_mode::error;
 			return nullptr;
@@ -2101,14 +2082,14 @@ inline int32_t* create_var(fif::state_stack& s, int32_t* p, fif::environment* e)
 		}
 	} else if(e->mode == fif_mode::interpreting) {
 		auto var = s.popr_main();
-		if(e->compiler_stack.back()->create_var(std::string(name.content), var.type, var.size, var.data(), true, false) == -1) {
+		if(lexical_create_var(std::string(name.content), var.type, var.size, var.data(), true, false, *e) == -1) {
 			e->report_error("could not make a var with given name");
 			e->mode = fif_mode::error;
 			return nullptr;
 		}
 	} else if(e->mode == fif_mode::compiling_bytecode) {
 		auto var = s.popr_main();
-		if(auto offset = e->compiler_stack.back()->create_var(std::string(name.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), true, false); offset != -1) {
+		if(auto offset = lexical_create_var(std::string(name.content), var.type, e->dict.type_array[var.type].is_memory_type() ? 8 : e->dict.type_array[var.type].byte_size, var.data(), true, false, *e); offset != -1) {
 			auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 			if(compile_bytes) {
 				fif_call imm = do_local_assign;
@@ -2962,7 +2943,7 @@ inline int32_t* memory_type_construction(state_stack& s, int32_t* p, environment
 	auto type = *(p + 2);
 	auto offset = *(p + 3);
 	if(e->dict.type_array[type].is_memory_type()) {
-		auto ptr = e->compiler_stack.back()->local_bytes_at_offset(offset);
+		auto ptr = e->interpreter_stack_space.get() + e->frame_offset + offset;
 		memset(ptr, 0, size_t(e->dict.type_array[type].byte_size));
 		s.push_back_main(vsize_obj(type, ptr, vsize_obj::by_value{ }));
 	} else {
@@ -3008,8 +2989,10 @@ inline int32_t* do_make(state_stack& s, int32_t* p, environment* env) {
 		if(typechecking_mode(env->mode)) {
 			s.push_back_main(vsize_obj(resolved_type, env->new_ident(), vsize_obj::by_value{ }));
 		} else if(env->mode == fif_mode::compiling_bytecode) {
-			auto offset = env->compiler_stack.back()->size_lvar_storage();
-			env->compiler_stack.back()->resize_lvar_storage(offset + env->dict.type_array[resolved_type].byte_size);
+			auto offset_pos = env->lexical_stack.back().allocated_bytes;
+			env->lexical_stack.back().allocated_bytes += env->dict.type_array[resolved_type].byte_size;
+			env->compiler_stack.back()->increase_frame_size(env->lexical_stack.back().allocated_bytes);
+
 			auto compile_bytes = env->compiler_stack.back()->bytecode_compilation_progress();
 			if(compile_bytes) {
 				fif_call imm = memory_type_construction;
@@ -3018,7 +3001,7 @@ inline int32_t* do_make(state_stack& s, int32_t* p, environment* env) {
 				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 				compile_bytes->push_back(resolved_type);
-				compile_bytes->push_back(offset);
+				compile_bytes->push_back(offset_pos);
 			}
 			s.push_back_main(vsize_obj(resolved_type, 0));
 		} else if(env->mode == fif_mode::compiling_llvm) {
@@ -4788,7 +4771,7 @@ inline int32_t* memcpy_to_local(state_stack& s, int32_t* p, environment* e) {
 	auto bytes_total = s.main_byte_size();
 	auto source_ptr = (s.main_ptr_at(0) + bytes_total) - bytes_down;
 
-	auto ptr = e->compiler_stack.back()->local_bytes_at_offset(offset);
+	auto ptr = e->interpreter_stack_space.get() + e->frame_offset + offset;
 	memcpy(ptr, source_ptr, bytes_total);
 	s.push_back_main(vsize_obj(type, ptr, vsize_obj::by_value{ }));
 	
@@ -4844,8 +4827,10 @@ inline int32_t* arrayify(fif::state_stack& s, int32_t* p, fif::environment* e) {
 		}
 		s.push_back_main(vsize_obj(resolved_ar_type.type, e->new_ident(), vsize_obj::by_value{ }));
 	} else if(e->mode == fif_mode::compiling_bytecode) {
-		auto offset = e->compiler_stack.back()->size_lvar_storage();
-		e->compiler_stack.back()->resize_lvar_storage(offset + e->dict.type_array[resolved_ar_type.type].byte_size);
+		auto offset_pos = e->lexical_stack.back().allocated_bytes;
+		e->lexical_stack.back().allocated_bytes += e->dict.type_array[resolved_ar_type.type].byte_size;
+		e->compiler_stack.back()->increase_frame_size(e->lexical_stack.back().allocated_bytes);
+
 		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
 		if(compile_bytes) {
 			fif_call imm = memcpy_to_local;
@@ -4854,7 +4839,7 @@ inline int32_t* arrayify(fif::state_stack& s, int32_t* p, fif::environment* e) {
 			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 			
-			compile_bytes->push_back(offset);
+			compile_bytes->push_back(offset_pos);
 			compile_bytes->push_back(st_depth + 1);
 			compile_bytes->push_back(resolved_ar_type.type);
 		}

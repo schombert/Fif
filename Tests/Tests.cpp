@@ -2074,12 +2074,14 @@ TEST_CASE("array_tests", "fif combined tests") {
 }
 
 static int32_t our_global = 0;
-void set_global(int32_t v) {
+void set_global(int32_t low_stack_dummy, int32_t v) {
 	our_global = v;
 }
 int32_t* interpreted_set_global(fif::state_stack& s, int32_t* p, fif::environment* e) {
-	if(e->mode == fif::fif_mode::interpreting)
+	if(e->mode == fif::fif_mode::interpreting) {
 		our_global = int32_t(s.popr_main().as<int32_t>());
+		s.pop_main();
+	}
 	return p + 2;
 }
 
@@ -2097,10 +2099,10 @@ TEST_CASE("import_export_tests", "fif combined tests") {
 		fif::interpreter_stack values{ };
 
 		our_global = 0;
-		fif::add_import("set-global", set_global, interpreted_set_global, { fif::fif_i32 }, { }, fif_env);
+		fif::add_import("set-global", set_global, interpreted_set_global, { fif::fif_i32, fif::fif_i32 }, { }, fif_env);
 
 		fif::run_fif_interpreter(fif_env,
-			": t 10 set-global ; "
+			": t 0 10 set-global ; "
 			"t",
 			values);
 
@@ -2123,10 +2125,10 @@ TEST_CASE("import_export_tests", "fif combined tests") {
 		fif::interpreter_stack values{ };
 
 		our_global = 0;
-		fif::add_import("set-global", set_global, interpreted_set_global, { fif::fif_i32 }, { }, fif_env);
+		fif::add_import("set-global", set_global, interpreted_set_global, { fif::fif_i32, fif::fif_i32 }, { }, fif_env);
 
 		fif::run_fif_interpreter(fif_env,
-			": t 12 set-global ; ",
+			": t 0 12 set-global ; ",
 			values);
 
 		fif::make_exportable_function("test_jit_fn", "t", { }, { }, fif_env);
@@ -2171,10 +2173,10 @@ TEST_CASE("import_export_tests", "fif combined tests") {
 		fif::interpreter_stack values{ };
 
 		our_global = 0;
-		fif::add_import("set-global", set_global, interpreted_set_global, { fif::fif_i32 }, { }, fif_env);
+		fif::add_import("set-global", set_global, interpreted_set_global, { fif::fif_i32, fif::fif_i32 }, { }, fif_env);
 
 		fif::run_fif_interpreter(fif_env,
-			": t 12 set-global ; "
+			": t 0 12 set-global ; "
 			":export test_jit_fn t ; ",
 			values);
 
