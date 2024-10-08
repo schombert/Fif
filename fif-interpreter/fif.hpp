@@ -849,7 +849,7 @@ public:
 
 
 enum class control_structure : uint8_t {
-	none, function, str_if, str_while_loop, str_do_loop, mode_switch, globals, lexical_scope, rt_function
+	none, function, str_if, str_while_loop, str_do_loop, mode_switch, globals,
 };
 
 class compiler_state;
@@ -1063,6 +1063,10 @@ public:
 	std::vector<std::string_view> source_stack;
 	std::vector<lexical_scope> lexical_stack;
 	std::vector<int64_t> tc_local_variables;
+	struct {
+		size_t offset = 0;
+		int32_t instance = -2;
+	} last_compiled_call;
 	
 	static constexpr int32_t interpreter_stack_size = 1024 * 64;
 	std::unique_ptr<unsigned char[]> interpreter_stack_space;
@@ -4153,6 +4157,13 @@ inline int32_t* call_function(state_stack& s, int32_t* p, environment* env) {
 	enter_function_call(p + 4, *env);
 	return new_addr;
 }
+inline int32_t* tail_call_function(state_stack& s, int32_t* p, environment* env) {
+	int32_t* new_addr = nullptr;
+	memcpy(&new_addr, p + 2, sizeof(void*));
+	auto retval = leave_function_call(*env);
+	enter_function_call(retval, *env);
+	return new_addr;
+}
 inline int32_t* enter_function(state_stack& s, int32_t* p, environment* env) {
 	env->frame_offset -= *(p + 2);
 	return p + 3;
@@ -4930,7 +4941,42 @@ public:
 		else
 			condition_mode = merge_modes(env.mode, condition_mode);
 
-		if(env.mode == fif_mode::compiling_bytecode || env.mode == fif_mode::compiling_llvm) {
+		if(env.mode == fif_mode::compiling_bytecode) {
+			if(compiled_bytes.size() == env.last_compiled_call.offset + 4 && env.last_compiled_call.instance == for_instance) {
+				// tail call
+				auto high_int = compiled_bytes.back();
+				compiled_bytes.pop_back();
+				auto low_int = compiled_bytes.back();
+				compiled_bytes.pop_back();
+
+				compiled_bytes.pop_back();
+				compiled_bytes.pop_back();
+
+				for(auto j = env.lexical_stack.size(); j-- > size_t(entry_lex_depth); ) {
+					lexical_free_scope(env.lexical_stack[j], env);
+				}
+
+				fif_call imm = tail_call_function;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				compiled_bytes.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+				compiled_bytes.push_back(low_int);
+				compiled_bytes.push_back(high_int);
+
+				env.mode = surpress_branch(env.mode);
+			} else {
+				for(auto j = env.lexical_stack.size(); j-- > size_t(entry_lex_depth); ) {
+					lexical_free_scope(env.lexical_stack[j], env);
+				}
+
+				fif_call imm = function_return;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				compiled_bytes.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+			}
+		} else if(env.mode == fif_mode::compiling_llvm) {
 			auto pb = env.compiler_stack.back()->llvm_block();
 			fn_exit.add_cb_with_exit_pad(branch_source{ env.compiler_stack.back()->working_state()->copy(), env.tc_local_variables, pb ? *pb : nullptr, nullptr, nullptr, 0, false, true, true, false }, entry_lex_depth, env);
 			env.mode = surpress_branch(env.mode);
@@ -5000,8 +5046,30 @@ public:
 				env.lexical_stack.pop_back();
 				assert(env.lexical_stack.size() == size_t(entry_lex_depth));
 			} else {
-				lexical_end_scope(env);
-				assert(env.lexical_stack.size() == size_t(entry_lex_depth));
+				if(env.mode == fif_mode::compiling_bytecode && compiled_bytes.size() == env.last_compiled_call.offset + 4 && env.last_compiled_call.instance == for_instance) {
+					// tail call
+					auto high_int = compiled_bytes.back();
+					compiled_bytes.pop_back();
+					auto low_int = compiled_bytes.back();
+					compiled_bytes.pop_back();
+
+					compiled_bytes.pop_back();
+					compiled_bytes.pop_back();
+
+					lexical_end_scope(env);
+					assert(env.lexical_stack.size() == size_t(entry_lex_depth));
+
+					fif_call imm = tail_call_function;
+					uint64_t imm_bytes = 0;
+					memcpy(&imm_bytes, &imm, 8);
+					compiled_bytes.push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+					compiled_bytes.push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					compiled_bytes.push_back(low_int);
+					compiled_bytes.push_back(high_int);
+				} else {
+					lexical_end_scope(env);
+					assert(env.lexical_stack.size() == size_t(entry_lex_depth));
+				}
 			}
 		}
 
@@ -6592,6 +6660,16 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 							cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 							cbytes->push_back(match.word_index);
 						} else {
+							env.last_compiled_call.offset = cbytes->size();
+							env.last_compiled_call.instance = [&]() {
+								for(auto j = env.compiler_stack.size(); j-- > 0; ) {
+									if(env.compiler_stack[j]->get_type() == control_structure::function) {
+										auto fs = (function_scope*)(env.compiler_stack[j].get());
+										return fs->for_instance;
+									}
+								}
+								return -2;
+							}();
 							{
 								fif_call imm = call_function;
 								uint64_t imm_bytes = 0;
