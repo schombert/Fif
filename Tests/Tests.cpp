@@ -2077,12 +2077,12 @@ static int32_t our_global = 0;
 void set_global(int32_t low_stack_dummy, int32_t v) {
 	our_global = v;
 }
-int32_t* interpreted_set_global(fif::state_stack& s, int32_t* p, fif::environment* e) {
+uint16_t* interpreted_set_global(fif::state_stack& s, uint16_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::interpreting) {
 		our_global = int32_t(s.popr_main().as<int32_t>());
 		s.pop_main();
 	}
-	return p + 2;
+	return p;
 }
 
 TEST_CASE("import_export_tests", "fif combined tests") {
