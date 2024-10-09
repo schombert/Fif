@@ -1537,17 +1537,25 @@ lvar_description lexical_get_var(std::string const& name, environment& env) {
 
 inline void execute_fif_word(parse_result word, environment& env, bool ignore_specializations);
 
-inline int32_t* do_local_drop(fif::state_stack& s, int32_t* p, fif::environment* e) {
-	int32_t offset = *(p + 2);
+inline int32_t* do_local_to_stack(state_stack& s, int32_t* p, environment* e) {
+	int32_t index = *(p + 2);
 	int32_t type = *(p + 3);
-	auto dest = e->interpreter_stack_space.get() + e->frame_offset + offset;
-
-	s.push_back_main(vsize_obj(type, e->dict.type_array[type].byte_size, dest));
-	execute_fif_word(fif::parse_result{ "drop", false }, *e, false);
-
+	auto* l = e->interpreter_stack_space.get() + e->frame_offset + index;
+	s.push_back_main(vsize_obj(type, uint32_t(e->dict.type_array[type].byte_size), l));
 	return p + 4;
 }
 
+inline int32_t* do_local_assign(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	int32_t offset = *(p + 2);
+	auto dest = e->interpreter_stack_space.get() + e->frame_offset + offset;
+	memcpy(dest, s.main_back_ptr_at(1), s.main_byte_back_at(1));
+	s.pop_main();
+	return p + 3;
+}
+
+inline bool trivial_drop(int32_t type, environment& env);
+inline bool trivial_dup(int32_t type, environment& env);
+inline bool trivial_init(int32_t type, environment& env);
 inline void load_from_llvm_pointer(int32_t struct_type, state_stack& ws, LLVMValueRef ptr_expression, environment& env);
 
 int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, unsigned char* data, bool memory_variable, bool reassign, environment& env) {
@@ -1567,10 +1575,10 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 				}
 
 				if(env.mode == fif_mode::compiling_bytecode) {
-					if(env.dict.type_array[it->second.type].is_struct() || env.dict.type_array[it->second.type].is_array()) {
-						auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+					auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+					if(!trivial_drop(it->second.type, env)) {
 						if(compile_bytes) {
-							fif_call imm = do_local_drop;
+							fif_call imm = do_local_to_stack;
 							uint64_t imm_bytes = 0;
 							memcpy(&imm_bytes, &imm, 8);
 							compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
@@ -1578,6 +1586,17 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 							compile_bytes->push_back(it->second.offset);
 							compile_bytes->push_back(it->second.type);
 						}
+						auto ws = env.compiler_stack.back()->working_state();
+						ws->push_back_main(vsize_obj(type, 0));
+						execute_fif_word(fif::parse_result{ "drop", false }, env, false);
+					}
+					if(compile_bytes) {
+						fif_call imm = do_local_assign;
+						uint64_t imm_bytes = 0;
+						memcpy(&imm_bytes, &imm, 8);
+						compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+						compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+						compile_bytes->push_back(it->second.offset);
 					}
 				} else if(env.mode == fif_mode::compiling_llvm) {
 					auto ptr = env.tc_local_variables.data() + it->second.offset;
@@ -1608,6 +1627,15 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 		if(env.mode == fif_mode::compiling_bytecode) {
 			env.compiler_stack.back()->increase_frame_size(env.lexical_stack.back().allocated_bytes);
 			env.lexical_stack.back().vars.insert_or_assign(name, lvar_description{ type, offset_pos, size, memory_variable });
+			auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			if(compile_bytes) {
+				fif_call imm = do_local_assign;
+				uint64_t imm_bytes = 0;
+				memcpy(&imm_bytes, &imm, 8);
+				compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+				compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+				compile_bytes->push_back(offset_pos);
+			}
 			return offset_pos;
 		} else if(env.mode == fif_mode::compiling_llvm) {
 			env.tc_local_variables.resize(env.lexical_stack.back().allocated_bytes / 8);
@@ -1628,30 +1656,18 @@ void lexical_free_scope(lexical_scope& s, environment& env) {
 	auto const mode = env.mode;
 	for(auto& l : s.vars) {
 		if(mode == fif_mode::compiling_bytecode) {
-			if(env.dict.type_array[l.second.type].is_struct() || env.dict.type_array[l.second.type].is_array()) {
-				if(l.second.memory_variable) {
-					auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
-					if(compile_bytes) {
-						fif_call imm = do_local_drop;
-						uint64_t imm_bytes = 0;
-						memcpy(&imm_bytes, &imm, 8);
-						compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-						compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-						compile_bytes->push_back(l.second.offset);
-						compile_bytes->push_back(l.second.type);
-					}
-				} else {
-					auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
-					if(compile_bytes) {
-						fif_call imm = do_local_drop;
-						uint64_t imm_bytes = 0;
-						memcpy(&imm_bytes, &imm, 8);
-						compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
-						compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
-						compile_bytes->push_back(l.second.offset);
-						compile_bytes->push_back(l.second.type);
-					}
+			auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			if(!trivial_drop(l.second.type, env)) {
+				if(compile_bytes) {
+					fif_call imm = do_local_to_stack;
+					uint64_t imm_bytes = 0;
+					memcpy(&imm_bytes, &imm, 8);
+					compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+					compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					compile_bytes->push_back(l.second.offset);
+					compile_bytes->push_back(l.second.type);
 				}
+				execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 			}
 		} else if(mode == fif_mode::interpreting) {
 			assert(false);
@@ -3126,6 +3142,8 @@ inline word_match_result match_word(word const& w, state_stack& ts, std::vector<
 	return word_match_result{ false, 0, 0, 0, 0 };
 }
 
+inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations);
+
 inline void execute_fif_word(state_stack& ss, int32_t* ptr, environment& env) {
 	enter_function_call(nullptr, env);
 	while(ptr) {
@@ -3163,6 +3181,53 @@ inline int32_t* immediate_bool(state_stack& s, int32_t* p, environment*) {
 	int32_t data = *(p + 2);
 	s.push_back_main<bool>(fif_bool, data != 0);
 	return p + 3;
+}
+inline int32_t* dup(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(skip_compilation(e->mode))
+		return p + 2;
+	if(e->mode == fif::fif_mode::compiling_bytecode) {
+		if(auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress(); compile_bytes) {
+			fif_call imm = dup;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+		}
+	}
+	auto back = s.popr_main();
+	s.push_back_main(back);
+	s.push_back_main(back);
+
+	return p + 2;
+}
+inline int32_t* drop(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_bytecode) {
+		if(auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress(); compile_bytes) {
+			fif_call imm = drop;
+			uint64_t imm_bytes = 0;
+			memcpy(&imm_bytes, &imm, 8);
+			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+		}
+		s.pop_main();
+	} else if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.pop_main();
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.pop_main();
+	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
+		s.pop_main();
+	}
+	return p + 2;
+}
+inline int32_t* nop1(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+		s.mark_used_from_main(1);
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		s.mark_used_from_main(1);
+	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
+		s.mark_used_from_main(1);
+	}
+	return p + 2;
 }
 inline void do_immediate_i32(state_stack& s, int32_t value, environment* e) {
 	if(skip_compilation(e->mode))
@@ -3341,6 +3406,136 @@ inline int32_t* function_return(state_stack& s, int32_t* p, environment* e) {
 		return nullptr;
 	else
 		return leave_function_call(*e);
+}
+
+inline bool trivial_drop(int32_t type, environment& env) {
+	auto& t = env.dict.type_array[type];
+	if(t.is_memory_type() || t.is_pointer())
+		return true;
+	if(t.is_array()) {
+		auto atype = env.dict.all_stack_types[t.decomposed_types_start + 1];
+		return trivial_drop(atype, env);
+	} else if(t.is_struct()) {
+		std::vector<int32_t> called_tsub_types;
+		auto drop_index = env.dict.words.find(std::string("drop"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(env.dict.word_array[match.substitution_version].treat_as_base == false) {
+			if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation == drop) {
+				return true;
+			}
+			return false;
+		}
+		for(int32_t j = 1; j < t.decomposed_types_count - t.non_member_types; ++j) {
+			auto st = env.dict.all_stack_types[t.decomposed_types_start + j];
+			if(!trivial_drop(st, env))
+				return false;
+		}
+		return true;
+	} else {
+		std::vector<int32_t> called_tsub_types;
+		auto drop_index = env.dict.words.find(std::string("drop"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation == drop) {
+				return true;
+		}
+		return false;
+	}
+}
+inline bool trivial_dup(int32_t type, environment& env) {
+	auto& t = env.dict.type_array[type];
+	if(t.is_memory_type() || t.is_pointer())
+		return true;
+	if(t.is_array()) {
+		auto atype = env.dict.all_stack_types[t.decomposed_types_start + 1];
+		return trivial_dup(atype, env);
+	} else if(t.is_struct()) {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("dup"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(env.dict.word_array[match.substitution_version].treat_as_base == false) {
+			if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation == dup) {
+				return true;
+			}
+			return false;
+		}
+		for(int32_t j = 1; j < t.decomposed_types_count - t.non_member_types; ++j) {
+			auto st = env.dict.all_stack_types[t.decomposed_types_start + j];
+			if(!trivial_dup(st, env))
+				return false;
+		}
+		return true;
+	} else {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("dup"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation == dup) {
+			return true;
+		}
+		return false;
+	}
+}
+inline bool trivial_init(int32_t type, environment& env) {
+	auto& t = env.dict.type_array[type];
+	if(t.is_pointer())
+		return true;
+	if(t.is_array()) {
+		auto atype = env.dict.all_stack_types[t.decomposed_types_start + 1];
+		return trivial_init(atype, env);
+	} else if(t.is_struct()) {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("init"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(env.dict.word_array[match.substitution_version].treat_as_base == false) {
+			if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation == nop1) {
+				return true;
+			}
+			return false;
+		}
+		for(int32_t j = 1; j < t.decomposed_types_count - t.non_member_types; ++j) {
+			auto st = env.dict.all_stack_types[t.decomposed_types_start + j];
+			if(!trivial_init(st, env))
+				return false;
+		}
+		return true;
+	} else {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("init"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation == nop1) {
+			return true;
+		}
+		return false;
+	}
 }
 
 
