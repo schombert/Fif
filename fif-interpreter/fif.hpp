@@ -482,6 +482,44 @@ public:
 			memcpy(fi64(first_bsize), obj.data(), obj.size);
 		first_bsize += int32_t(obj.size);
 	}
+	void push_first_direct(int32_t type, uint32_t size, unsigned char* dat) {
+		if(first_tsize + 1 > first_tcapacity || first_bsize + int32_t(size) > first_bcapacity) {
+			auto temp = std::move(*this);
+
+			auto new_tcap = first_tsize + 1 > first_tcapacity ? std::max(temp.first_tcapacity * 2, 8) : std::max(temp.first_tcapacity, 8);
+			auto new_bcap = first_bsize + int32_t(size) > first_bcapacity ? std::max(temp.first_bcapacity * 2, std::max(first_bsize + int32_t(size), 64)) : std::max(temp.first_bcapacity, 64);
+			auto new_stcap = std::max(temp.second_tcapacity, 8);
+			auto new_sbcap = std::max(temp.second_bcapacity, 64);
+
+			allocation = new unsigned char[new_tcap * (sizeof(type_size)) + new_stcap * (sizeof(type_size)) + new_bcap + new_sbcap];
+			first_tcapacity = new_tcap;
+			second_tcapacity = new_stcap;
+			first_bcapacity = new_bcap;
+			second_bcapacity = new_sbcap;
+			first_tsize = temp.first_tsize;
+			second_tsize = temp.second_tsize;
+			first_bsize = temp.first_bsize;
+			second_bsize = temp.second_bsize;
+
+			memcpy(first_i32(), temp.first_i32(), sizeof(type_size) * first_tsize);
+			memcpy(first_b(), temp.first_b(), first_bsize);
+			memcpy(second_i32(), temp.second_i32(), sizeof(type_size) * second_tsize);
+			memcpy(second_b(), temp.second_b(), second_bsize);
+
+			// ensure original allocation outlives possible use
+			++first_tsize;
+			fi32(first_tsize - 1) = type_size{ type, size };
+			if(dat)
+				memcpy(fi64(first_bsize), dat, size);
+			first_bsize += int32_t(size);
+		} else {
+			++first_tsize;
+			fi32(first_tsize - 1) = type_size{ type, size };
+			if(dat)
+				memcpy(fi64(first_bsize), dat, size);
+			first_bsize += int32_t(size);
+		}
+	}
 	void push_second(vsize_obj const& obj) {
 		if(second_tsize + 1 > second_tcapacity || second_bsize + int32_t(obj.size) > second_bcapacity) {
 			auto temp = std::move(*this);
@@ -505,12 +543,50 @@ public:
 			memcpy(first_b(), temp.first_b(), first_bsize);
 			memcpy(second_i32(), temp.second_i32(), sizeof(type_size) * second_tsize);
 			memcpy(second_b(), temp.second_b(), second_bsize);
+
+			// ensure original allocation outlives possible use
+			++second_tsize;
+			si32(second_tsize - 1) = type_size{ obj.type, obj.size };
+			if(obj.data())
+				memcpy(si64(second_bsize), obj.data(), obj.size);
+			second_bsize += int32_t(obj.size);
+		} else {
+			++second_tsize;
+			si32(second_tsize - 1) = type_size{ obj.type, obj.size };
+			if(obj.data())
+				memcpy(si64(second_bsize), obj.data(), obj.size);
+			second_bsize += int32_t(obj.size);
+		}
+	}
+	void push_second_direct(int32_t type, uint32_t size, unsigned char* dat) {
+		if(second_tsize + 1 > second_tcapacity || second_bsize + int32_t(size) > second_bcapacity) {
+			auto temp = std::move(*this);
+
+			auto new_stcap = second_tsize + 1 > second_tcapacity ? std::max(temp.second_tcapacity * 2, 8) : std::max(temp.second_tcapacity, 8);
+			auto new_sbcap = second_bsize + int32_t(size) > second_bcapacity ? std::max(temp.second_bcapacity * 2, std::max(second_bsize + int32_t(size), 64)) : std::max(temp.second_bcapacity, 64);
+			auto new_tcap = std::max(temp.first_tcapacity, 8);
+			auto new_bcap = std::max(temp.first_bcapacity, 64);
+
+			allocation = new unsigned char[new_tcap * (sizeof(type_size)) + new_stcap * (sizeof(type_size)) + new_bcap + new_sbcap];
+			first_tcapacity = new_tcap;
+			second_tcapacity = new_stcap;
+			first_bcapacity = new_bcap;
+			second_bcapacity = new_sbcap;
+			first_tsize = temp.first_tsize;
+			second_tsize = temp.second_tsize;
+			first_bsize = temp.first_bsize;
+			second_bsize = temp.second_bsize;
+
+			memcpy(first_i32(), temp.first_i32(), sizeof(type_size) * first_tsize);
+			memcpy(first_b(), temp.first_b(), first_bsize);
+			memcpy(second_i32(), temp.second_i32(), sizeof(type_size) * second_tsize);
+			memcpy(second_b(), temp.second_b(), second_bsize);
 		}
 		++second_tsize;
-		si32(second_tsize - 1) = type_size{ obj.type, obj.size };
-		if(obj.data())
-			memcpy(si64(second_bsize), obj.data(), obj.size);
-		second_bsize += int32_t(obj.size);
+		si32(second_tsize - 1) = type_size{ type, size };
+		if(dat)
+			memcpy(si64(second_bsize), dat, size);
+		second_bsize += int32_t(size);
 	}
 	void resize(int32_t fs, int32_t ss) {
 		assert(fs <= first_tsize && ss <= second_tsize);
@@ -641,15 +717,19 @@ public:
 	void push_back_return(vsize_obj const& val) {
 		contents.push_second(val);
 	}
+	void push_back_main(int32_t type, uint32_t size, unsigned char* dat) {
+		contents.push_first_direct(type, size, dat);
+	}
+	void push_back_return(int32_t type, uint32_t size, unsigned char* dat) {
+		contents.push_second_direct(type, size, dat);
+	}
 	template<typename T>
 	void push_back_main(int32_t t, T val) {
-		vsize_obj temp(t, uint32_t(sizeof(T)), (unsigned char*)(&val));
-		contents.push_first(temp);
+		contents.push_first_direct(t, uint32_t(sizeof(T)), (unsigned char*)(&val));
 	}
 	template<typename T>
 	void push_back_return(int32_t t, T val) {
-		vsize_obj temp(t, uint32_t(sizeof(T)), (unsigned char*)(&val));
-		contents.push_second(temp);
+		contents.push_second_direct(t, uint32_t(sizeof(T)), (unsigned char*)(&val));
 	}
 	state_stack copy() const {
 		return *this;
@@ -1541,7 +1621,7 @@ inline int32_t* do_local_to_stack(state_stack& s, int32_t* p, environment* e) {
 	int32_t index = *(p + 2);
 	int32_t type = *(p + 3);
 	auto* l = e->interpreter_stack_space.get() + e->frame_offset + index;
-	s.push_back_main(vsize_obj(type, uint32_t(e->dict.type_array[type].byte_size), l));
+	s.push_back_main(type, uint32_t(e->dict.type_array[type].byte_size), l);
 	return p + 4;
 }
 
@@ -3182,28 +3262,42 @@ inline int32_t* immediate_bool(state_stack& s, int32_t* p, environment*) {
 	s.push_back_main<bool>(fif_bool, data != 0);
 	return p + 3;
 }
+inline int32_t* dup_cimple(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	auto sz = s.main_byte_back_at(1);
+	auto dat = s.main_back_ptr_at(1);
+	auto t = s.main_type_back(0);
+	s.push_back_main(t, sz, dat);
+	return p + 2;
+}
 inline int32_t* dup(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(skip_compilation(e->mode))
 		return p + 2;
 	if(e->mode == fif::fif_mode::compiling_bytecode) {
 		if(auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress(); compile_bytes) {
-			fif_call imm = dup;
+			fif_call imm = dup_cimple;
 			uint64_t imm_bytes = 0;
 			memcpy(&imm_bytes, &imm, 8);
 			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
 			compile_bytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 		}
 	}
-	auto back = s.popr_main();
-	s.push_back_main(back);
-	s.push_back_main(back);
+	s.mark_used_from_main(2);
 
+	auto sz = s.main_byte_back_at(1);
+	auto dat = s.main_back_ptr_at(1);
+	auto t = s.main_type_back(0);
+	s.push_back_main(t, sz, dat);
+
+	return p + 2;
+}
+inline int32_t* drop_cimple(fif::state_stack& s, int32_t* p, fif::environment* e) {
+	s.pop_main();
 	return p + 2;
 }
 inline int32_t* drop(fif::state_stack& s, int32_t* p, fif::environment* e) {
 	if(e->mode == fif::fif_mode::compiling_bytecode) {
 		if(auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress(); compile_bytes) {
-			fif_call imm = drop;
+			fif_call imm = drop_cimple;
 			uint64_t imm_bytes = 0;
 			memcpy(&imm_bytes, &imm, 8);
 			compile_bytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
@@ -6687,23 +6781,37 @@ inline int32_t* immediate_let(state_stack& s, int32_t* p, environment* e) {
 	int32_t index = *(p + 2);
 	int32_t type = *(p + 3);
 	auto* l = e->interpreter_stack_space.get() + e->frame_offset + index;
-	if(!l) {
-		e->report_error("unable to find local let");
-		return nullptr;
-	}
-	auto duprep = check_dup(type, *e);
-	if(duprep.alters_source || duprep.copy_altered || e->dict.type_array[type].is_struct()) {
-		execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
-
-		auto new_copy = s.popr_main();
-		auto old_copy = s.popr_main();
-		if(duprep.alters_source) {
-			memcpy(l, old_copy.data(), old_copy.size);
-		}
-		s.push_back_main(new_copy);
-	}
 	s.push_back_main(vsize_obj(type, uint32_t(e->dict.type_array[type].byte_size), l));
 	return p + 4;
+}
+
+inline int32_t* stash_in_frame(state_stack& s, int32_t* p, environment* e) {
+	auto sz = s.main_byte_back_at(1);
+	auto dat = s.main_back_ptr_at(1);
+	auto t = s.main_type_back(0);
+
+	auto* base = e->interpreter_stack_space.get() + e->frame_offset;
+	auto size_pos = base - 4;
+	auto type_pos = base - 8;
+	auto data_pos = base - (8 + sz);
+
+	*((uint32_t*)size_pos) = sz;
+	*((int32_t*)type_pos) = t;
+	memcpy(data_pos, dat, sz);
+
+	s.pop_main();
+	return p + 2;
+}
+inline int32_t* recover_from_frame(state_stack& s, int32_t* p, environment* e) {
+	auto* base = e->interpreter_stack_space.get() + e->frame_offset;
+	auto size_pos = base - 4;
+	uint32_t size = *((uint32_t*)size_pos);
+	auto type_pos = base - 8;
+	int32_t type = *((int32_t*)type_pos);
+	auto data_pos = base - (8 + size);
+
+	s.push_back_main(type, size, data_pos);
+	return p + 2;
 }
 
 inline int32_t* immediate_global(state_stack& s, int32_t* p, environment* e) {
@@ -7028,6 +7136,38 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 					cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
 					cbytes->push_back(var.offset); // index
 					cbytes->push_back(var.type);
+				}
+				if(trivial_dup(var.type, env) == false) {
+					auto duprep = check_dup(var.type, env);
+					execute_fif_word(fif::parse_result{ "dup", false }, env, false);
+					{
+						fif_call imm = stash_in_frame;
+						uint64_t imm_bytes = 0;
+						memcpy(&imm_bytes, &imm, 8);
+						cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+						cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					}
+					if(duprep.alters_source) {
+						fif_call imm = do_local_assign;
+						uint64_t imm_bytes = 0;
+						memcpy(&imm_bytes, &imm, 8);
+						cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+						cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+						cbytes->push_back(var.offset); // index
+					} else {
+						fif_call imm = drop_cimple;
+						uint64_t imm_bytes = 0;
+						memcpy(&imm_bytes, &imm, 8);
+						cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+						cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					}
+					{
+						fif_call imm = recover_from_frame;
+						uint64_t imm_bytes = 0;
+						memcpy(&imm_bytes, &imm, 8);
+						cbytes->push_back(int32_t(imm_bytes & 0xFFFFFFFF));
+						cbytes->push_back(int32_t((imm_bytes >> 32) & 0xFFFFFFFF));
+					}
 				}
 				ws->push_back_main(vsize_obj(var.type, 0));
 			}
