@@ -3601,7 +3601,12 @@ inline bool trivial_init(int32_t type, environment& env) {
 
 
 #ifdef USE_LLVM
-inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
+struct function_type_info {
+	LLVMTypeRef fn_type;
+	LLVMTypeRef out_ptr_type;
+	uint32_t ret_param_index;
+};
+inline function_type_info llvm_function_type_from_desc(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
 	std::vector<LLVMTypeRef> parameter_dgroup;
 	std::vector<LLVMTypeRef> parameter_rgroup;
 	std::vector<LLVMTypeRef> return_group;
@@ -3656,6 +3661,7 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 		}
 	}
 	LLVMTypeRef ret_type = nullptr;
+	LLVMTypeRef extra_ret_stype = nullptr;
 	if(return_group.size() == 0) {
 		ret_type = LLVMVoidTypeInContext(env.llvm_context);
 	} else if(return_group.size() == 1) {
@@ -3666,12 +3672,20 @@ inline LLVMTypeRef llvm_function_type_from_desc(environment& env, std::span<int3
 				t = LLVMInt8TypeInContext(env.llvm_context);
 			}
 		}
-		ret_type = LLVMStructTypeInContext(env.llvm_context, return_group.data(), uint32_t(return_group.size()), true);
+		ret_type = LLVMStructTypeInContext(env.llvm_context, return_group.data(), 2, true);
+		if(return_group.size() >= 3) {
+			parameter_dgroup.push_back(LLVMPointerTypeInContext(env.llvm_context, 0));
+			if(return_group.size() == 3) {
+				extra_ret_stype = return_group[2];
+			} else if(return_group.size() > 3) {
+				extra_ret_stype = LLVMStructTypeInContext(env.llvm_context, return_group.data() + 2, uint32_t(return_group.size() - 2), true);
+			}
+		}
 	}
-	return LLVMFunctionType(ret_type, parameter_dgroup.data(), uint32_t(parameter_dgroup.size()), false);
+	return function_type_info{ LLVMFunctionType(ret_type, parameter_dgroup.data(), uint32_t(parameter_dgroup.size()), false), extra_ret_stype, uint32_t(parameter_dgroup.size() - 1) };
 }
 
-inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, state_stack& ws, std::span<int32_t const> desc) {
+inline LLVMValueRef llvm_make_function_parameters(environment& env, LLVMValueRef fn, bool return_parameter, state_stack& ws, std::span<int32_t const> desc) {
 
 	/*
 	* NOTE: function assumes that description is fully resolved
@@ -3725,6 +3739,12 @@ inline void llvm_make_function_parameters(environment& env, LLVMValueRef fn, sta
 	}
 
 	ws.trim_to(size_t(parameter_count), size_t(rparameter_count));
+
+	if(return_parameter) {
+		return LLVMGetParam(fn, uint32_t(pindex));
+	} else {
+		return nullptr;
+	}
 }
 
 struct brief_fn_return {
@@ -3799,7 +3819,7 @@ inline brief_fn_return llvm_function_return_type_from_desc(environment& env, std
 	return brief_fn_return{ ret_type , output_stack_types, ret_added, return_group.size()  > 1};
 }
 
-inline void llvm_make_function_return(environment& env, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
+inline void llvm_make_function_return(environment& env, LLVMValueRef return_param, std::span<int32_t const> desc, std::vector<int32_t> const& param_perm) {
 	std::vector<LLVMTypeRef> return_group;
 	std::vector<LLVMValueRef> returns_vals;
 
@@ -3860,6 +3880,8 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 	}
 
 	LLVMTypeRef ret_type = nullptr;
+	LLVMTypeRef extra_ret_stype = nullptr;
+
 	if(return_group.size() == 0) {
 		
 	} else if(return_group.size() == 1) {
@@ -3870,7 +3892,10 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 				t = LLVMInt8TypeInContext(env.llvm_context);
 			}
 		}
-		ret_type = LLVMStructTypeInContext(env.llvm_context, return_group.data(), uint32_t(return_group.size()), true);
+		ret_type = LLVMStructTypeInContext(env.llvm_context, return_group.data(), 2, true);
+		if(return_group.size() > 3) {
+			extra_ret_stype = LLVMStructTypeInContext(env.llvm_context, return_group.data() + 2, uint32_t(return_group.size() - 2), true);
+		}
 	}
 
 	if(ret_type == nullptr) {
@@ -3885,12 +3910,20 @@ inline void llvm_make_function_return(environment& env, std::span<int32_t const>
 	auto rstruct = LLVMGetUndef(ret_type);
 	uint32_t insert_index = 0;
 
-	for(uint32_t i = 0; i < returns_vals.size(); ++i) {
+	for(uint32_t i = 0; i < 2; ++i) {
 		assert(return_group[i] == LLVMTypeOf(returns_vals[i]));
 		if(LLVMTypeOf(returns_vals[i]) == llvm_type(fif_bool, env)) {
 			rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, LLVMBuildZExt(env.llvm_builder, returns_vals[i], LLVMInt8TypeInContext(env.llvm_context), ""), i, "");
 		} else {
 			rstruct = LLVMBuildInsertValue(env.llvm_builder, rstruct, returns_vals[i], i, "");
+		}
+	}
+	for(uint32_t i = 2; i < returns_vals.size(); ++i) {
+		auto ptr = returns_vals.size() > 3 ? LLVMBuildStructGEP2(env.llvm_builder, extra_ret_stype, return_param, uint32_t(i - 2), "") : return_param;
+		if(LLVMTypeOf(returns_vals[i]) == llvm_type(fif_bool, env)) {
+			LLVMBuildStore(env.llvm_builder, LLVMBuildZExt(env.llvm_builder, returns_vals[i], LLVMInt8TypeInContext(env.llvm_context), ""), ptr);
+		} else {
+			LLVMBuildStore(env.llvm_builder, returns_vals[i], ptr);
 		}
 	}
 
@@ -3963,7 +3996,13 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 	ts.resize(size_t(ssize - consumed_stack_cells), size_t(rsize - consumed_rstack_cells));
 
 	assert(wi.llvm_function);
-	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation), wi.llvm_function, params.data(), uint32_t(params.size()), "");
+	auto ftype_info = llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation);
+	LLVMValueRef return_alloc = nullptr;
+	if(ftype_info.out_ptr_type) {
+		return_alloc = env.compiler_stack.back()->build_alloca(ftype_info.out_ptr_type);
+		params.push_back(return_alloc);
+	}
+	auto retvalue = LLVMBuildCall2(env.llvm_builder, ftype_info.fn_type, wi.llvm_function, params.data(), uint32_t(params.size()), "");
 	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
 
 	int32_t outd_bytes = 0;
@@ -3994,12 +4033,13 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 	LLVMValueRef* output_dptr = (LLVMValueRef*)(ts.main_back_ptr_at(outm_slots));
 	LLVMValueRef* output_rptr = (LLVMValueRef*)(ts.return_back_ptr_at(outr_slots));
 
-	auto return_count = (outd_bytes + outr_bytes) / 8;
-	for(auto i : wi.llvm_parameter_permutation) {
-		if(i != -1)
-			--return_count;
+	for(auto pi = wi.llvm_parameter_permutation.size(); pi-- > 0; ) {
+		if(wi.llvm_parameter_permutation[pi] != -1) {
+			return_group.erase(return_group.begin() + pi);
+		}
 	}
-	bool multiple_returns = return_count > 1;
+
+	bool multiple_returns = return_group.size() > 1;
 
 	int32_t pinsert_index = 0;
 	uint32_t grabbed_o_index = 0;
@@ -4007,10 +4047,24 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 	for(int32_t i = 0; i < outd_bytes / 8; ++i) {
 		if(pinsert_index >= int32_t(wi.llvm_parameter_permutation.size()) || wi.llvm_parameter_permutation[pinsert_index] == -1) {
 			if(multiple_returns) {
-				if(return_group[pinsert_index] == llvm_type(fif_bool, env)) {
-					output_dptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+				if(grabbed_o_index < 2) {
+					if(return_group[grabbed_o_index] == llvm_type(fif_bool, env)) {
+						output_dptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+					} else {
+						output_dptr[i] = LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, "");
+					}
 				} else {
-					output_dptr[i] = LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, "");
+					LLVMValueRef load_ptr = nullptr;
+					if(return_group.size() == 3) {
+						load_ptr = return_alloc;
+					} else {
+						load_ptr = LLVMBuildStructGEP2(env.llvm_builder, ftype_info.out_ptr_type, return_alloc, uint32_t(grabbed_o_index - 2), "");
+					}
+					if(return_group[grabbed_o_index] == llvm_type(fif_bool, env)) {
+						output_dptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildLoad2(env.llvm_builder, LLVMInt8TypeInContext(env.llvm_context), load_ptr, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+					} else {
+						output_dptr[i] = LLVMBuildLoad2(env.llvm_builder, return_group[grabbed_o_index], load_ptr, "");
+					}
 				}
 			} else {
 				output_dptr[i] = retvalue;
@@ -4024,10 +4078,24 @@ inline void llvm_make_function_call(environment& env, interpreted_word_instance&
 	for(int32_t i = 0; i < outr_bytes / 8; ++i) {
 		if(pinsert_index >= int32_t(wi.llvm_parameter_permutation.size()) || wi.llvm_parameter_permutation[pinsert_index] == -1) {
 			if(multiple_returns) {
-				if(return_group[pinsert_index] == llvm_type(fif_bool, env)) {
-					output_rptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+				if(grabbed_o_index < 2) {
+					if(return_group[grabbed_o_index] == llvm_type(fif_bool, env)) {
+						output_rptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+					} else {
+						output_rptr[i] = LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, "");
+					}
 				} else {
-					output_rptr[i] = LLVMBuildExtractValue(env.llvm_builder, retvalue, grabbed_o_index, "");
+					LLVMValueRef load_ptr = nullptr;
+					if(return_group.size() == 3) {
+						load_ptr = return_alloc;
+					} else {
+						load_ptr = LLVMBuildStructGEP2(env.llvm_builder, ftype_info.out_ptr_type, load_ptr, uint32_t(grabbed_o_index - 2), "");
+					}
+					if(return_group[grabbed_o_index] == llvm_type(fif_bool, env)) {
+						output_rptr[i] = LLVMBuildTrunc(env.llvm_builder, LLVMBuildLoad2(env.llvm_builder, LLVMInt8TypeInContext(env.llvm_context), load_ptr, ""), LLVMInt1TypeInContext(env.llvm_context), "");
+					} else {
+						output_rptr[i] = LLVMBuildLoad2(env.llvm_builder, return_group[grabbed_o_index], load_ptr, "");
+					}
 				}
 			} else {
 				output_rptr[i] = retvalue;
@@ -5109,6 +5177,8 @@ public:
 	LLVMBasicBlockRef current_block = nullptr;
 	LLVMBasicBlockRef alloca_block = nullptr;
 	LLVMBasicBlockRef first_real_block = nullptr;
+	LLVMValueRef return_parameter = nullptr;
+
 	environment& env;
 	size_t locals_size_position = 0;
 	int32_t for_word = -1;
@@ -5158,11 +5228,17 @@ public:
 			assert(for_instance != -1);
 			auto fn_desc = std::span<int32_t const>(env.dict.all_stack_types.data() + std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_start, std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).stack_types_count);
 
+			bool has_llvm_return_parameter = false;
 #ifdef USE_LLVM
 			if(!std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function) {
 				auto fn_string_name = word_name_from_id(for_word, env) + "#" + std::to_string(for_instance);
 				auto fn_type = llvm_function_type_from_desc(env, fn_desc, std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_parameter_permutation);
-				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function = LLVMAddFunction(env.llvm_module, fn_string_name.c_str(), fn_type);
+				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function = LLVMAddFunction(env.llvm_module, fn_string_name.c_str(), fn_type.fn_type);
+				if(fn_type.out_ptr_type) {
+					//auto sret_attribute = LLVMCreateTypeAttribute(env.llvm_context, 78, fn_type.out_ptr_type);
+					//LLVMAddAttributeAtIndex(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function, 1 + fn_type.ret_param_index, sret_attribute);
+					has_llvm_return_parameter = true;
+				}
 			}
 #endif
 			auto compiled_fn = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function;
@@ -5180,7 +5256,7 @@ public:
 			first_real_block = LLVMAppendBasicBlockInContext(env.llvm_context, compiled_fn, "post_alloca_code");
 			LLVMPositionBuilderAtEnd(env.llvm_builder, first_real_block);
 			current_block = first_real_block;
-			llvm_make_function_parameters(env, compiled_fn, iworking_state, fn_desc);
+			return_parameter = llvm_make_function_parameters(env, compiled_fn, has_llvm_return_parameter, iworking_state, fn_desc);
 			initial_state = iworking_state;
 #endif
 		} else if(typechecking_mode(env.mode)) {
@@ -5489,7 +5565,7 @@ public:
 			interpreted_word_instance& wi = std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]);
 			std::span<const int32_t> existing_description = std::span<const int32_t>(env.dict.all_stack_types.data() + wi.stack_types_start, size_t(wi.stack_types_count));
 
-			llvm_make_function_return(env, existing_description, wi.llvm_parameter_permutation);
+			llvm_make_function_return(env, return_parameter, existing_description, wi.llvm_parameter_permutation);
 			wi.llvm_compilation_finished = true;
 
 			LLVMPositionBuilderAtEnd(env.llvm_builder, alloca_block);
@@ -7180,7 +7256,11 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 
 	auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + wi.stack_types_start, wi.stack_types_count);
 	auto fn_type = llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation);
-	auto compiled_fn = LLVMAddFunction(env.llvm_module, export_name.c_str(), fn_type);
+	auto compiled_fn = LLVMAddFunction(env.llvm_module, export_name.c_str(), fn_type.fn_type);
+	if(fn_type.out_ptr_type) {
+		//auto sret_attribute = LLVMCreateTypeAttribute(env.llvm_context, 78, fn_type.out_ptr_type);
+		//LLVMAddAttributeAtIndex(compiled_fn, 1 + fn_type.ret_param_index, sret_attribute);
+	}
 
 	LLVMSetFunctionCallConv(compiled_fn, NATIVE_CC);
 	//LLVMSetLinkage(compiled_fn, LLVMLinkage::LLVMLinkOnceAnyLinkage);
@@ -7226,7 +7306,12 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 		++match_position;
 	}
 
-	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation), wi.llvm_function, params.data(), uint32_t(params.size()), "");
+	if(fn_type.out_ptr_type) {
+		params.push_back(LLVMGetParam(compiled_fn, uint32_t(added_param)));
+		++added_param;
+	}
+
+	auto retvalue = LLVMBuildCall2(env.llvm_builder, llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation).fn_type, wi.llvm_function, params.data(), uint32_t(params.size()), "");
 	LLVMSetInstructionCallConv(retvalue, LLVMCallConv::LLVMFastCallConv);
 	auto rsummary = llvm_function_return_type_from_desc(env, desc, wi.llvm_parameter_permutation);
 
@@ -7377,7 +7462,11 @@ inline void add_import(std::string_view name, void* ptr, fif_call interpreter_im
 #ifdef USE_LLVM
 	auto fn_desc = std::span<int32_t const>(itype_list.begin(), itype_list.end());
 	auto fn_type = llvm_function_type_from_desc(env, fn_desc, wi.llvm_parameter_permutation);
-	wi.llvm_function = LLVMAddFunction(env.llvm_module, nstr.c_str(), fn_type);
+	wi.llvm_function = LLVMAddFunction(env.llvm_module, nstr.c_str(), fn_type.fn_type);
+	if(fn_type.out_ptr_type) {
+		//auto sret_attribute = LLVMCreateTypeAttribute(env.llvm_context, 78, fn_type.out_ptr_type);
+		//LLVMAddAttributeAtIndex(wi.llvm_function, 1 + fn_type.ret_param_index, sret_attribute);
+	}
 	LLVMSetFunctionCallConv(wi.llvm_function, NATIVE_CC);
 	LLVMSetLinkage(wi.llvm_function, LLVMLinkage::LLVMExternalLinkage);
 #endif
