@@ -5235,6 +5235,8 @@ public:
 				auto fn_type = llvm_function_type_from_desc(env, fn_desc, std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_parameter_permutation);
 				std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function = LLVMAddFunction(env.llvm_module, fn_string_name.c_str(), fn_type.fn_type);
 				if(fn_type.out_ptr_type) {
+					auto nocapattribute = LLVMCreateEnumAttribute(env.llvm_context, 23, 1);
+					LLVMAddAttributeAtIndex(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function, 1 + fn_type.ret_param_index, nocapattribute);
 					//auto sret_attribute = LLVMCreateTypeAttribute(env.llvm_context, 78, fn_type.out_ptr_type);
 					//LLVMAddAttributeAtIndex(std::get<interpreted_word_instance>(env.dict.all_instances[for_instance]).llvm_function, 1 + fn_type.ret_param_index, sret_attribute);
 					has_llvm_return_parameter = true;
@@ -7258,6 +7260,8 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	auto fn_type = llvm_function_type_from_desc(env, desc, wi.llvm_parameter_permutation);
 	auto compiled_fn = LLVMAddFunction(env.llvm_module, export_name.c_str(), fn_type.fn_type);
 	if(fn_type.out_ptr_type) {
+		auto nocapattribute = LLVMCreateEnumAttribute(env.llvm_context, 23, 1);
+		LLVMAddAttributeAtIndex(compiled_fn, 1 + fn_type.ret_param_index, nocapattribute);
 		//auto sret_attribute = LLVMCreateTypeAttribute(env.llvm_context, 78, fn_type.out_ptr_type);
 		//LLVMAddAttributeAtIndex(compiled_fn, 1 + fn_type.ret_param_index, sret_attribute);
 	}
@@ -7464,6 +7468,8 @@ inline void add_import(std::string_view name, void* ptr, fif_call interpreter_im
 	auto fn_type = llvm_function_type_from_desc(env, fn_desc, wi.llvm_parameter_permutation);
 	wi.llvm_function = LLVMAddFunction(env.llvm_module, nstr.c_str(), fn_type.fn_type);
 	if(fn_type.out_ptr_type) {
+		auto nocapattribute = LLVMCreateEnumAttribute(env.llvm_context, 23, 1);
+		LLVMAddAttributeAtIndex(wi.llvm_function, 1 + fn_type.ret_param_index, nocapattribute);
 		//auto sret_attribute = LLVMCreateTypeAttribute(env.llvm_context, 78, fn_type.out_ptr_type);
 		//LLVMAddAttributeAtIndex(wi.llvm_function, 1 + fn_type.ret_param_index, sret_attribute);
 	}
