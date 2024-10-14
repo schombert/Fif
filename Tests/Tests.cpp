@@ -3417,5 +3417,88 @@ TEST_CASE("advanced structures", "fif combined tests") {
 			}
 		}
 	}
+
+	SECTION("array size") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t make array(i32,4) size ; t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 4);
+	}
+	SECTION("array store value") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t make array(i32,4) let x 5 1 x index ! 2 x index @ 1 x index @ + ; t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+	SECTION("array copy") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t make array(i32,4) let x 5 1 x index ! x copy let y drop 1 y index @ ; t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+	SECTION("array of array copy") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t make array(array(i32,2),4) let x "
+			"10 1 3 x index index ! "
+			"1 3 x index index @ ; t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 10);
+	}
 }
 

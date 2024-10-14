@@ -1204,9 +1204,12 @@ struct lexical_scope {
 	ankerl::unordered_dense::map<std::string, lvar_description> vars;
 	int32_t allocated_bytes = 0;
 	bool allow_shadowing = false;
+	bool new_top_scope = false;
 
 	lexical_scope() noexcept = default;
-	lexical_scope(int32_t a, bool b) noexcept : allocated_bytes(a), allow_shadowing(b) { }
+	lexical_scope(int32_t a, bool b) noexcept : allocated_bytes(a), allow_shadowing(b), new_top_scope(false) { }
+	lexical_scope(int32_t a, bool b, bool c) noexcept : allocated_bytes(a), allow_shadowing(b), new_top_scope(c){
+	}
 };
 
 struct function_call {
@@ -1635,6 +1638,8 @@ lvar_description lexical_get_var(std::string const& name, environment& env) {
 		if(auto it = env.lexical_stack[j].vars.find(name); it != env.lexical_stack[j].vars.end()) {
 			return it->second;
 		}
+		if(env.lexical_stack[j].new_top_scope)
+			return lvar_description{ -1, -1, 0, false };
 	}
 	return lvar_description{ -1, -1, 0, false };
 }
@@ -1660,6 +1665,7 @@ inline uint16_t* do_local_assign(fif::state_stack& s, uint16_t* p, fif::environm
 inline bool trivial_drop(int32_t type, environment& env);
 inline bool trivial_dup(int32_t type, environment& env);
 inline bool trivial_init(int32_t type, environment& env);
+inline bool trivial_copy(int32_t type, environment& env);
 inline void load_from_llvm_pointer(int32_t struct_type, state_stack& ws, LLVMValueRef ptr_expression, environment& env);
 
 int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, unsigned char* data, bool memory_variable, bool reassign, environment& env) {
@@ -1705,6 +1711,8 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 				}
 				return it->second.offset;
 			}
+			if(env.lexical_stack[j].new_top_scope)
+				return -1;
 		}
 		
 		return -1;
@@ -1714,6 +1722,8 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 				return -1;
 			}
 			if(env.lexical_stack[j].allow_shadowing)
+				break;
+			if(env.lexical_stack[j].new_top_scope)
 				break;
 		}
 		
@@ -1777,6 +1787,13 @@ void lexical_new_scope(bool allow_shadowing, environment& env) {
 		prev_used_bytes = env.lexical_stack.back().allocated_bytes;
 	}
 	env.lexical_stack.emplace_back(prev_used_bytes, allow_shadowing);
+}
+void lexical_new_fn_scope(bool allow_shadowing, environment& env) {
+	int32_t prev_used_bytes = 0;
+	if(env.lexical_stack.empty() == false) {
+		prev_used_bytes = env.lexical_stack.back().allocated_bytes;
+	}
+	env.lexical_stack.emplace_back(prev_used_bytes, false, true);
 }
 void lexical_end_scope(environment& env) {
 	if(env.lexical_stack.empty() == false) {
@@ -2537,6 +2554,18 @@ inline int32_t make_pointer_type(int32_t to_type, environment& env) {
 	return new_type;
 }
 
+bool is_memory_type_recursive(int32_t type, environment& env) {
+	if(type == fif_nil)
+		return false;
+	if(env.dict.type_array[type].is_memory_type())
+		return true;
+	if(env.dict.type_array[type].is_pointer() == false)
+		return false;
+
+	auto ptr_contents = env.dict.all_stack_types[env.dict.type_array[type].decomposed_types_start + 1];
+	return is_memory_type_recursive(ptr_contents, env);
+}
+
 inline int32_t find_existing_type_match(int32_t main_type, std::span<int32_t> subtypes, environment& env) {
 	for(uint32_t i = 0; i < env.dict.type_array.size(); ++i) {
 		if(env.dict.type_array[i].decomposed_types_count == int32_t(1 + subtypes.size())) {
@@ -3281,6 +3310,68 @@ inline uint16_t* dup(fif::state_stack& s, uint16_t* p, fif::environment* e) {
 
 	return p;
 }
+inline uint16_t* f_init_copy(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	if(skip_compilation(e->mode))
+		return p;
+
+	s.mark_used_from_main(2);
+	return p;
+}
+inline uint16_t* do_local_ind_copy(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	int32_t offset = *(p);
+	auto source_type = s.main_type_back(0);
+
+	auto dest = e->interpreter_stack_space.get() + e->frame_offset + offset;
+	auto source_ptr = s.main_back_ptr_at(1);
+	unsigned char* content_ptr = nullptr;
+	memcpy(&content_ptr, source_ptr, sizeof(void*));
+	memcpy(dest, content_ptr, size_t(e->dict.type_array[source_type].byte_size));
+	s.push_back_main(source_type, uint32_t(sizeof(void*)), (unsigned char*)(&dest));
+
+	return p + 1;
+}
+inline uint16_t* f_copy(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	if(skip_compilation(e->mode))
+		return p;
+	auto t = s.main_type_back(0);
+	if(e->dict.type_array[t].is_memory_type() == false) {
+		execute_fif_word(fif::parse_result{ "dup", false }, *e, false);
+		execute_fif_word(fif::parse_result{ "init-copy", false }, *e, false);
+		return p;
+	}
+
+	if(e->mode == fif::fif_mode::compiling_bytecode) {
+		auto offset_pos = e->lexical_stack.back().allocated_bytes;
+		e->lexical_stack.back().allocated_bytes += e->dict.type_array[t].byte_size;
+		e->compiler_stack.back()->increase_frame_size(e->lexical_stack.back().allocated_bytes);
+
+		c_append(e->compiler_stack.back()->bytecode_compilation_progress(), e->dict.get_builtin(do_local_ind_copy));
+		c_append(e->compiler_stack.back()->bytecode_compilation_progress(), uint16_t(offset_pos));
+
+		s.push_back_main(vsize_obj(t, 0));
+	} else if(e->mode == fif_mode::interpreting) {
+		// TODO: interpreter alloca
+		assert(false);
+	} else if(e->mode == fif::fif_mode::compiling_llvm) {
+		auto ltype = llvm_type(t, *e);
+		auto new_expr = e->compiler_stack.back()->build_alloca(ltype);
+		auto source_o = s.popr_main();
+
+		LLVMBuildMemCpy(e->llvm_builder, new_expr, 1, source_o.as<LLVMValueRef>(), 1, LLVMSizeOf(ltype));
+
+		s.push_back_main(source_o);
+		s.push_back_main(vsize_obj(t, new_expr, vsize_obj::by_value{ }));
+	} else {
+		s.mark_used_from_main(2);
+		auto t = s.main_type_back(0);
+		s.push_back_main(vsize_obj(t, e->new_ident(), vsize_obj::by_value{ }));
+	}
+
+	execute_fif_word(fif::parse_result{ "init-copy", false }, *e, false);
+	
+
+	return p;
+}
 inline uint16_t* drop_cimple(fif::state_stack& s, uint16_t* p, fif::environment* e) {
 	s.pop_main();
 	return p;
@@ -3554,6 +3645,51 @@ inline bool trivial_dup(int32_t type, environment& env) {
 		return false;
 	}
 }
+inline bool trivial_copy(int32_t type, environment& env) {
+	auto& t = env.dict.type_array[type];
+	if(t.is_memory_type() || t.is_pointer())
+		return true;
+	if(t.is_array()) {
+		auto atype = env.dict.all_stack_types[t.decomposed_types_start + 1];
+		return trivial_copy(atype, env);
+	} else if(t.is_struct()) {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("init-copy"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(env.dict.word_array[match.substitution_version].treat_as_base == false) {
+			if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation_index == env.dict.get_builtin(f_init_copy)) {
+				return true;
+			}
+			return false;
+		}
+		for(int32_t j = 1; j < t.decomposed_types_count - t.non_member_types; ++j) {
+			auto st = env.dict.all_stack_types[t.decomposed_types_start + j];
+			if(!trivial_copy(st, env))
+				return false;
+		}
+		return true;
+	} else {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("init-copy"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation_index == env.dict.get_builtin(f_init_copy)) {
+			return true;
+		}
+		return false;
+	}
+}
 inline bool trivial_init(int32_t type, environment& env) {
 	auto& t = env.dict.type_array[type];
 	if(t.is_pointer())
@@ -3585,6 +3721,52 @@ inline bool trivial_init(int32_t type, environment& env) {
 	} else {
 		std::vector<int32_t> called_tsub_types;
 		auto w_index = env.dict.words.find(std::string("init"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation_index == env.dict.get_builtin(nop1)) {
+			return true;
+		}
+		return false;
+	}
+}
+inline bool trivial_finish(int32_t type, environment& env) {
+	auto& t = env.dict.type_array[type];
+	if(t.is_pointer()) {
+		if(type == fif_opaque_ptr)
+			return true;
+		auto ptr_to_type = env.dict.all_stack_types[env.dict.type_array[type].decomposed_types_start + 1];
+		return trivial_drop(ptr_to_type, env);
+	} else if(t.is_array()) {
+		auto atype = env.dict.all_stack_types[t.decomposed_types_start + 1];
+		return trivial_finish(atype, env);
+	} else if(t.is_struct()) {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("finish"))->second;
+		state_stack temp;
+		temp.push_back_main(vsize_obj(type, 0));
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+
+		if(match.matched == false)
+			return false;
+		if(env.dict.word_array[match.substitution_version].treat_as_base == false) {
+			if(match.word_index != -1 && std::holds_alternative<compiled_word_instance>(env.dict.all_instances[match.word_index]) && std::get<compiled_word_instance>(env.dict.all_instances[match.word_index]).implementation_index == env.dict.get_builtin(nop1)) {
+				return true;
+			}
+			return false;
+		}
+		for(int32_t j = 1; j < t.decomposed_types_count - t.non_member_types; ++j) {
+			auto st = env.dict.all_stack_types[t.decomposed_types_start + j];
+			if(!trivial_finish(st, env))
+				return false;
+		}
+		return true;
+	} else {
+		std::vector<int32_t> called_tsub_types;
+		auto w_index = env.dict.words.find(std::string("finish"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
 		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
@@ -5205,6 +5387,7 @@ public:
 		env.tc_local_variables.clear();
 		entry_lex_depth = int32_t(env.lexical_stack.size());
 		env.lexical_stack.emplace_back();
+		env.lexical_stack.back().new_top_scope = true;
 
 		if(typechecking_mode(env.mode))
 			env.dict.word_array[for_word].being_typechecked = true;
@@ -6860,6 +7043,131 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		do_immediate_f32(*ws, parse_float(word.content), &env);
 	} else if(word.content == "true" || word.content == "false") {
 		do_immediate_bool(*ws, word.content == "true", &env);
+	} else if(auto var = lexical_get_var(content_string, env); env.mode != fif_mode::interpreting && word.is_string == false && var.type != -1) {
+		auto vdata = (unsigned char*)(env.tc_local_variables.data() + var.offset);
+		if(var.memory_variable) {
+			int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), var.type, -1 };
+			std::vector<int32_t> subs;
+			auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
+
+			if(skip_compilation(env.mode)) {
+
+			} else if(typechecking_mode(env.mode)) {
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), vdata));
+			} else if(env.mode == fif_mode::compiling_llvm) {
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(LLVMValueRef), vdata));
+			} else if(env.mode == fif_mode::interpreting) {
+				// ws->push_back_main(vsize_obj(mem_type.type, sizeof(void*), (unsigned char*)(&vdata)));
+			} else if(env.mode == fif_mode::compiling_bytecode) {
+				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+				c_append(cbytes, env.dict.get_builtin(immediate_mem_var));
+				c_append(cbytes, uint16_t(var.offset)); // index
+				c_append(cbytes, int32_t(mem_type.type));
+
+				ws->push_back_main(vsize_obj(mem_type.type, 0));
+			}
+		} else {
+			if(skip_compilation(env.mode)) {
+
+			} else if(typechecking_mode(env.mode)) {
+				ws->push_back_main(vsize_obj(var.type, var.size, vdata));
+				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
+
+				auto new_copy = ws->popr_main();
+				auto old_copy = ws->popr_main();
+				if(old_copy.data()) {
+					memcpy(vdata, old_copy.data(), std::min(uint32_t(var.size), old_copy.size));
+				}
+				ws->push_back_main(new_copy);
+			} else if(env.mode == fif_mode::compiling_llvm) {
+				ws->push_back_main(vsize_obj(var.type, var.size, vdata));
+				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
+
+				auto new_copy = ws->popr_main();
+				auto old_copy = ws->popr_main();
+				if(old_copy.data()) {
+					memcpy(vdata, old_copy.data(), std::min(uint32_t(var.size), old_copy.size));
+				}
+				ws->push_back_main(new_copy);
+			} else if(env.mode == fif_mode::interpreting) {
+
+			} else if(env.mode == fif_mode::compiling_bytecode) {
+				// implement let
+				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+				c_append(cbytes, env.dict.get_builtin(immediate_let));
+				c_append(cbytes, uint16_t(var.offset)); // index
+				c_append(cbytes, int32_t(var.type));
+
+				if(trivial_dup(var.type, env) == false) {
+					auto duprep = check_dup(var.type, env);
+					execute_fif_word(fif::parse_result{ "dup", false }, env, false);
+					c_append(cbytes, env.dict.get_builtin(stash_in_frame));
+
+					if(duprep.alters_source) {
+						c_append(cbytes, env.dict.get_builtin(do_local_assign));
+						c_append(cbytes, uint16_t(var.offset));
+					} else {
+						c_append(cbytes, env.dict.get_builtin(drop_cimple));
+					}
+					c_append(cbytes, env.dict.get_builtin(recover_from_frame));
+				}
+				ws->push_back_main(vsize_obj(var.type, 0));
+			}
+		}
+	} else if(auto varb = env.global_names.find(content_string); word.is_string == false && varb != env.global_names.end()) {
+		auto base_type = env.globals[varb->second].type;
+		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), env.globals[varb->second].type, -1 };
+		std::vector<int32_t> subs;
+		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
+
+		if(skip_compilation(env.mode)) {
+
+		} else if(typechecking_mode(env.mode)) {
+			if(env.globals[varb->second].constant) {
+				/*
+				* TODO: need dup logic
+				*/
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].cell_size * 8), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else {
+				ws->push_back_main(vsize_obj(base_type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			}
+		} else if(env.mode == fif_mode::compiling_llvm) {
+			if(env.globals[varb->second].constant) {
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].cell_size * 8), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else  if(env.dict.type_array[base_type].is_memory_type() == false) {
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			} else {
+				ws->push_back_main(vsize_obj(base_type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
+			}
+		} else if(env.mode == fif_mode::interpreting) {
+			if(env.globals[varb->second].constant) {
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].byte_size), (unsigned char*)(env.globals[varb->second].bytes.get())));
+			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(mem_type.type, sizeof(void*), (unsigned char*)(&ptr)));
+			} else {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(base_type, sizeof(void*), (unsigned char*)(&ptr)));
+			}
+		} else if(env.mode == fif_mode::compiling_bytecode) {
+			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			c_append(cbytes, env.dict.get_builtin(immediate_global));
+			c_append(cbytes, uint16_t(varb->second));
+
+			if(env.globals[varb->second].constant) {
+				ws->push_back_main(vsize_obj(env.globals[varb->second].type, 0));
+			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(mem_type.type, 0));
+			} else {
+				auto ptr = env.globals[varb->second].bytes.get();
+				ws->push_back_main(vsize_obj(base_type, 0));
+			}
+		}
+	} else if(auto rtype = resolve_type(word.content, env, env.compiler_stack.back()->type_substitutions()); rtype != -1) {
+		do_immediate_type(*ws, rtype, &env);
 	} else if(auto it = env.dict.words.find(std::string(word.content)); it != env.dict.words.end()) {
 		auto w = it->second;
 		// execute / compile word
@@ -7068,131 +7376,6 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 				}
 			}
 		}
-	} else if(auto var = lexical_get_var(content_string, env); env.mode != fif_mode::interpreting && word.is_string == false && var.type != -1) {
-		auto vdata = (unsigned char*)(env.tc_local_variables.data() + var.offset);
-		if(var.memory_variable) {
-			int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), var.type, -1 };
-			std::vector<int32_t> subs;
-			auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
-
-			if(skip_compilation(env.mode)) {
-
-			} else if(typechecking_mode(env.mode)) {
-				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), vdata));
-			} else if(env.mode == fif_mode::compiling_llvm) {
-				ws->push_back_main(vsize_obj(mem_type.type, sizeof(LLVMValueRef), vdata));
-			} else if(env.mode == fif_mode::interpreting) {
-				// ws->push_back_main(vsize_obj(mem_type.type, sizeof(void*), (unsigned char*)(&vdata)));
-			} else if(env.mode == fif_mode::compiling_bytecode) {
-				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
-				c_append(cbytes, env.dict.get_builtin(immediate_mem_var));
-				c_append(cbytes, uint16_t(var.offset)); // index
-				c_append(cbytes, int32_t(mem_type.type));
-				
-				ws->push_back_main(vsize_obj(mem_type.type, 0));
-			}
-		} else {
-			if(skip_compilation(env.mode)) {
-
-			} else if(typechecking_mode(env.mode)) {
-				ws->push_back_main(vsize_obj(var.type, var.size, vdata));
-				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
-
-				auto new_copy = ws->popr_main();
-				auto old_copy = ws->popr_main();
-				if(old_copy.data()) {
-					memcpy(vdata, old_copy.data(), std::min(uint32_t(var.size), old_copy.size));
-				}
-				ws->push_back_main(new_copy);
-			} else if(env.mode == fif_mode::compiling_llvm) {
-				ws->push_back_main(vsize_obj(var.type, var.size, vdata));
-				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
-
-				auto new_copy = ws->popr_main();
-				auto old_copy = ws->popr_main();
-				if(old_copy.data()) {
-					memcpy(vdata, old_copy.data(), std::min(uint32_t(var.size), old_copy.size));
-				}
-				ws->push_back_main(new_copy);
-			} else if(env.mode == fif_mode::interpreting) {
-				
-			} else if(env.mode == fif_mode::compiling_bytecode) {
-				// implement let
-				auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
-				c_append(cbytes, env.dict.get_builtin(immediate_let));
-				c_append(cbytes, uint16_t(var.offset)); // index
-				c_append(cbytes, int32_t(var.type));
-
-				if(trivial_dup(var.type, env) == false) {
-					auto duprep = check_dup(var.type, env);
-					execute_fif_word(fif::parse_result{ "dup", false }, env, false);
-					c_append(cbytes, env.dict.get_builtin(stash_in_frame));
-				
-					if(duprep.alters_source) {
-						c_append(cbytes, env.dict.get_builtin(do_local_assign));
-						c_append(cbytes, uint16_t(var.offset));
-					} else {
-						c_append(cbytes, env.dict.get_builtin(drop_cimple));
-					}
-					c_append(cbytes, env.dict.get_builtin(recover_from_frame));
-				}
-				ws->push_back_main(vsize_obj(var.type, 0));
-			}
-		}
-	} else if(auto varb = env.global_names.find(content_string); word.is_string == false && varb != env.global_names.end()) {
-		auto base_type = env.globals[varb->second].type;
-		int32_t ptr_type[] = { fif_ptr, std::numeric_limits<int32_t>::max(), env.globals[varb->second].type, -1 };
-		std::vector<int32_t> subs;
-		auto mem_type = resolve_span_type(std::span<int32_t const>(ptr_type, ptr_type + 4), subs, env);
-
-		if(skip_compilation(env.mode)) {
-
-		} else if(typechecking_mode(env.mode)) {
-			if(env.globals[varb->second].constant) {
-				/*
-				* TODO: need dup logic
-				*/
-				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].cell_size * 8), (unsigned char*)(env.globals[varb->second].cells.get())));
-			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
-				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
-			} else {
-				ws->push_back_main(vsize_obj(base_type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
-			}
-		} else if(env.mode == fif_mode::compiling_llvm) {
-			if(env.globals[varb->second].constant) {
-				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].cell_size * 8), (unsigned char*)(env.globals[varb->second].cells.get())));
-			} else  if(env.dict.type_array[base_type].is_memory_type() == false) {
-				ws->push_back_main(vsize_obj(mem_type.type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
-			} else {
-				ws->push_back_main(vsize_obj(base_type, sizeof(int64_t), (unsigned char*)(env.globals[varb->second].cells.get())));
-			}
-		} else if(env.mode == fif_mode::interpreting) {
-			if(env.globals[varb->second].constant) {
-				ws->push_back_main(vsize_obj(env.globals[varb->second].type, uint32_t(env.dict.type_array[env.globals[varb->second].type].byte_size), (unsigned char*)(env.globals[varb->second].bytes.get())));
-			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
-				auto ptr = env.globals[varb->second].bytes.get();
-				ws->push_back_main(vsize_obj(mem_type.type, sizeof(void*), (unsigned char*)(&ptr)));
-			} else {
-				auto ptr = env.globals[varb->second].bytes.get();
-				ws->push_back_main(vsize_obj(base_type, sizeof(void*), (unsigned char*)(&ptr)));
-			}
-		} else if(env.mode == fif_mode::compiling_bytecode) {
-			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
-			c_append(cbytes, env.dict.get_builtin(immediate_global));
-			c_append(cbytes, uint16_t(varb->second));
-			
-			if(env.globals[varb->second].constant) {
-				ws->push_back_main(vsize_obj(env.globals[varb->second].type, 0));
-			} else if(env.dict.type_array[base_type].is_memory_type() == false) {
-				auto ptr = env.globals[varb->second].bytes.get();
-				ws->push_back_main(vsize_obj(mem_type.type, 0));
-			} else {
-				auto ptr = env.globals[varb->second].bytes.get();
-				ws->push_back_main(vsize_obj(base_type, 0));
-			}
-		}
-	} else if(auto rtype = resolve_type(word.content, env, env.compiler_stack.back()->type_substitutions()); rtype != -1) {
-		do_immediate_type(*ws, rtype, &env);
 	} else {
 		env.report_error(std::string("attempted to execute an unknown word: ") + std::string(word.content));
 		env.mode = fif_mode::error;
