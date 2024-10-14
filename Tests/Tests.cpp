@@ -3438,6 +3438,45 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.popr_main().as<int32_t>() == 4);
 	}
+	SECTION("array size llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			": t make array(i32,4) size ; "
+			":export test_jit_fn t ; ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				CHECK(fn() == 4);
+			}
+		}
+	}
 	SECTION("array store value") {
 		fif::environment fif_env;
 		fif::initialize_standard_vocab(fif_env);
@@ -3458,6 +3497,48 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
+	SECTION("array store value llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			": t make array(i32,4) let x 5 1 x index ! 2 x index @ 1 x index @ + ; "
+			":export test_jit_fn t ; ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				auto fn_result = fn();
+				CHECK(fn_result == 5);
+			}
+		}
+	}
 	SECTION("array copy") {
 		fif::environment fif_env;
 		fif::initialize_standard_vocab(fif_env);
@@ -3477,6 +3558,48 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+	SECTION("array copy llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			": t make array(i32,4) let x 5 1 x index ! x copy let y drop 1 y index @ ; "
+			":export test_jit_fn t ; ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				auto fn_result = fn();
+				CHECK(fn_result == 5);
+			}
+		}
 	}
 	SECTION("array of array copy") {
 		fif::environment fif_env;
@@ -3499,6 +3622,112 @@ TEST_CASE("advanced structures", "fif combined tests") {
 		CHECK(values.return_size() == 0);
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.popr_main().as<int32_t>() == 10);
+	}
+	SECTION("array of array copy llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			": t make array(array(i32,2),4) let x "
+			"10 1 3 x index index ! "
+			"1 3 x index index @ ; "
+			":export test_jit_fn t ; ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				auto fn_result = fn();
+				CHECK(fn_result == 10);
+			}
+		}
+	}
+	SECTION("inline array") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, ": t 2 { 10 20 30 }array index @ ; t ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 30);
+	}
+	SECTION("inline array llvm") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			": t 2 { 10 20 30 }array index @ ; "
+			":export test_jit_fn t ; ", values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+
+		//std::cout << LLVMPrintModuleToString(fif_env.llvm_module) << std::endl;
+
+		fif::perform_jit(fif_env);
+
+		REQUIRE(bool(fif_env.llvm_jit));
+
+		FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+		{
+			LLVMOrcExecutorAddress bare_address = 0;
+			auto error = LLVMOrcLLJITLookup(fif_env.llvm_jit, &bare_address, "test_jit_fn");
+			CHECK(!(error));
+			if(error) {
+				auto msg = LLVMGetErrorMessage(error);
+				std::cout << msg << std::endl;
+				LLVMDisposeErrorMessage(msg);
+			} else {
+				REQUIRE(bare_address != 0);
+				using ftype = int32_t(*)();
+				ftype fn = (ftype)bare_address;
+				auto fn_result = fn();
+				CHECK(fn_result == 30);
+			}
+		}
 	}
 }
 

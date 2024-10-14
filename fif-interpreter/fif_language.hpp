@@ -4539,10 +4539,11 @@ inline uint16_t* memcpy_to_local(state_stack& s, uint16_t* p, environment* e) {
 	auto source_ptr = (s.main_ptr_at(0) + bytes_total) - bytes_down;
 
 	auto ptr = e->interpreter_stack_space.get() + e->frame_offset + offset;
-	memcpy(ptr, source_ptr, bytes_total);
-	s.push_back_main(vsize_obj(type, ptr, vsize_obj::by_value{ }));
+	memcpy(ptr, source_ptr, bytes_down);
+	
 	
 	s.resize(size_t(s.main_size() - local_count), s.return_size());
+	s.push_back_main(vsize_obj(type, ptr, vsize_obj::by_value{ }));
 
 	return p + 4;
 }
@@ -4575,8 +4576,9 @@ inline uint16_t* memcpy_ind_to_local(state_stack& s, uint16_t* p, environment* e
 		}
 		s.pop_main();
 		++j;
-
 	}
+
+	s.push_back_main(vsize_obj(type, ptr, vsize_obj::by_value{ }));
 
 	return p + 3;
 }
@@ -4677,8 +4679,7 @@ inline uint16_t* arrayify(fif::state_stack& s, uint16_t* p, fif::environment* e)
 			auto array_type = llvm_type(resolved_ar_type.type, *e);
 			auto member_type = llvm_type(types[2], *e);
 			auto new_expr = e->compiler_stack.back()->build_alloca(array_type);
-			s.push_back_main(vsize_obj(resolved_ar_type.type, new_expr, vsize_obj::by_value{ }));
-
+			
 			uint32_t j = 0;
 			while(s.main_size() > 0) {
 				if(s.main_type_back(0) == fif::fif_stack_token) {
@@ -4686,7 +4687,7 @@ inline uint16_t* arrayify(fif::state_stack& s, uint16_t* p, fif::environment* e)
 					break;
 				}
 				auto index = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint32_t(st_depth - (j + 1)), false);
-				auto store_target = LLVMBuildInBoundsGEP2(e->llvm_builder, array_type, new_expr, &index, 1, "");
+				auto store_target = LLVMBuildInBoundsGEP2(e->llvm_builder, member_type, new_expr, &index, 1, "");
 				if(is_memory_type_recursive(types[2], *e)) {
 					auto source= s.popr_main();
 					auto source_ptr = source.as<LLVMValueRef>();
@@ -4701,8 +4702,9 @@ inline uint16_t* arrayify(fif::state_stack& s, uint16_t* p, fif::environment* e)
 					store_to_llvm_pointer(types[2], s, store_target, *e);
 				}
 				++j;
-				
 			}
+
+			s.push_back_main(vsize_obj(resolved_ar_type.type, new_expr, vsize_obj::by_value{ }));
 		}
 	}
 
@@ -4927,7 +4929,8 @@ inline uint16_t* forth_array_gep(fif::state_stack& s, uint16_t* p, fif::environm
 		auto aptr = s.popr_main().as<LLVMValueRef>();
 		auto index = s.popr_main().as<LLVMValueRef>();
 
-		auto result = LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), aptr, &index, 1, "");
+		auto result = LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(member_type, *e), aptr, &index, 1, "");
+		//auto result = LLVMBuildGEP2(e->llvm_builder, llvm_type(member_type, *e), aptr, &index, 1, "");
 
 		s.push_back_main(vsize_obj(child_ptr_type, result, vsize_obj::by_value{ }));
 #endif
@@ -5043,7 +5046,7 @@ inline uint16_t* forth_array_map_one(fif::state_stack& s, uint16_t* p, fif::envi
 			} else if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 				auto a = s.popr_main().as<LLVMValueRef>();
-				LLVMBuildMemSet(e->llvm_builder, a, LLVMConstInt(LLVMInt8TypeInContext(e->llvm_context), 0, false), LLVMSizeOf(llvm_type(ptr_type, *e)), 1);
+				LLVMBuildMemSet(e->llvm_builder, a, LLVMConstInt(LLVMInt8TypeInContext(e->llvm_context), 0, false), LLVMSizeOf(llvm_type(ptr_type, *e)), 0);
 				s.push_back_main(vsize_obj(ptr_type, a, vsize_obj::by_value{ }));
 #endif
 			}
@@ -5257,6 +5260,7 @@ inline uint16_t* forth_array_map_copy(fif::state_stack& s, uint16_t* p, fif::env
 
 	if(mapped_function.content == "init-copy") {
 		if(trivial_copy(ptr_type, *e)) {
+			s.mark_used_from_main(2);
 			return p;
 		}
 	}
