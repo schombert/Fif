@@ -116,5 +116,14 @@
     <ClInclude Include="fif_language.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="fif_basic_types.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fif_type_management.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fif_lexical.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

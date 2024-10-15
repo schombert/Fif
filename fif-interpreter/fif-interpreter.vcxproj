@@ -139,7 +139,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="fif.hpp" />
+    <ClInclude Include="fif_basic_types.hpp" />
     <ClInclude Include="fif_language.hpp" />
+    <ClInclude Include="fif_lexical.hpp" />
+    <ClInclude Include="fif_type_management.hpp" />
     <ClInclude Include="llvm-c\Analysis.h" />
     <ClInclude Include="llvm-c\BitReader.h" />
     <ClInclude Include="llvm-c\BitWriter.h" />
