@@ -2413,23 +2413,27 @@ inline uint16_t* forth_gep(fif::state_stack& s, uint16_t* p, fif::environment* e
 	auto child_ptr_type = resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e);
 
 	if(e->mode == fif::fif_mode::compiling_llvm) {
-#ifdef USE_LLVM
-		int32_t real_index = 0;
-		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
-			auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
-			if(e->dict.type_array[c].stateless() == false)
-				++real_index;
-		}
-
 		int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), child_type, -1 };
 		std::vector<int32_t> subs;
 		auto child_ptr_type = resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e);
 
-		auto ptr = s.popr_main().as<LLVMValueRef>();
-		if(real_index != 0) {
-			s.push_back_main(vsize_obj(child_ptr_type.type, LLVMBuildStructGEP2(e->llvm_builder, llvm_type(stype, *e), ptr, uint32_t(real_index), ""), vsize_obj::by_value{ }));
+#ifdef USE_LLVM
+		if(e->dict.type_array[child_type].stateless()) {
+			s.push_back_main(child_ptr_type.type, LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), ""));
 		} else {
-			s.push_back_main(vsize_obj(child_ptr_type.type, ptr, vsize_obj::by_value{ }));
+			int32_t real_index = 0;
+			for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[stype].decomposed_types_count - e->dict.type_array[stype].non_member_types; ++i) {
+				auto c = e->dict.all_stack_types[e->dict.type_array[stype].decomposed_types_start + i];
+				if(!e->dict.type_array[c].stateless())
+					++real_index;
+			}
+
+			auto ptr = s.popr_main().as<LLVMValueRef>();
+			if(real_index != 0) {
+				s.push_back_main(vsize_obj(child_ptr_type.type, LLVMBuildStructGEP2(e->llvm_builder, llvm_type(stype, *e), ptr, uint32_t(real_index), ""), vsize_obj::by_value{ }));
+			} else {
+				s.push_back_main(vsize_obj(child_ptr_type.type, ptr, vsize_obj::by_value{ }));
+			}
 		}
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
@@ -2741,6 +2745,7 @@ inline uint16_t* memory_type_construction(state_stack& s, uint16_t* p, environme
 	auto type = *((int32_t*)p);
 	auto offset = *(p + 2);
 	auto ptr = e->interpreter_stack_space.get() + e->frame_offset + offset;
+	memset(ptr, 0, size_t(e->dict.type_array[type].byte_size));
 	s.push_back_main(vsize_obj(type, ptr, vsize_obj::by_value{ }));
 	return p + 3;
 }
@@ -2793,7 +2798,9 @@ inline uint16_t* do_make(state_stack& s, uint16_t* p, environment* env) {
 			
 			s.push_back_main(vsize_obj(resolved_type, 0));
 		} else if(env->mode == fif_mode::compiling_llvm) {
-			auto new_expr = env->compiler_stack.back()->build_alloca(llvm_type(resolved_type, *env));
+			auto ltype = llvm_type(resolved_type, *env);
+			auto new_expr = env->compiler_stack.back()->build_alloca(ltype);
+			LLVMBuildMemSet(env->llvm_builder, new_expr, LLVMConstInt(LLVMInt8TypeInContext(env->llvm_context), 0, false), LLVMSizeOf(ltype), 1);
 			s.push_back_main(vsize_obj(resolved_type, new_expr, vsize_obj::by_value{ }));
 		} else if(env->mode == fif_mode::interpreting) {
 			env->mode = fif_mode::error;
@@ -4687,18 +4694,28 @@ inline uint16_t* arrayify(fif::state_stack& s, uint16_t* p, fif::environment* e)
 					break;
 				}
 				auto index = LLVMConstInt(LLVMInt32TypeInContext(e->llvm_context), uint32_t(st_depth - (j + 1)), false);
-				auto store_target = LLVMBuildInBoundsGEP2(e->llvm_builder, member_type, new_expr, &index, 1, "");
 				if(is_memory_type_recursive(types[2], *e)) {
 					auto source= s.popr_main();
-					auto source_ptr = source.as<LLVMValueRef>();
-					LLVMBuildMemCpy(e->llvm_builder, store_target, 1, source_ptr, 1, LLVMSizeOf(member_type));
+					if(!e->dict.type_array[types[2]].stateless()) {
+						auto store_target = LLVMBuildInBoundsGEP2(e->llvm_builder, member_type, new_expr, &index, 1, "");
+						auto source_ptr = source.as<LLVMValueRef>();
+						LLVMBuildMemCpy(e->llvm_builder, store_target, 1, source_ptr, 1, LLVMSizeOf(member_type));
 
-					s.push_back_main(source);
-					s.push_back_main(types[2], store_target);
-					execute_fif_word(fif::parse_result{ "init-copy", false }, * e, false);
-					s.pop_main();
-					s.pop_main();
+						s.push_back_main(source);
+						s.push_back_main(types[2], store_target);
+						execute_fif_word(fif::parse_result{ "init-copy", false }, *e, false);
+						s.pop_main();
+						s.pop_main();
+					} else {
+						s.push_back_main(source);
+						s.push_back_main(vsize_obj(types[2], 0));
+						execute_fif_word(fif::parse_result{ "init-copy", false }, * e, false);
+						s.pop_main();
+						s.pop_main();
+					}
+					
 				} else {
+					auto store_target = LLVMBuildInBoundsGEP2(e->llvm_builder, member_type, new_expr, &index, 1, "");
 					store_to_llvm_pointer(types[2], s, store_target, *e);
 				}
 				++j;
@@ -4929,10 +4946,9 @@ inline uint16_t* forth_array_gep(fif::state_stack& s, uint16_t* p, fif::environm
 		auto aptr = s.popr_main().as<LLVMValueRef>();
 		auto index = s.popr_main().as<LLVMValueRef>();
 
-		auto result = LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(member_type, *e), aptr, &index, 1, "");
-		//auto result = LLVMBuildGEP2(e->llvm_builder, llvm_type(member_type, *e), aptr, &index, 1, "");
-
+		auto result =  !e->dict.type_array[ptr_type].stateless() ? LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(member_type, *e), aptr, &index, 1, "") : LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), "");
 		s.push_back_main(vsize_obj(child_ptr_type, result, vsize_obj::by_value{ }));
+		
 #endif
 	} else if(e->mode == fif::fif_mode::interpreting) {
 		auto aptr = s.popr_main().as<unsigned char*>();
@@ -4972,12 +4988,11 @@ inline uint16_t* do_famo(fif::state_stack& s, uint16_t* p, fif::environment* e) 
 
 	auto aptr = s.popr_main().as<unsigned char*>();
 
+	if(!memory_type_contents && !e->dict.type_array[member_type].stateless() && command == "init")
+		memset(aptr, 0, size_t(e->dict.type_array[member_type].byte_size * array_size));
+
 	auto byte_off = e->dict.type_array[member_type].byte_size;
 	for(int64_t i = 0; i < array_size; ++i) {
-		s.push_back_main(vsize_obj(member_type, aptr + i * byte_off, vsize_obj::by_value{ }));
-		execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
-		s.pop_main();
-
 		if(memory_type_contents) {
 			s.push_back_main(vsize_obj(member_type, aptr + i * byte_off, vsize_obj::by_value{ }));
 			execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
@@ -4994,20 +5009,6 @@ inline uint16_t* do_famo(fif::state_stack& s, uint16_t* p, fif::environment* e) 
 	s.push_back_main(vsize_obj(ptr_type, aptr, vsize_obj::by_value{ }));
 
 	return p + 4;
-}
-inline uint16_t* do_zero_array(fif::state_stack& s, uint16_t* p, fif::environment* e) {
-	auto ptr_type = s.main_type_back(0);
-	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
-
-	auto member_type = e->dict.all_stack_types[decomp + 1];
-	auto array_size = e->dict.type_array[e->dict.all_stack_types[decomp + 2]].ntt_data;
-
-	auto aptr = s.popr_main().as<unsigned char*>();
-	auto byte_off = e->dict.type_array[member_type].byte_size;
-	memset(aptr, 0, size_t(byte_off * array_size));
-	s.push_back_main(vsize_obj(ptr_type, aptr, vsize_obj::by_value{ }));
-
-	return p;
 }
 
 inline uint16_t* forth_array_map_one(fif::state_stack& s, uint16_t* p, fif::environment* e) {
@@ -5033,23 +5034,7 @@ inline uint16_t* forth_array_map_one(fif::state_stack& s, uint16_t* p, fif::envi
 
 	if(mapped_function.content == "init") {
 		if(trivial_init(ptr_type, *e)) {
-			if(e->mode == fif::fif_mode::interpreting) {
-				auto aptr = s.popr_main().as<unsigned char*>();
-				auto byte_off = e->dict.type_array[member_type].byte_size;
-				memset(aptr, 0, size_t(byte_off * array_size));
-				s.push_back_main(vsize_obj(ptr_type, aptr, vsize_obj::by_value{ }));
-			} else if(fif::typechecking_mode(e->mode)) {
-				s.mark_used_from_main(1);
-			} else if(e->mode == fif_mode::compiling_bytecode) {
-				auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
-				c_append(compile_bytes, e->dict.get_builtin(do_zero_array));
-			} else if(e->mode == fif::fif_mode::compiling_llvm) {
-#ifdef USE_LLVM
-				auto a = s.popr_main().as<LLVMValueRef>();
-				LLVMBuildMemSet(e->llvm_builder, a, LLVMConstInt(LLVMInt8TypeInContext(e->llvm_context), 0, false), LLVMSizeOf(llvm_type(ptr_type, *e)), 0);
-				s.push_back_main(vsize_obj(ptr_type, a, vsize_obj::by_value{ }));
-#endif
-			}
+			s.mark_used_from_main(1);
 			return p;
 		}
 	}
@@ -5061,20 +5046,27 @@ inline uint16_t* forth_array_map_one(fif::state_stack& s, uint16_t* p, fif::envi
 	if(e->mode == fif::fif_mode::compiling_llvm) {
 #ifdef USE_LLVM
 		auto a = s.popr_main().as<LLVMValueRef>();
+
 		for(int64_t i = 0; i < array_size; ++i) {
 			auto index = LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), uint64_t(i), false);
-			auto result = LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), a, &index, 1, "");
+			auto result = !e->dict.type_array[ptr_type].stateless() ? LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), a, &index, 1, "") : LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), "");
 
 			if(memory_type_contents) {
 				s.push_back_main(vsize_obj(child_ptr_type, result, vsize_obj::by_value{ }));
 				execute_fif_word(mapped_function, *e, false);
 				s.pop_main();
 			} else {
-				load_from_llvm_pointer(member_type, s, result, *e);
-				auto copy_original = s.popr_main();
-				s.push_back_main(copy_original);
-				execute_fif_word(mapped_function, *e, false);
-				store_difference_to_llvm_pointer(member_type, s, copy_original, result, *e);
+				if(!e->dict.type_array[member_type].stateless()) {
+					load_from_llvm_pointer(member_type, s, result, *e);
+					auto copy_original = s.popr_main();
+					s.push_back_main(copy_original);
+					execute_fif_word(mapped_function, *e, false);
+					store_difference_to_llvm_pointer(member_type, s, copy_original, result, *e);
+				} else {
+					s.push_back_main(vsize_obj(member_type, 0));
+					execute_fif_word(mapped_function, *e, false);
+					s.popr_main();
+				}
 			}
 		}
 		s.push_back_main(vsize_obj(ptr_type, a, vsize_obj::by_value{ }));
@@ -5162,6 +5154,7 @@ inline uint16_t* forth_array_map_zero(fif::state_stack& s, uint16_t* p, fif::env
 
 	if(mapped_function.content == "finish") {
 		if(trivial_finish(ptr_type, *e)) {
+			s.pop_main();
 			return p;
 		}
 	}
@@ -5175,7 +5168,7 @@ inline uint16_t* forth_array_map_zero(fif::state_stack& s, uint16_t* p, fif::env
 		auto a = s.popr_main().as<LLVMValueRef>();
 		for(int64_t i = 0; i < array_size; ++i) {
 			auto index = LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), uint64_t(i), false);
-			auto result = LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), a, &index, 1, "");
+			auto result = !e->dict.type_array[ptr_type].stateless() ? LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), a, &index, 1, "") : LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), "");
 
 			s.push_back_main(vsize_obj(child_ptr_type, result, vsize_obj::by_value{ }));
 			execute_fif_word(mapped_function, *e, false);
@@ -5280,8 +5273,8 @@ inline uint16_t* forth_array_map_copy(fif::state_stack& s, uint16_t* p, fif::env
 
 		for(int64_t i = 0; i < array_size; ++i) {
 			auto index = LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), uint64_t(i), false);
-			auto val_from = LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), source_copy_ptr, &index, 1, "");
-			auto val_to = LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), dest_copy_ptr, &index, 1, "");
+			auto val_from = !e->dict.type_array[ptr_type].stateless() ? LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), source_copy_ptr, &index, 1, "") : LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), "");
+			auto val_to = !e->dict.type_array[ptr_type].stateless() ? LLVMBuildInBoundsGEP2(e->llvm_builder, llvm_type(ptr_type, *e), dest_copy_ptr, &index, 1, "") : LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), "");
 
 			s.push_back_main(vsize_obj(child_ptr_type, val_from, vsize_obj::by_value{ }));
 			s.push_back_main(vsize_obj(child_ptr_type, val_to, vsize_obj::by_value{ }));
@@ -5314,6 +5307,531 @@ inline uint16_t* forth_array_map_copy(fif::state_stack& s, uint16_t* p, fif::env
 		auto str_const = e->get_string_constant(mapped_function.content).data();
 		c_append(compile_bytes, str_const);
 		s.mark_used_from_main(2);
+	}
+	return p;
+}
+
+
+inline uint16_t* do_fmsmc(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	char* command = nullptr;
+	memcpy(&command, p, 8);
+
+	auto ptr_type = s.main_type_back(0);
+
+	auto source_copy_dat = s.main_back_ptr_at(2);
+	auto dest_copy_dat = s.main_back_ptr_at(1);
+	unsigned char* source_copy_ptr = nullptr;
+	unsigned char* dest_copy_ptr = nullptr;
+	memcpy(&source_copy_ptr, source_copy_dat, sizeof(void*));
+	memcpy(&dest_copy_ptr, dest_copy_dat, sizeof(void*));
+
+	int32_t boffset = 0;
+	for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+		auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+		bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+		int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+		std::vector<int32_t> subs;
+		auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+		s.push_back_main(child_ptr_type, uint32_t(e->dict.type_array[c].byte_size), source_copy_ptr + boffset);
+		s.push_back_main(child_ptr_type, uint32_t(e->dict.type_array[c].byte_size), dest_copy_ptr + boffset);
+		execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+		s.pop_main();
+		s.pop_main();
+
+		boffset += e->dict.type_array[c].byte_size;
+	}
+
+	return p + 4;
+}
+
+inline uint16_t* forth_m_struct_map_copy(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	auto mapped_function = read_token(e->source_stack.back(), *e);
+
+	if(fif::skip_compilation(e->mode))
+		return p;
+
+	auto ptr_type = s.main_type_back(0);
+	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
+
+	if(e->dict.type_array[ptr_type].decomposed_types_count != 3 || e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
+		e->report_error("attempted to use a memory struct operation on a non-matching type");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+
+	if(mapped_function.content == "init-copy") {
+		if(trivial_copy(ptr_type, *e)) {
+			s.mark_used_from_main(2);
+			return p;
+		}
+	}
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+#ifdef USE_LLVM
+		auto source_copy_dat = s.main_back_ptr_at(2);
+		auto dest_copy_dat = s.main_back_ptr_at(1);
+		LLVMValueRef source_copy_ptr = nullptr;
+		LLVMValueRef dest_copy_ptr = nullptr;
+
+		auto structtype = llvm_type(ptr_type, *e);
+
+		int32_t coffset = 0;
+		for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+			int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+			std::vector<int32_t> subs;
+			auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+			if(e->dict.type_array[c].stateless()) {
+				s.push_back_main(child_ptr_type, LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), ""));
+				s.push_back_main(child_ptr_type, LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), ""));
+				execute_fif_word(mapped_function, *e, false);
+				s.pop_main();
+				s.pop_main();
+			} else {
+				auto ptr = s.popr_main().as<LLVMValueRef>();
+				if(coffset != 0) {
+					s.push_back_main(child_ptr_type, LLVMBuildStructGEP2(e->llvm_builder, structtype, source_copy_ptr, uint32_t(coffset), ""));
+					s.push_back_main(child_ptr_type, LLVMBuildStructGEP2(e->llvm_builder, structtype, dest_copy_ptr, uint32_t(coffset), ""));
+				} else {
+					s.push_back_main(child_ptr_type, source_copy_ptr);
+					s.push_back_main(child_ptr_type, dest_copy_ptr);
+				}
+				execute_fif_word(mapped_function, *e, false);
+				s.pop_main();
+				s.pop_main();
+
+				++coffset;
+			}
+		}
+#endif
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto source_copy_dat = s.main_back_ptr_at(2);
+		auto dest_copy_dat = s.main_back_ptr_at(1);
+		unsigned char* source_copy_ptr = nullptr;
+		unsigned char* dest_copy_ptr = nullptr;
+		memcpy(&source_copy_ptr, source_copy_dat, sizeof(void*));
+		memcpy(&dest_copy_ptr, dest_copy_dat, sizeof(void*));
+
+		int32_t boffset = 0;
+		for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+			int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+			std::vector<int32_t> subs;
+			auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+			s.push_back_main(child_ptr_type, uint32_t(e->dict.type_array[c].byte_size), source_copy_ptr + boffset);
+			s.push_back_main(child_ptr_type, uint32_t(e->dict.type_array[c].byte_size), dest_copy_ptr + boffset);
+			execute_fif_word(mapped_function, *e, false);
+			s.pop_main();
+			s.pop_main();
+
+			boffset += e->dict.type_array[c].byte_size;
+		}
+	} else if(fif::typechecking_mode(e->mode)) {
+		s.mark_used_from_main(2);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		c_append(compile_bytes, e->dict.get_builtin(do_fmsmc));
+		auto str_const = e->get_string_constant(mapped_function.content).data();
+		c_append(compile_bytes, str_const);
+		s.mark_used_from_main(2);
+	}
+	return p;
+}
+
+inline uint16_t* do_fmsmo(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	char* command = nullptr;
+	memcpy(&command, p, 8);
+
+	auto ptr_type = s.main_type_back(0);
+	auto aptr = s.popr_main().as<unsigned char*>();
+
+	int32_t boffset = 0;
+	for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+
+		auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+		bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+		int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+		std::vector<int32_t> subs;
+		auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+		if(e->dict.type_array[c].stateless()) {
+			if(e->dict.type_array[c].is_memory_type()) {
+				s.push_back_main(child_ptr_type, int64_t(0));
+				execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+				s.pop_main();
+			} else {
+				s.push_back_main(vsize_obj(c, 0));
+				execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+				s.pop_main();
+			}
+		} else {
+			if(memory_type_contents) {
+				s.push_back_main(child_ptr_type, aptr + boffset);
+				execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+				s.pop_main();
+			} else {
+				s.push_back_main(child_ptr_type, uint32_t(e->dict.type_array[c].byte_size), aptr + boffset);
+				execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+				auto rptr = s.popr_main().as<unsigned char*>();
+				memcpy(aptr + boffset, rptr, size_t(e->dict.type_array[c].byte_size));
+			}
+		}
+		boffset += e->dict.type_array[c].byte_size;
+	}
+
+	s.push_back_main(ptr_type, aptr);
+
+	return p + 4;
+}
+
+inline uint16_t* forth_m_struct_map_one(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	auto mapped_function = read_token(e->source_stack.back(), *e);
+
+	if(fif::skip_compilation(e->mode))
+		return p;
+
+	auto ptr_type = s.main_type_back(0);
+	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
+
+	if(e->dict.type_array[ptr_type].decomposed_types_count != 3 || e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
+		e->report_error("attempted to use a memory struct operation on an invalid type");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+
+	if(mapped_function.content == "init") {
+		if(trivial_init(ptr_type, *e)) {
+			s.mark_used_from_main(1);
+			return p;
+		}
+	}
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+#ifdef USE_LLVM
+		int32_t coffset = 0;
+		auto a = s.popr_main().as<LLVMValueRef>();
+		auto structtype = llvm_type(ptr_type, *e);
+
+		for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+			int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+			std::vector<int32_t> subs;
+			auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+			if(e->dict.type_array[c].stateless()) {
+				if(e->dict.type_array[c].is_memory_type()) {
+					s.push_back_main(child_ptr_type, LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), ""));
+					execute_fif_word(mapped_function, *e, false);
+					s.pop_main();
+				} else {
+					s.push_back_main(vsize_obj(c, 0));
+					execute_fif_word(mapped_function, *e, false);
+					s.pop_main();
+				}
+			} else {
+				if(memory_type_contents) {
+					s.push_back_main(child_ptr_type, LLVMBuildStructGEP2(e->llvm_builder, structtype, a, uint32_t(coffset), ""));
+					execute_fif_word(mapped_function, *e, false);
+					s.pop_main();
+				} else {
+					auto exprptr = LLVMBuildStructGEP2(e->llvm_builder, structtype, a, uint32_t(coffset), "");
+					load_from_llvm_pointer(c, s, exprptr, *e);
+					auto original = s.popr_main();
+					s.push_back_main(original);
+					execute_fif_word(mapped_function, *e, false);
+					store_difference_to_llvm_pointer(c, s, original, exprptr, *e);
+				}
+				++coffset;
+			}
+		}
+
+		s.push_back_main(ptr_type, a);
+#endif
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto aptr = s.popr_main().as<unsigned char*>();
+
+		int32_t boffset = 0;
+		for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+			int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+			std::vector<int32_t> subs;
+			auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+			if(e->dict.type_array[c].stateless()) {
+				if(e->dict.type_array[c].is_memory_type()) {
+					s.push_back_main(child_ptr_type, int64_t(0));
+					execute_fif_word(mapped_function, *e, false);
+					s.pop_main();
+				} else {
+					s.push_back_main(vsize_obj(c, 0));
+					execute_fif_word(mapped_function, *e, false);
+					s.pop_main();
+				}
+			} else {
+				if(memory_type_contents) {
+					s.push_back_main(child_ptr_type, aptr + boffset);
+					execute_fif_word(mapped_function, *e, false);
+					s.pop_main();
+				} else {
+					s.push_back_main(child_ptr_type, uint32_t(e->dict.type_array[c].byte_size), aptr + boffset);
+					execute_fif_word(mapped_function, *e, false);
+					auto rptr = s.popr_main().as<unsigned char*>();
+					memcpy(aptr + boffset, rptr, size_t(e->dict.type_array[c].byte_size));
+				}
+			}
+			boffset += e->dict.type_array[c].byte_size;
+		}
+
+		s.push_back_main(ptr_type, aptr);
+	} else if(fif::typechecking_mode(e->mode)) {
+		s.mark_used_from_main(1);
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		c_append(compile_bytes, e->dict.get_builtin(do_fmsmo));
+		auto str_const = e->get_string_constant(mapped_function.content).data();
+		c_append(compile_bytes, str_const);
+		s.mark_used_from_main(1);
+	}
+	return p;
+}
+
+
+inline uint16_t* do_fmsmz(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	char* command = nullptr;
+	memcpy(&command, p, 8);
+
+	auto ptr_type = s.main_type_back(0);
+	auto aptr = s.popr_main().as<unsigned char*>();
+
+	int32_t boffset = 0;
+	for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+		auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+		bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+		int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+		std::vector<int32_t> subs;
+		auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+		if(e->dict.type_array[c].stateless()) {
+			s.push_back_main(child_ptr_type, int64_t(0));
+			execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+		} else {
+			s.push_back_main(child_ptr_type, aptr + boffset);
+			execute_fif_word(parse_result{ std::string_view{ command }, false }, *e, false);
+		}
+		boffset += e->dict.type_array[c].byte_size;
+	}
+
+	return p + 4;
+}
+
+inline uint16_t* forth_m_struct_map_zero(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	auto mapped_function = read_token(e->source_stack.back(), *e);
+
+	if(fif::skip_compilation(e->mode))
+		return p;
+
+	auto ptr_type = s.main_type_back(0);
+	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
+
+	if(e->dict.type_array[ptr_type].decomposed_types_count != 3 || e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
+		e->report_error("attempted to use a memory struct operation on an invalid type");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+
+	if(mapped_function.content == "finish") {
+		if(trivial_finish(ptr_type, *e)) {
+			s.pop_main();
+			return p;
+		}
+	}
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+#ifdef USE_LLVM
+		int32_t coffset = 0;
+		auto a = s.popr_main().as<LLVMValueRef>();
+		auto structtype = llvm_type(ptr_type, *e);
+
+		for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+			int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+			std::vector<int32_t> subs;
+			auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+			if(e->dict.type_array[c].stateless()) {
+				s.push_back_main(child_ptr_type, LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), ""));
+				execute_fif_word(mapped_function, *e, false);
+			} else {
+				s.push_back_main(child_ptr_type, LLVMBuildStructGEP2(e->llvm_builder, structtype, a, uint32_t(coffset), ""));
+				execute_fif_word(mapped_function, *e, false);
+				++coffset;
+			}
+		}
+
+#endif
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		auto aptr = s.popr_main().as<unsigned char*>();
+
+		int32_t boffset = 0;
+		for(auto i = 1; i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			bool memory_type_contents = is_memory_type_recursive(c, *e);
+
+			int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), c, -1 };
+			std::vector<int32_t> subs;
+			auto child_ptr_type = memory_type_contents ? c : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+			if(e->dict.type_array[c].stateless()) {
+				s.push_back_main(child_ptr_type, int64_t(0));
+				execute_fif_word(mapped_function, *e, false);
+			} else {
+				s.push_back_main(child_ptr_type, aptr + boffset);
+				execute_fif_word(mapped_function, *e, false);
+			}
+			boffset += e->dict.type_array[c].byte_size;
+		}
+
+	} else if(fif::typechecking_mode(e->mode)) {
+		s.pop_main();
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		c_append(compile_bytes, e->dict.get_builtin(do_fmsmz));
+		auto str_const = e->get_string_constant(mapped_function.content).data();
+		c_append(compile_bytes, str_const);
+		s.pop_main();
+	}
+	return p;
+}
+
+
+inline uint16_t* do_m_fgep(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	int32_t index_value = int32_t(*p);
+	auto ptr_type = s.main_type_back(0);
+
+	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
+	if(e->dict.type_array[ptr_type].decomposed_types_count == 0 || e->dict.type_array[ptr_type].is_pointer() == false) {
+		e->report_error("attempted to use a struct-pointer operation on a non-struct-pointer type");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+	
+	assert(1 + index_value < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types);
+	auto child_index = e->dict.type_array[ptr_type].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+	bool memory_type_contents = is_memory_type_recursive(child_type, *e);
+
+	int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), child_type, -1 };
+	std::vector<int32_t> subs;
+	auto child_ptr_type = memory_type_contents ? child_type : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+	int32_t boffset = 0;
+	for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+		auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+		boffset += e->dict.type_array[c].byte_size;
+	}
+
+	auto ptr = s.popr_main().as<unsigned char*>() + boffset;
+	s.push_back_main(vsize_obj(child_ptr_type, ptr, vsize_obj::by_value{ }));
+
+	return p + 1;
+}
+
+inline uint16_t* forth_m_gep(fif::state_stack& s, uint16_t* p, fif::environment* e) {
+	auto index_str = read_token(e->source_stack.back(), *e);
+	auto index_value = parse_int(index_str.content);
+	auto ptr_type = s.main_type_back(0);
+
+	if(ptr_type == -1) {
+		e->report_error("attempted to use a pointer operation on a non-pointer type");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+
+	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
+
+	if(e->dict.type_array[ptr_type].decomposed_types_count == 0 || e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
+		e->report_error("attempted to use a memory-struct operation on a non-memory-struct type");
+		e->mode = fif_mode::error;
+		return nullptr;
+	}
+
+	assert(1 + index_value < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types);
+	auto child_index = e->dict.type_array[ptr_type].decomposed_types_start + 1 + index_value;
+	auto child_type = e->dict.all_stack_types[child_index];
+	bool memory_type_contents = is_memory_type_recursive(child_type, *e);
+
+	int32_t type_storage[] = { fif_ptr, std::numeric_limits<int32_t>::max(), child_type, -1 };
+	std::vector<int32_t> subs;
+	auto child_ptr_type = memory_type_contents ? child_type : resolve_span_type(std::span<int32_t const>(type_storage, type_storage + 4), subs, *e).type;
+
+	if(e->mode == fif::fif_mode::compiling_llvm) {
+#ifdef USE_LLVM
+		if(e->dict.type_array[child_type].stateless()) {
+			s.push_back_main(child_ptr_type, LLVMBuildIntToPtr(e->llvm_builder, LLVMConstInt(LLVMInt64TypeInContext(e->llvm_context), 1, false), LLVMPointerTypeInContext(e->llvm_context, 0), ""));
+		} else {
+			int32_t real_index = 0;
+			for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+				auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+				if(!e->dict.type_array[c].stateless())
+					++real_index;
+			}
+
+			auto ptr = s.popr_main().as<LLVMValueRef>();
+			if(real_index != 0) {
+				s.push_back_main(vsize_obj(child_ptr_type, LLVMBuildStructGEP2(e->llvm_builder, llvm_type(ptr_type, *e), ptr, uint32_t(real_index), ""), vsize_obj::by_value{ }));
+			} else {
+				s.push_back_main(vsize_obj(child_ptr_type, ptr, vsize_obj::by_value{ }));
+			}
+		}
+#endif
+	} else if(e->mode == fif::fif_mode::interpreting) {
+		int32_t boffset = 0;
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			boffset += e->dict.type_array[c].byte_size;
+		}
+
+		auto ptr = s.popr_main().as<unsigned char*>() + boffset;
+		s.push_back_main(vsize_obj(child_ptr_type, ptr, vsize_obj::by_value{ }));
+	} else if(fif::typechecking_mode(e->mode) && !fif::skip_compilation(e->mode)) {
+		int32_t real_index = 0;
+		for(auto i = 1; i < 1 + index_value && i < e->dict.type_array[ptr_type].decomposed_types_count - e->dict.type_array[ptr_type].non_member_types; ++i) {
+			auto c = e->dict.all_stack_types[e->dict.type_array[ptr_type].decomposed_types_start + i];
+			if(e->dict.type_array[c].stateless() == false)
+				++real_index;
+		}
+
+		auto ptr = s.popr_main().as<int64_t>();
+		if(real_index != 0) {
+			s.push_back_main(vsize_obj(child_ptr_type, e->new_ident(), vsize_obj::by_value{ }));
+		} else {
+			s.push_back_main(vsize_obj(child_ptr_type, ptr, vsize_obj::by_value{ }));
+		}
+	} else if(e->mode == fif_mode::compiling_bytecode) {
+		auto compile_bytes = e->compiler_stack.back()->bytecode_compilation_progress();
+		c_append(compile_bytes, e->dict.get_builtin(do_m_fgep));
+		c_append(compile_bytes, uint16_t(index_value));
+		s.pop_main();
+		s.push_back_main(vsize_obj(child_ptr_type, 0));
 	}
 	return p;
 }
@@ -5709,6 +6227,10 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "array-map1", forth_array_map_one, { }, true);
 	add_precompiled(fif_env, "array-map0", forth_array_map_zero, { }, true);
 	add_precompiled(fif_env, "array-mapC", forth_array_map_copy, { }, true);
+	add_precompiled(fif_env, "m-struct-mapC", forth_m_struct_map_copy, { }, true);
+	add_precompiled(fif_env, "m-struct-map1", forth_m_struct_map_one, { }, true);
+	add_precompiled(fif_env, "m-struct-map0", forth_m_struct_map_zero, { }, true);
+	add_precompiled(fif_env, "forth.m-gep", forth_m_gep, { }, true);
 	add_precompiled(fif_env, "finish", nop1, { -2 });
 
 	add_precompiled(fif_env, "select", f_select, { }, true);

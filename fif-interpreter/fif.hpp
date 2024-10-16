@@ -1717,7 +1717,7 @@ inline void store_to_llvm_pointer(int32_t struct_type, state_stack& ws, LLVMValu
 #endif
 }
 
-inline void store_difference_to_llvm_pointer(int32_t struct_type, state_stack& ws, vsize_obj original, LLVMValueRef ptr_expression, environment& env) {
+inline void store_difference_to_llvm_pointer(int32_t struct_type, state_stack& ws, vsize_obj const& original, LLVMValueRef ptr_expression, environment& env) {
 #ifdef USE_LLVM
 	switch(struct_type) {
 		case fif_i32:

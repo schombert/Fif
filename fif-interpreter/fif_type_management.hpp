@@ -1052,7 +1052,7 @@ inline int32_t make_m_struct_type(std::string_view name, std::span<int32_t const
 	}
 	{
 		env.dict.word_array.emplace_back();
-		env.dict.word_array.back().source = std::string("struct-map0 finish");
+		env.dict.word_array.back().source = std::string("m-struct-map0 finish");
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;

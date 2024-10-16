@@ -170,7 +170,7 @@ public:
 
 	vsize_obj() noexcept {
 	}
-	vsize_obj(int32_t type, uint32_t size, unsigned char* dat) noexcept : type(type), size(size) {
+	vsize_obj(int32_t type, uint32_t size, unsigned char const* dat) noexcept : type(type), size(size) {
 		if(size <= byte_size) {
 			memcpy(internal_buffer, dat, size);
 		} else {
@@ -180,7 +180,7 @@ public:
 		}
 	}
 	template<typename T>
-	vsize_obj(int32_t type, T val, by_value) noexcept : vsize_obj(type, uint32_t(sizeof(T)), (unsigned char*)(&val)) {
+	vsize_obj(int32_t type, T val, by_value) noexcept : vsize_obj(type, uint32_t(sizeof(T)), (unsigned char const*)(&val)) {
 	}
 	vsize_obj(int32_t type, uint32_t size) noexcept : type(type), size(size) {
 		if(size > byte_size) {
