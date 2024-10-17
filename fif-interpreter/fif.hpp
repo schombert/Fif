@@ -718,7 +718,7 @@ inline bool trivial_drop(int32_t type, environment& env) {
 		auto drop_index = env.dict.words.find(std::string("drop"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -739,7 +739,7 @@ inline bool trivial_drop(int32_t type, environment& env) {
 		auto drop_index = env.dict.words.find(std::string("drop"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -761,7 +761,7 @@ inline bool trivial_dup(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("dup"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -782,7 +782,7 @@ inline bool trivial_dup(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("dup"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -805,7 +805,7 @@ inline bool trivial_copy(int32_t type, environment& env) {
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -827,7 +827,7 @@ inline bool trivial_copy(int32_t type, environment& env) {
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -849,7 +849,7 @@ inline bool trivial_init(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("init"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -870,7 +870,7 @@ inline bool trivial_init(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("init"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -895,7 +895,7 @@ inline bool trivial_finish(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("finish"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -916,7 +916,7 @@ inline bool trivial_finish(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("finish"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false);
+		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -3848,7 +3848,7 @@ inline state_stack make_type_checking_stack(state_stack& initial_stack, environm
 	return transformed_copy;
 }
 
-inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations) {
+inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations, bool ignore_tc_results) {
 	while(word_index != -1) {
 		specialize_t_subs.clear();
 		bool specialization_matches = [&]() { 
@@ -3860,14 +3860,21 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 			word_match_result match = match_word(env.dict.word_array[word_index], current_type_state, env.dict.all_instances, env.dict.all_stack_types, env);
 			int32_t w = word_index;
 			match.substitution_version = word_index;
-
+			
 			if(!match.matched) {
+				if(ignore_tc_results) {
+					match.matched = true;
+					match.word_index = -1;
+					return match;
+				}
+
 				if(failed(env.mode)) {
 					// ignore match failure and pass on through
 					return word_match_result{ false, 0, 0, 0, 0 };
 				} else if(typechecking_level(env.mode) == 1 || typechecking_level(env.mode) == 2) {
 					if(env.dict.word_array[w].being_typechecked) { // already being typechecked -- mark as un checkable recursive branch
-						env.mode = make_recursive(env.mode);
+						if(!ignore_tc_results)
+							env.mode = make_recursive(env.mode);
 					} else if(env.dict.word_array[w].source.length() > 0) { // try to typecheck word as level 1
 						auto tcstack = make_type_checking_stack(current_type_state, env);
 

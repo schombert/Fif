@@ -2917,6 +2917,78 @@ inline uint16_t* struct_definition(fif::state_stack&, uint16_t* p, fif::environm
 
 	return p;
 }
+inline uint16_t* memory_struct_definition(fif::state_stack&, uint16_t* p, fif::environment* e) {
+	if(fif::typechecking_mode(e->mode))
+		return p;
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to define an m-struct inside a definition");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to define an m-struct without a source");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	if(e->dict.types.find(std::string(name_token.content)) != e->dict.types.end()) {
+		e->report_error("attempted to redefine an existing type");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
+	std::vector<int32_t> stack_types;
+	std::vector<std::string_view> names;
+	int32_t max_variable = -1;
+	bool read_extra_count = false;
+
+	while(true) {
+		auto next_token = fif::read_token(e->source_stack.back(), *e);
+		if(next_token.content.length() == 0 || next_token.content == ";") {
+			break;
+		}
+		if(next_token.content == "$") {
+			read_extra_count = true;
+			break;
+		}
+
+		auto result = internal_generate_type(next_token.content, *e);
+		if(result.type_array.empty()) {
+			e->mode = fif_mode::error;
+			e->report_error("unable to resolve type from text");
+			return nullptr;
+		}
+		stack_types.insert(stack_types.end(), result.type_array.begin(), result.type_array.end());
+		max_variable = std::max(max_variable, result.max_variable);
+
+		auto nnext_token = fif::read_token(e->source_stack.back(), *e);
+		if(nnext_token.content.length() == 0 || nnext_token.content == ";") {
+			e->report_error("struct contained a type without a matching name");
+			e->mode = fif::fif_mode::error;
+			return nullptr;
+		}
+		names.push_back(nnext_token.content);
+	}
+
+	int32_t extra_count = 0;
+	if(read_extra_count) {
+		auto next_token = fif::read_token(e->source_stack.back(), *e);
+		auto next_next_token = fif::read_token(e->source_stack.back(), *e);
+		if(next_next_token.content != ";") {
+			e->report_error("m-struct definition ended incorrectly");
+			e->mode = fif::fif_mode::error;
+			return nullptr;
+		}
+		extra_count = parse_int(next_token.content);
+	}
+
+	make_m_struct_type(name_token.content, std::span<int32_t const>{stack_types.begin(), stack_types.end()}, names, * e, max_variable + 1, extra_count);
+
+	return p;
+}
 inline uint16_t* export_definition(fif::state_stack&, uint16_t* p, fif::environment* e) {
 	if(fif::typechecking_mode(e->mode))
 		return p;
@@ -5355,7 +5427,7 @@ inline uint16_t* forth_m_struct_map_copy(fif::state_stack& s, uint16_t* p, fif::
 	auto ptr_type = s.main_type_back(0);
 	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
 
-	if(e->dict.type_array[ptr_type].decomposed_types_count != 3 || e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
+	if( e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
 		e->report_error("attempted to use a memory struct operation on a non-matching type");
 		e->mode = fif_mode::error;
 		return nullptr;
@@ -5503,7 +5575,7 @@ inline uint16_t* forth_m_struct_map_one(fif::state_stack& s, uint16_t* p, fif::e
 	auto ptr_type = s.main_type_back(0);
 	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
 
-	if(e->dict.type_array[ptr_type].decomposed_types_count != 3 || e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
+	if(e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
 		e->report_error("attempted to use a memory struct operation on an invalid type");
 		e->mode = fif_mode::error;
 		return nullptr;
@@ -5649,7 +5721,7 @@ inline uint16_t* forth_m_struct_map_zero(fif::state_stack& s, uint16_t* p, fif::
 	auto ptr_type = s.main_type_back(0);
 	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
 
-	if(e->dict.type_array[ptr_type].decomposed_types_count != 3 || e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
+	if(e->dict.type_array[ptr_type].is_memory_type() == false || e->dict.type_array[ptr_type].is_struct() == false) {
 		e->report_error("attempted to use a memory struct operation on an invalid type");
 		e->mode = fif_mode::error;
 		return nullptr;
@@ -5728,8 +5800,8 @@ inline uint16_t* do_m_fgep(fif::state_stack& s, uint16_t* p, fif::environment* e
 	auto ptr_type = s.main_type_back(0);
 
 	auto decomp = e->dict.type_array[ptr_type].decomposed_types_start;
-	if(e->dict.type_array[ptr_type].decomposed_types_count == 0 || e->dict.type_array[ptr_type].is_pointer() == false) {
-		e->report_error("attempted to use a struct-pointer operation on a non-struct-pointer type");
+	if(e->dict.type_array[ptr_type].decomposed_types_count == 0 || e->dict.type_array[ptr_type].is_struct() == false || e->dict.type_array[ptr_type].is_memory_type() == false) {
+		e->report_error("attempted to use a memory-struct operation on an invalid type");
 		e->mode = fif_mode::error;
 		return nullptr;
 	}
@@ -6217,6 +6289,7 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "struct-map0", forth_struct_map_zero, { }, true);
 	add_precompiled(fif_env, "make", do_make, { }, true);
 	add_precompiled(fif_env, ":struct", struct_definition, { });
+	add_precompiled(fif_env, ":m-struct", memory_struct_definition, { });
 	add_precompiled(fif_env, ":export", export_definition, { });
 	add_precompiled(fif_env, "use-base", do_use_base, { }, true);
 	add_precompiled(fif_env, "{", insert_stack_token, { }, true);

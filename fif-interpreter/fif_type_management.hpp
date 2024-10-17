@@ -1243,7 +1243,10 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 			env.mode = fif_mode::error;
 			return type_match{ -1, mt_end };
 		} else if(env.dict.type_array[it->second].is_struct_template()) {
-			return type_match{ instantiate_templated_struct(it->second, subtypes, env), mt_end };
+			if(env.dict.type_array[it->second].is_memory_type())
+				return type_match{ instantiate_templated_m_struct(it->second, subtypes, env), mt_end };
+			else
+				return type_match{ instantiate_templated_struct(it->second, subtypes, env), mt_end };
 		} else if(it->second == fif_ptr && env.dict.type_array[subtypes[0]].ntt_base_type != -1) {
 			env.report_error("attempted to instantiate a pointer to a non-type");
 			env.mode = fif_mode::error;
@@ -1404,7 +1407,10 @@ inline type_match resolve_span_type(std::span<int32_t const> tlist, std::vector<
 	} else if(base_type == fif_ptr && !subtypes.empty() && subtypes[0] == fif_nil) {
 		return type_match{ fif_opaque_ptr, mt_end };
 	} else if(env.dict.type_array[base_type].is_struct_template()) {
-		return type_match{ instantiate_templated_struct_full(base_type, subtypes, env), mt_end };
+		if(env.dict.type_array[base_type].is_memory_type())
+			return type_match{ instantiate_templated_m_struct_full(base_type, subtypes, env), mt_end };
+		else
+			return type_match{ instantiate_templated_struct_full(base_type, subtypes, env), mt_end };
 	} else if(base_type == fif_array && subtypes.size() == 2) {
 		if(auto m = find_existing_type_match(base_type, subtypes, env); m != -1)
 			return type_match{ m, mt_end };
@@ -1561,7 +1567,7 @@ inline word_match_result match_word(word const& w, state_stack& ts, std::vector<
 	return word_match_result{ false, 0, 0, 0, 0 };
 }
 
-inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations);
+inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations, bool ignore_tc_results = false);
 
 
 }
