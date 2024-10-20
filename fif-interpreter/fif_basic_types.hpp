@@ -825,11 +825,6 @@ struct word {
 	bool being_typechecked = false;
 };
 
-struct dup_evaluation {
-	bool alters_source = false;
-	bool copy_altered = false;
-};
-
 struct type {
 	static constexpr uint32_t FLAG_STRUCT = 0x00000001;
 	static constexpr uint32_t FLAG_MEMORY_TYPE = 0x00000002;
@@ -848,8 +843,6 @@ struct type {
 	int32_t byte_size = 0;
 	int32_t cell_size = 0;
 	uint32_t flags = 0;
-
-	std::optional<dup_evaluation> duptype;
 
 	bool is_struct() const {
 		return (flags & FLAG_STRUCT) != 0;
@@ -1021,7 +1014,7 @@ public:
 
 
 enum class control_structure : uint8_t {
-	none, function, str_if, str_while_loop, str_do_loop, mode_switch, globals,
+	none, function, str_if, str_while_loop, str_do_loop, globals,
 };
 
 struct typecheck_3_record {
@@ -1041,12 +1034,10 @@ struct lvar_description {
 using internal_locals_storage = std::vector<unsigned char>;
 
 template<typename T>
-inline void c_append(std::vector<uint16_t>* v, T val) {
+inline void c_append(std::vector<uint16_t>& v, T val) {
 	auto cells = (sizeof(T) + 1) / sizeof(uint16_t);
-	if(v) {
-		v->resize(v->size() + cells, 0);
-		std::memcpy(v->data() + v->size() - cells, &val, sizeof(val));
-	}
+	v.resize(v.size() + cells, 0);
+	std::memcpy(v.data() + v.size() - cells, &val, sizeof(val));
 }
 
 class opaque_compiler_data {
@@ -1060,45 +1051,11 @@ public:
 	virtual control_structure get_type() {
 		return control_structure::none;
 	}
-	virtual LLVMValueRef llvm_function() {
-		return parent ? parent->llvm_function() : nullptr;
-	}
-	virtual LLVMBasicBlockRef* llvm_block() {
-		return parent ? parent->llvm_block() : nullptr;
-	}
-	virtual int32_t word_id() {
-		return parent ? parent->word_id() : -1;
-	}
-	virtual int32_t instance_id() {
-		return parent ? parent->instance_id() : -1;
-	}
-	virtual std::vector<uint16_t>* bytecode_compilation_progress() {
-		return parent ? parent->bytecode_compilation_progress() : nullptr;
-	}
 	virtual ankerl::unordered_dense::map<uint64_t, typecheck_3_record>* typecheck_record() {
 		return parent ? parent->typecheck_record() : nullptr;
 	}
-	virtual state_stack* working_state() {
-		return parent ? parent->working_state() : nullptr;
-	}
-	virtual void set_working_state(state_stack&& p) {
-		if(parent)
-			parent->set_working_state(std::move(p));
-	}
 	virtual bool finish(environment& env) {
 		return true;
-	}
-	virtual lvar_description get_var(std::string const& name) {
-		return parent ? parent->get_var(name) : lvar_description{ -1, -1, 0, false };
-	}
-	virtual std::vector<int32_t>* type_substitutions() {
-		return parent ? parent->type_substitutions() : nullptr;
-	}
-	virtual LLVMValueRef build_alloca(LLVMTypeRef type) {
-		return parent ? parent->build_alloca(type) : nullptr;
-	}
-	virtual void increase_frame_size(int32_t sz) {
-		if(parent) parent->increase_frame_size(sz);
 	}
 };
 
@@ -1152,6 +1109,85 @@ enum class fif_mode : uint16_t {
 	tc_level_3 = 0x306
 };
 
+struct branch_source {
+	state_stack stack;
+	std::vector<int64_t> locals_state;
+	LLVMBasicBlockRef from_block = nullptr;
+	LLVMValueRef conditional_expression = nullptr;
+	LLVMBasicBlockRef untaken_block = nullptr;
+	size_t jump_bytecode_pos = 0;
+	bool jump_if_true = false;
+	bool unconditional_jump = false;
+	bool write_conditional = false;
+	bool speculative_branch = false;
+};
+
+enum class add_branch_result {
+	ok,
+	incompatible
+};
+
+struct branch_target {
+	enum class node_source : int32_t {
+		data_stack, return_stack, locals
+	};
+	struct pending_phi_node {
+		LLVMValueRef vref = nullptr;
+		node_source source = node_source::data_stack;
+		int32_t index = 0;
+	};
+	std::vector< branch_source> branches_to_here;
+	std::vector<pending_phi_node> phi_nodes;
+
+	size_t bytecode_location = 0;
+	LLVMBasicBlockRef block_location = nullptr;
+
+	bool is_concrete = false;
+
+	inline add_branch_result add_concrete_branch(branch_source&& new_branch, environment& env);
+	inline add_branch_result add_cb_with_exit_pad(branch_source&& new_branch, int32_t lexical_depth, environment& env);
+	inline void materialize(environment& env); // make blocks, phi nodes
+	inline void finalize(environment& env); // write incoming links
+};
+
+class function_compilation {
+public:
+	branch_target fn_exit;
+
+	state_stack initial_state;
+	std::unique_ptr<state_stack> working_state;
+
+	std::vector<uint16_t> compiled_bytes;
+	std::vector<int32_t> type_subs;
+	std::vector< int64_t> saved_locals;
+	LLVMValueRef llvm_fn = nullptr;
+	LLVMBasicBlockRef current_block = nullptr;
+	LLVMBasicBlockRef alloca_block = nullptr;
+	LLVMBasicBlockRef first_real_block = nullptr;
+	LLVMValueRef return_parameter = nullptr;
+
+	size_t locals_size_position = 0;
+	int32_t for_word = -1;
+	int32_t for_instance = -1;
+	int32_t max_locals_size = 0;
+	int32_t entry_lex_depth = 0;
+	int32_t entry_control_stack_depth = 0;
+	fif_mode entry_mode;
+	fif_mode condition_mode = fif_mode(0);
+	bool intepreter_skip_body = false;
+
+	inline function_compilation(environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance);
+	inline void increase_frame_size(int32_t sz);
+	inline void add_return(environment& env);
+	inline LLVMValueRef build_alloca(LLVMTypeRef type, environment& env);
+	inline bool finish(environment& env);
+	inline state_stack& iworking_state() {
+		return *working_state;
+	}
+};
+
+inline fif_mode base_mode(fif_mode m);
+
 class environment {
 public:
 	ankerl::unordered_dense::set<std::unique_ptr<char[]>, indirect_string_hash, indirect_string_eq> string_constants;
@@ -1176,6 +1212,7 @@ public:
 	word_mem_pool compiled_bytes;
 
 	std::vector<std::unique_ptr<opaque_compiler_data>> compiler_stack;
+	std::vector<function_compilation> function_compilation_stack;
 	std::vector<std::string_view> source_stack;
 	std::vector<lexical_scope> lexical_stack;
 	std::vector<int64_t> tc_local_variables;
@@ -1184,6 +1221,8 @@ public:
 		int32_t instance = -2;
 	} last_compiled_call;
 
+	state_stack interpreter_data_stack;
+	std::vector<std::unique_ptr<opaque_compiler_data>> interpreter_control_stack;
 	static constexpr int32_t interpreter_stack_size = 1024 * 64;
 	std::unique_ptr<unsigned char[]> interpreter_stack_space;
 	std::vector< function_call> interpreter_call_stack;
@@ -1232,7 +1271,23 @@ public:
 		string_constants.insert(std::move(temp));
 		return std::string_view{ data_ptr };
 	}
+
+	template <typename scope_type, typename... Args>
+	inline void push_control_stack(Args&&... args) {
+		if(base_mode(mode) != fif_mode::interpreting) {
+			if(compiler_stack.empty())
+				compiler_stack.emplace_back(std::make_unique<scope_type>(nullptr, *this, std::forward<Args>(args)...));
+			else
+				compiler_stack.emplace_back(std::make_unique<scope_type>(compiler_stack.back().get(), *this, std::forward<Args>(args)...));
+		} else {
+			if(interpreter_control_stack.empty())
+				interpreter_control_stack.emplace_back(std::make_unique<scope_type>(nullptr, *this, std::forward<Args>(args)...));
+			else
+				interpreter_control_stack.emplace_back(std::make_unique<scope_type>(interpreter_control_stack.back().get(), *this, std::forward<Args>(args)...));
+		}
+	}
 };
+
 
 
 inline bool is_positive_integer(char const* start, char const* end) {

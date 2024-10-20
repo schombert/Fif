@@ -6,7 +6,6 @@ namespace fif {
 inline bool typechecking_mode(fif_mode m);
 inline fif_mode base_mode(fif_mode m);
 inline bool skip_compilation(fif_mode m);
-inline dup_evaluation check_dup(int32_t type, fif::environment& env);
 inline uint16_t* stash_in_frame(state_stack& s, uint16_t* p, environment* e);
 inline uint16_t* drop_cimple(fif::state_stack& s, uint16_t* p, fif::environment* e);
 inline uint16_t* recover_from_frame(state_stack& s, uint16_t* p, environment* e);
@@ -63,24 +62,23 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 				}
 
 				if(env.mode == fif_mode::compiling_bytecode) {
-					auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+					auto& compile_bytes = env.function_compilation_stack.back().compiled_bytes;
 					if(!trivial_drop(it->second.type, env)) {
 						c_append(compile_bytes, env.dict.get_builtin(do_local_to_stack));
 						c_append(compile_bytes, uint16_t(it->second.offset));
 						c_append(compile_bytes, int32_t(it->second.type));
 
-						auto ws = env.compiler_stack.back()->working_state();
-						ws->push_back_main(vsize_obj(type, 0));
+						auto& ws = env.function_compilation_stack.back().iworking_state();
+						ws.push_back_main(vsize_obj(type, 0));
 						execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 					}
-					if(compile_bytes) {
-						c_append(compile_bytes, env.dict.get_builtin(do_local_assign));
-						c_append(compile_bytes, uint16_t(it->second.offset));
-					}
+					c_append(compile_bytes, env.dict.get_builtin(do_local_assign));
+					c_append(compile_bytes, uint16_t(it->second.offset));
+					
 				} else if(env.mode == fif_mode::compiling_llvm) {
 					auto ptr = env.tc_local_variables.data() + it->second.offset;
-					auto ws = env.compiler_stack.back()->working_state();
-					ws->push_back_main(vsize_obj(type, size, (unsigned char*)ptr));
+					auto& ws = env.function_compilation_stack.back().iworking_state();
+					ws.push_back_main(vsize_obj(type, size, (unsigned char*)ptr));
 					execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 					memcpy(ptr, data, size);
 				} else if(typechecking_mode(env.mode)) {
@@ -108,9 +106,9 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 		auto offset_pos = env.lexical_stack.back().allocated_bytes;
 		env.lexical_stack.back().allocated_bytes += size;
 		if(env.mode == fif_mode::compiling_bytecode) {
-			env.compiler_stack.back()->increase_frame_size(env.lexical_stack.back().allocated_bytes);
+			env.function_compilation_stack.back().increase_frame_size(env.lexical_stack.back().allocated_bytes);
 			env.lexical_stack.back().vars.insert_or_assign(name, lvar_description{ type, offset_pos, size, memory_variable });
-			auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			auto& compile_bytes = env.function_compilation_stack.back().compiled_bytes;
 
 			c_append(compile_bytes, env.dict.get_builtin(do_local_assign));
 			c_append(compile_bytes, uint16_t(offset_pos));
@@ -131,11 +129,11 @@ int32_t lexical_create_var(std::string const& name, int32_t type, int32_t size, 
 	}
 }
 void lexical_free_scope(lexical_scope& s, environment& env) {
-	auto* ws = env.compiler_stack.back()->working_state();
+	auto& ws = env.function_compilation_stack.back().iworking_state();
 	auto const mode = env.mode;
 	for(auto& l : s.vars) {
 		if(mode == fif_mode::compiling_bytecode) {
-			auto compile_bytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			auto& compile_bytes = env.function_compilation_stack.back().compiled_bytes;
 			if(!trivial_drop(l.second.type, env)) {
 				c_append(compile_bytes, env.dict.get_builtin(do_local_to_stack));
 				c_append(compile_bytes, uint16_t(l.second.offset));
@@ -150,10 +148,10 @@ void lexical_free_scope(lexical_scope& s, environment& env) {
 
 			if(l.second.memory_variable) {
 				vsize_obj temp(l.second.type, l.second.size, (unsigned char*)data_ptr);
-				load_from_llvm_pointer(l.second.type, *ws, temp.as<LLVMValueRef>(), env);
+				load_from_llvm_pointer(l.second.type, ws, temp.as<LLVMValueRef>(), env);
 				execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 			} else {
-				ws->push_back_main(vsize_obj(l.second.type, l.second.size, (unsigned char*)data_ptr));
+				ws.push_back_main(vsize_obj(l.second.type, l.second.size, (unsigned char*)data_ptr));
 				execute_fif_word(fif::parse_result{ "drop", false }, env, false);
 			}
 		}
@@ -220,7 +218,7 @@ void push_lexical_variable(fif::lvar_description const& var, state_stack& ws, en
 		} else if(env.mode == fif_mode::interpreting) {
 			// ws->push_back_main(vsize_obj(mem_type.type, sizeof(void*), (unsigned char*)(&vdata)));
 		} else if(env.mode == fif_mode::compiling_bytecode) {
-			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			auto& cbytes = env.function_compilation_stack.back().compiled_bytes;
 			c_append(cbytes, env.dict.get_builtin(immediate_mem_var));
 			c_append(cbytes, uint16_t(var.offset)); // index
 			c_append(cbytes, int32_t(mem_type.type));
@@ -254,22 +252,16 @@ void push_lexical_variable(fif::lvar_description const& var, state_stack& ws, en
 
 		} else if(env.mode == fif_mode::compiling_bytecode) {
 			// implement let
-			auto cbytes = env.compiler_stack.back()->bytecode_compilation_progress();
+			auto& cbytes = env.function_compilation_stack.back().compiled_bytes;
 			c_append(cbytes, env.dict.get_builtin(immediate_let));
 			c_append(cbytes, uint16_t(var.offset)); // index
 			c_append(cbytes, int32_t(var.type));
 
 			if(trivial_dup(var.type, env) == false) {
-				auto duprep = check_dup(var.type, env);
 				execute_fif_word(fif::parse_result{ "dup", false }, env, false);
 				c_append(cbytes, env.dict.get_builtin(stash_in_frame));
-
-				if(duprep.alters_source) {
-					c_append(cbytes, env.dict.get_builtin(do_local_assign));
-					c_append(cbytes, uint16_t(var.offset));
-				} else {
-					c_append(cbytes, env.dict.get_builtin(drop_cimple));
-				}
+				c_append(cbytes, env.dict.get_builtin(do_local_assign));
+				c_append(cbytes, uint16_t(var.offset));
 				c_append(cbytes, env.dict.get_builtin(recover_from_frame));
 			}
 			ws.push_back_main(vsize_obj(var.type, 0));
