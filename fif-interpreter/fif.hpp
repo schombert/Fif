@@ -727,7 +727,7 @@ inline bool trivial_drop(int32_t type, environment& env) {
 		auto drop_index = env.dict.words.find(std::string("drop"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("drop", drop_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -748,7 +748,7 @@ inline bool trivial_drop(int32_t type, environment& env) {
 		auto drop_index = env.dict.words.find(std::string("drop"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(drop_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("drop", drop_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -770,7 +770,7 @@ inline bool trivial_dup(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("dup"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("dup", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -791,7 +791,7 @@ inline bool trivial_dup(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("dup"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("dup", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -814,7 +814,7 @@ inline bool trivial_copy(int32_t type, environment& env) {
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("init-copy", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -836,7 +836,7 @@ inline bool trivial_copy(int32_t type, environment& env) {
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("init-copy", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -858,7 +858,7 @@ inline bool trivial_init(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("init"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("init", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -879,7 +879,7 @@ inline bool trivial_init(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("init"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("init", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -904,7 +904,7 @@ inline bool trivial_finish(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("finish"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("finish", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -925,7 +925,7 @@ inline bool trivial_finish(int32_t type, environment& env) {
 		auto w_index = env.dict.words.find(std::string("finish"))->second;
 		state_stack temp;
 		temp.push_back_main(vsize_obj(type, 0));
-		auto match = get_basic_type_match(w_index, temp, env, called_tsub_types, false, true);
+		auto match = get_basic_type_match("finish", w_index, temp, env, called_tsub_types, false, true);
 
 		if(match.matched == false)
 			return false;
@@ -2374,7 +2374,7 @@ inline void branch_target::finalize(environment& env) {
 	}
 }
 
-inline function_compilation::function_compilation(environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance) :  for_word(for_word), for_instance(for_instance) {
+inline function_compilation::function_compilation(environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance, int32_t module_context) :  for_word(for_word), for_instance(for_instance), for_module(module_context) {
 
 		initial_state = entry_state.new_copy();
 		working_state = std::make_unique<state_stack>(entry_state.new_copy());
@@ -3707,10 +3707,56 @@ inline state_stack make_type_checking_stack(state_stack& initial_stack, environm
 	return transformed_copy;
 }
 
-inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations, bool ignore_tc_results) {
+struct saved_env_state {
+	size_t lex_size;
+	size_t cs_size;
+	size_t ics_size;
+	size_t ss_size;
+	state_stack interpreter_entry_state;
+	fif_mode initial_mode;
+};
+
+inline void restore_environement_state(environment& env, saved_env_state const& state) {
+	if(env.lexical_stack.size() > state.lex_size)
+		env.lexical_stack.resize(state.lex_size);
+	if(env.compiler_stack.size() > state.cs_size)
+		env.compiler_stack.resize(state.cs_size);
+	if(env.interpreter_control_stack.size() > state.ics_size)
+		env.interpreter_control_stack.resize(state.ics_size);
+	if(env.source_stack.size() > state.ss_size)
+		env.source_stack.resize(state.ss_size);
+	env.interpreter_data_stack = state.interpreter_entry_state;
+	env.mode = state.initial_mode;
+}
+inline saved_env_state save_environment_state(environment& env) {
+	return saved_env_state{
+		env.lexical_stack.size(),
+		env.compiler_stack.size(),
+		env.interpreter_control_stack.size(),
+		env.source_stack.size(),
+		env.interpreter_data_stack,
+		env.mode
+	};
+}
+
+
+inline word_match_result get_basic_type_match(std::string_view word_name, int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations, bool ignore_tc_results) {
+	auto can_return_match = [&](word_match_result const& match) {
+		bool reachable = name_reachable(word_name, env.dict.word_array[word_index].in_module, env);
+		for(int32_t i = 0; reachable == false && i < match.stack_consumed; ++i) {
+			auto member_type = current_type_state.main_type_back(i);
+			reachable = name_reachable(word_name, env.dict.type_array[member_type].in_module, env.dict.word_array[word_index].in_module, env);
+		}
+		for(int32_t i = 0; reachable == false && i < match.ret_stack_consumed; ++i) {
+			auto member_type = current_type_state.return_type_back(i);
+			reachable = name_reachable(word_name, env.dict.type_array[member_type].in_module, env.dict.word_array[word_index].in_module, env);
+		}
+		return reachable;
+	};
+
 	while(word_index != -1) {
 		specialize_t_subs.clear();
-		bool specialization_matches = [&]() { 
+		bool specialization_matches =  [&]() {
 			if(env.dict.word_array[word_index].stack_types_count == 0)
 				return true;
 			return match_stack_description(std::span<int32_t const>{env.dict.all_stack_types.data() + env.dict.word_array[word_index].stack_types_start, size_t(env.dict.word_array[word_index].stack_types_count)}, current_type_state, env, specialize_t_subs).matched;
@@ -3738,12 +3784,12 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 						auto tcstack = make_type_checking_stack(current_type_state, env);
 
 						env.dict.word_array[w].being_typechecked = true;
+						auto entry_state = save_environment_state(env);
 
-						auto entry_mode = env.mode;
 						env.mode = fif_mode::tc_level_1;
 
 						env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-						env.function_compilation_stack.emplace_back(env, tcstack, w, -1);
+						env.function_compilation_stack.emplace_back(env, tcstack, w, -1, env.dict.word_array[w].in_module);
 						env.function_compilation_stack.back().type_subs = specialize_t_subs;
 
 						run_to_function_end(env);
@@ -3754,27 +3800,32 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 						match.substitution_version = word_index;
 
 						if(!failed(env.mode))
-							env.mode = entry_mode;
+							env.mode = entry_state.initial_mode;
 
 						if(match.matched) {
 							if(std::get<interpreted_word_instance>(env.dict.all_instances[match.word_index]).typechecking_level < 3) {
 								env.mode = make_provisional(env.mode);
 							}
-							return match;
+							if(can_return_match(match))
+								return match;
 						} else {
-							env.mode = fail_typechecking(env.mode);
-							return word_match_result{ false, 0, 0, 0, 0 };
+							if(name_reachable(word_name, env.dict.word_array[word_index].in_module, env)) {
+								env.mode = fail_typechecking(env.mode);
+								return word_match_result{ false, 0, 0, 0, 0 };
+							} else {
+								restore_environement_state(env, entry_state);
+							}
 						}
 					}
 				} else if(env.dict.word_array[w].source.length() > 0) { // either compiling or interpreting or level 3 typecheck-- switch to typechecking to get a type definition
-					auto entry_mode = env.mode;
-					env.mode = fif_mode::tc_level_1;
 					env.dict.word_array[w].being_typechecked = true;
+					auto entry_state = save_environment_state(env);
+					env.mode = fif_mode::tc_level_1;
 
 					auto tcstack = make_type_checking_stack(current_type_state, env);
 
 					env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-					env.function_compilation_stack.emplace_back(env, tcstack, w, -1);
+					env.function_compilation_stack.emplace_back(env, tcstack, w, -1, env.dict.word_array[w].in_module);
 					env.function_compilation_stack.back().type_subs = specialize_t_subs;
 
 					run_to_function_end(env);
@@ -3783,24 +3834,31 @@ inline word_match_result get_basic_type_match(int32_t word_index, state_stack& c
 					env.dict.word_array[w].being_typechecked = false;
 
 					if(!failed(env.mode))
-						env.mode = entry_mode;
+						env.mode = entry_state.initial_mode;
 
 					match = match_word(env.dict.word_array[w], tcstack, env.dict.all_instances, env.dict.all_stack_types, env);
 					match.substitution_version = word_index;
 
 					if(!match.matched) {
-						env.report_error("typechecking failure for " + word_name_from_id(w, env));
-						env.mode = fif_mode::error;
-						return word_match_result{ false, 0, 0, 0, 0 };
+						if(name_reachable(word_name, env.dict.word_array[word_index].in_module, env)) {
+							env.report_error("typechecking failure for " + word_name_from_id(w, env));
+							env.mode = fif_mode::error;
+							return word_match_result{ false, 0, 0, 0, 0 };
+						} else {
+							restore_environement_state(env, entry_state);
+						}
+					} else {
+						if(can_return_match(match))
+							return match;
 					}
-					return match;
 				}
 			}
 
-			return match;
-		} else {
-			word_index = env.dict.word_array[word_index].specialization_of;
+			if(can_return_match(match))
+				return match;
 		}
+
+		word_index = env.dict.word_array[word_index].specialization_of;
 	}
 	
 	return word_match_result{ false, 0, 0, 0, 0 };
@@ -3819,7 +3877,7 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 		env.mode = fif_mode::tc_level_2;
 
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-		env.function_compilation_stack.emplace_back(env, tcstack, w, word_index);
+		env.function_compilation_stack.emplace_back(env, tcstack, w, word_index, env.dict.word_array[w].in_module);
 		env.function_compilation_stack.back().type_subs = tsubs;
 
 		run_to_function_end(env);
@@ -3846,7 +3904,7 @@ inline bool fully_typecheck_word(int32_t w, int32_t word_index, interpreted_word
 		env.mode = fif_mode::tc_level_3;
 
 		env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-		env.function_compilation_stack.emplace_back(env, tcstack, w, word_index);
+		env.function_compilation_stack.emplace_back(env, tcstack, w, word_index, env.dict.word_array[w].in_module);
 		env.function_compilation_stack.back().type_subs = tsubs;
 
 		run_to_source_end(env);
@@ -3936,7 +3994,7 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 		// typed but uncompiled word
 		if(!std::get<interpreted_word_instance>(env.dict.all_instances[word_index]).being_compiled) {
 			env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-			env.function_compilation_stack.emplace_back(env, state, w, word_index);
+			env.function_compilation_stack.emplace_back(env, state, w, word_index, env.dict.word_array[w].in_module);
 			env.function_compilation_stack.back().type_subs = tsubs;
 			run_to_function_end(env);
 			env.source_stack.pop_back();
@@ -3949,7 +4007,7 @@ inline bool compile_word(int32_t w, int32_t word_index, state_stack& state, fif_
 		// typed but uncompiled word
 		if(!std::get<interpreted_word_instance>(env.dict.all_instances[word_index]).being_compiled) {
 			env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-			env.function_compilation_stack.emplace_back(env, state, w, word_index);
+			env.function_compilation_stack.emplace_back(env, state, w, word_index, env.dict.word_array[w].in_module);
 			env.function_compilation_stack.back().type_subs = tsubs;
 			run_to_function_end(env);
 			env.source_stack.pop_back();
@@ -4087,36 +4145,52 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		}
 	} else if(auto rtype = resolve_type(word.content, env, env.function_compilation_stack.empty() ? nullptr : &env.function_compilation_stack.back().type_subs); rtype != -1) {
 		do_immediate_type(*ws, rtype, &env);
-	} else if(auto it = env.dict.words.find(std::string(word.content)); it != env.dict.words.end()) {
+	} else if(auto it = env.dict.words.find(std::string(get_base_name(word.content))); it != env.dict.words.end()) {
 		auto w = it->second;
 		// execute / compile word
 
 		// IMMEDIATE words with source
-		if(env.dict.word_array[w].immediate) {
-			if(env.dict.word_array[w].source.length() > 0) {
-				env.source_stack.push_back(std::string_view{ env.dict.word_array[w].source });
+		{
+			auto wid = w;
+			while(wid != -1) {
+				if(env.dict.word_array[wid].immediate == false)
+					break;
 
-				env.interpreter_data_stack.push_back_return(fif_i32, int32_t(env.mode));
-				
-				env.mode = fif_mode::interpreting;
-				run_to_source_end(env);
+				if(env.dict.word_array[wid].source.length() > 0 && name_reachable(word.content, env.dict.word_array[wid].in_module, env)) {
+					env.source_stack.push_back(std::string_view{ env.dict.word_array[wid].source });
 
-				if(!failed(env.mode)) {
-					if(env.interpreter_data_stack.return_size() == 0 || env.interpreter_data_stack.return_type_back(0) != fif_i32) {
-						env.mode = fif_mode::error;
-						env.report_error("attempted to restore mode without a mode value on the return stack");
-						return;
+					env.interpreter_data_stack.push_back_return(fif_i32, int32_t(env.mode));
+					auto module_stack = env.module_stack;
+					env.module_stack.clear();
+					auto mtemp = env.dict.word_array[wid].in_module;
+					while(mtemp != -1) {
+						env.module_stack.insert(env.module_stack.begin(), mtemp);
+						mtemp = env.dict.modules[mtemp].submodule_of;
 					}
-					env.mode = fif_mode(env.interpreter_data_stack.popr_return().as<int32_t>());
+
+					env.mode = fif_mode::interpreting;
+					run_to_source_end(env);
+
+					if(!failed(env.mode)) {
+						if(env.interpreter_data_stack.return_size() == 0 || env.interpreter_data_stack.return_type_back(0) != fif_i32) {
+							env.mode = fif_mode::error;
+							env.report_error("attempted to restore mode without a mode value on the return stack");
+							return;
+						}
+						env.mode = fif_mode(env.interpreter_data_stack.popr_return().as<int32_t>());
+					}
+
+					env.module_stack = std::move(module_stack);
+					env.source_stack.pop_back(); // remove source replacement
+					return;
 				}
 
-				env.source_stack.pop_back(); // remove source replacement
-				return;
+				wid = env.dict.word_array[wid].specialization_of;
 			}
 		}
 
 		std::vector<int32_t> called_tsub_types;
-		auto match = get_basic_type_match(w, *ws, env, called_tsub_types, ignore_specializations);
+		auto match = get_basic_type_match(word.content, w, *ws, env, called_tsub_types, ignore_specializations);
 		w = match.substitution_version;
 		
 		if(!match.matched) {
@@ -4133,7 +4207,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 		word_types* wi = &(env.dict.all_instances[match.word_index]);
 
 		// IMMEDIATE words (source not available)
-		if(env.dict.word_array[w].immediate) {
+		if(env.dict.word_array[match.substitution_version].immediate) {
 			if(std::holds_alternative<interpreted_word_instance>(*wi)) {
 				auto entry_mode = env.mode;
 				env.mode = fif_mode::interpreting;
@@ -4201,7 +4275,7 @@ inline void execute_fif_word(parse_result word, environment& env, bool ignore_sp
 								auto tcstack = make_type_checking_stack(*ws, env);
 
 								env.source_stack.push_back(std::string_view(env.dict.word_array[w].source));
-								env.function_compilation_stack.emplace_back(env, tcstack, w, match.word_index);
+								env.function_compilation_stack.emplace_back(env, tcstack, w, match.word_index, env.dict.word_array[w].in_module);
 								env.function_compilation_stack.back().type_subs = called_tsub_types;
 
 								run_to_function_end(env);
@@ -4342,7 +4416,7 @@ inline LLVMValueRef make_exportable_function(std::string const& export_name, std
 	ts.min_return_depth = int32_t(return_stack.size());
 
 	std::vector<int32_t> typevars;
-	auto match = get_basic_type_match(w, ts, env, typevars, false);
+	auto match = get_basic_type_match(word, w, ts, env, typevars, false);
 	w = match.substitution_version;
 	if(!match.matched) {
 		env.report_error("failed to export function (typematch failed)");

@@ -4086,3 +4086,140 @@ TEST_CASE("advanced structures", "fif combined tests") {
 	}
 }
 
+TEST_CASE("modules tests", "fif combined tests") {
+	SECTION("find in module") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env, 
+			"new-module test-mod "
+			": t 5 ; "
+			"end-module test-mod "
+			"test-mod.t ", 
+		values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+	SECTION("nested module") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			"new-module testA "
+			"new-module testB "
+			": t 5 ; "
+			"end-module testB "
+			"end-module testA "
+			"testA.testB.t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+	SECTION("name ambiguity") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			"new-module testA "
+			": t 5 ; "
+			"end-module testA "
+			"new-module testB "
+			": t 7 ; "
+			"end-module testB "
+			"testA.t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+	SECTION("using directive") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			"new-module testA "
+			"new-module testB "
+			": c 5 ; "
+			"end-module testB "
+			"using-module testA.testB "
+			": t c ; "
+			"end-module testA "
+			"testA.t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+	SECTION("ADL") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			"new-module testA "
+			":struct vals i32 v ; "
+			"end-module testA "
+			"5 make testA.vals .v! .v ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
+}
+

@@ -430,7 +430,7 @@ inline int32_t instantiate_templated_struct_full(int32_t template_base, std::vec
 
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
 	env.dict.type_array.back().flags |= type::FLAG_STRUCT;
-
+	env.dict.type_array.back().in_module = env.dict.type_array[template_base].in_module;
 	env.dict.type_array.back().non_member_types = env.dict.type_array[template_base].non_member_types;
 	env.dict.type_array.back().type_slots = 0;
 	env.dict.type_array.back().cell_size = cells_count;
@@ -460,7 +460,12 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 
 	int32_t new_type = int32_t(env.dict.type_array.size());
 	env.dict.type_array.emplace_back();
-	env.dict.types.insert_or_assign(std::string(name), new_type);
+	if(auto it = env.dict.types.find(std::string(name)); it != env.dict.types.end()) {
+		env.dict.type_array.back().next_type_with_name = it->second;
+		env.dict.types.insert_or_assign(std::string(name), new_type);
+	} else {
+		env.dict.types.insert_or_assign(std::string(name), new_type);
+	}
 
 	int32_t cells_count = 0;
 	int32_t byte_count = 0;
@@ -502,6 +507,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 	env.dict.type_array.back().cell_size = cells_count;
 	env.dict.type_array.back().byte_size = byte_count;
+	env.dict.type_array.back().in_module = env.module_stack.empty() ? -1 : env.module_stack.back();
 
 	auto add_child_types = [&]() {
 		if(template_types + extra_count > 0) {
@@ -557,6 +563,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 		bury_word("copy", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
@@ -565,6 +572,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 		bury_word("dup", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
@@ -573,6 +581,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 		bury_word("init", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
@@ -581,6 +590,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 		bury_word("drop", int32_t(env.dict.word_array.size() - 1));
 	}
 
@@ -595,7 +605,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 			env.dict.word_array.back().stack_types_start = start_types;
 			env.dict.word_array.back().stack_types_count = end_zero - start_types;
 			env.dict.word_array.back().treat_as_base = true;
-
+			env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 			bury_word(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size() - 1));
 		}
 		{
@@ -604,7 +614,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 			env.dict.word_array.back().stack_types_start = start_types;
 			env.dict.word_array.back().stack_types_count = end_zero - start_types;
 			env.dict.word_array.back().treat_as_base = true;
-
+			env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 			bury_word(std::string(".") + std::string{ member_names[index] } + "@", int32_t(env.dict.word_array.size() - 1));
 		}
 		{
@@ -620,7 +630,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 			env.dict.word_array.back().stack_types_start = start_types_i;
 			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
 			env.dict.word_array.back().treat_as_base = true;
-
+			env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 			bury_word(std::string(".") + std::string{ member_names[index] } + "!", int32_t(env.dict.word_array.size() - 1));
 		}
 		{
@@ -637,7 +647,7 @@ inline int32_t make_struct_type(std::string_view name, std::span<int32_t const> 
 			env.dict.word_array.back().stack_types_start = start_types_i;
 			env.dict.word_array.back().stack_types_count = end_types_i - start_types_i;
 			env.dict.word_array.back().treat_as_base = true;
-
+			env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 			bury_word(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size() - 1));
 		}
 
@@ -915,7 +925,7 @@ inline int32_t instantiate_templated_m_struct_full(int32_t template_base, std::v
 	env.dict.type_array.back().flags &= ~(type::FLAG_TEMPLATE);
 	env.dict.type_array.back().flags |= type::FLAG_STRUCT;
 	env.dict.type_array.back().flags |= type::FLAG_MEMORY_TYPE;
-
+	env.dict.type_array.back().in_module = env.dict.type_array[template_base].in_module;
 	env.dict.type_array.back().non_member_types = env.dict.type_array[template_base].non_member_types;
 	env.dict.type_array.back().type_slots = 0;
 	env.dict.type_array.back().cell_size = (byte_count == 0 ? 0 : 1);
@@ -945,7 +955,12 @@ inline int32_t make_m_struct_type(std::string_view name, std::span<int32_t const
 
 	int32_t new_type = int32_t(env.dict.type_array.size());
 	env.dict.type_array.emplace_back();
-	env.dict.types.insert_or_assign(std::string(name), new_type);
+	if(auto it = env.dict.types.find(std::string(name)); it != env.dict.types.end()) {
+		env.dict.type_array.back().next_type_with_name = it->second;
+		env.dict.types.insert_or_assign(std::string(name), new_type);
+	} else {
+		env.dict.types.insert_or_assign(std::string(name), new_type);
+	}
 
 	int32_t byte_count = 0;
 
@@ -982,6 +997,7 @@ inline int32_t make_m_struct_type(std::string_view name, std::span<int32_t const
 	env.dict.type_array.back().decomposed_types_start = uint32_t(env.dict.all_stack_types.size());
 	env.dict.type_array.back().cell_size = (byte_count == 0 ? 0 : 1);
 	env.dict.type_array.back().byte_size = byte_count;
+	env.dict.type_array.back().in_module = env.module_stack.empty() ? -1 : env.module_stack.back();
 
 	auto add_child_types = [&]() {
 		if(template_types + extra_count > 0) {
@@ -1040,6 +1056,7 @@ inline int32_t make_m_struct_type(std::string_view name, std::span<int32_t const
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - pre_start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 		bury_word("init-copy", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
@@ -1048,6 +1065,7 @@ inline int32_t make_m_struct_type(std::string_view name, std::span<int32_t const
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 		bury_word("init", int32_t(env.dict.word_array.size() - 1));
 	}
 	{
@@ -1056,6 +1074,7 @@ inline int32_t make_m_struct_type(std::string_view name, std::span<int32_t const
 		env.dict.word_array.back().stack_types_start = start_types;
 		env.dict.word_array.back().stack_types_count = end_zero - start_types;
 		env.dict.word_array.back().treat_as_base = true;
+		env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 		bury_word("finish", int32_t(env.dict.word_array.size() - 1));
 	}
 
@@ -1070,7 +1089,7 @@ inline int32_t make_m_struct_type(std::string_view name, std::span<int32_t const
 			env.dict.word_array.back().stack_types_start = start_types;
 			env.dict.word_array.back().stack_types_count = end_zero - start_types;
 			env.dict.word_array.back().treat_as_base = true;
-
+			env.dict.word_array.back().in_module = env.dict.type_array.back().in_module;
 			bury_word(std::string(".") + std::string{ member_names[index] }, int32_t(env.dict.word_array.size() - 1));
 		}
 
@@ -1114,6 +1133,8 @@ inline int32_t make_pointer_type(int32_t to_type, environment& env) {
 	env.dict.type_array.back().cell_size = 1;
 	env.dict.type_array.back().flags = type::FLAG_POINTER;
 	env.dict.type_array.back().type_slots = 0;
+	if(to_type != -1)
+		env.dict.type_array.back().in_module = env.dict.type_array[to_type].in_module;
 
 	env.dict.all_stack_types.push_back(fif_ptr);
 	env.dict.all_stack_types.push_back(to_type);
@@ -1141,6 +1162,26 @@ inline int32_t find_existing_type_match(int32_t main_type, std::span<int32_t> su
 	}
 	return -1;
 }
+
+inline bool name_reachable(std::string_view full_name, int32_t search_module_context, int32_t name_context, environment& env);
+inline std::string_view get_base_name(std::string_view full_name);
+inline bool name_reachable(std::string_view full_name, int32_t name_context, environment& env) {
+	return name_reachable(full_name, env.function_compilation_stack.empty() ? (env.module_stack.empty() ? -1 : env.module_stack.back()) : env.function_compilation_stack.back().for_module, name_context, env);
+}
+
+inline int32_t find_type_by_name(std::string_view full_name, environment& env) {
+	auto it = env.dict.types.find(std::string(get_base_name(full_name)));
+	if(it == env.dict.types.end())
+		return -1;
+	int32_t ttype = it->second;
+	while(ttype != -1) {
+		if(name_reachable(full_name, env.dict.type_array[ttype].in_module, env))
+			return ttype;
+		ttype = env.dict.type_array[ttype].next_type_with_name;
+	}
+	return ttype;
+}
+
 inline type_match internal_resolve_type(std::string_view text, environment& env, std::vector<int32_t>* type_subs) {
 	uint32_t mt_end = 0;
 	if(text.starts_with("ptr(nil)")) {
@@ -1217,9 +1258,9 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		env.dict.type_array.back().flags = type::FLAG_STATELESS;
 
 		return type_match{ new_type, mt_end };
-	} else if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
+	} else if(auto ftype = find_type_by_name(text.substr(0, mt_end), env); ftype != -1) {
 		if(mt_end >= text.size() || text[mt_end] == ',' || text[mt_end] == ')') {	// case: plain type
-			return type_match{ it->second, mt_end };
+			return type_match{ ftype, mt_end };
 		}
 		//followed by type list
 		++mt_end;
@@ -1234,34 +1275,34 @@ inline type_match internal_resolve_type(std::string_view text, environment& env,
 		if(mt_end < text.size() && text[mt_end] == ')')
 			++mt_end;
 
-		if(it->second == fif_anon_struct) {
-			if(auto m = find_existing_type_match(it->second, subtypes, env); m != -1)
+		if(ftype == fif_anon_struct) {
+			if(auto m = find_existing_type_match(ftype, subtypes, env); m != -1)
 				return type_match{ m, mt_end };
 			return type_match{ make_anon_struct_type(subtypes, env), mt_end };
-		} else if(env.dict.type_array[it->second].type_slots != int32_t(subtypes.size())) {
+		} else if(env.dict.type_array[ftype].type_slots != int32_t(subtypes.size())) {
 			env.report_error("attempted to instantiate a type with the wrong number of parameters");
 			env.mode = fif_mode::error;
 			return type_match{ -1, mt_end };
-		} else if(env.dict.type_array[it->second].is_struct_template()) {
-			if(env.dict.type_array[it->second].is_memory_type())
-				return type_match{ instantiate_templated_m_struct(it->second, subtypes, env), mt_end };
+		} else if(env.dict.type_array[ftype].is_struct_template()) {
+			if(env.dict.type_array[ftype].is_memory_type())
+				return type_match{ instantiate_templated_m_struct(ftype, subtypes, env), mt_end };
 			else
-				return type_match{ instantiate_templated_struct(it->second, subtypes, env), mt_end };
-		} else if(it->second == fif_ptr && env.dict.type_array[subtypes[0]].ntt_base_type != -1) {
+				return type_match{ instantiate_templated_struct(ftype, subtypes, env), mt_end };
+		} else if(ftype == fif_ptr && env.dict.type_array[subtypes[0]].ntt_base_type != -1) {
 			env.report_error("attempted to instantiate a pointer to a non-type");
 			env.mode = fif_mode::error;
 			return type_match{ -1, mt_end };
-		} else if(it->second == fif_array && env.dict.type_array[subtypes[1]].ntt_base_type != fif_i32) {
+		} else if(ftype == fif_array && env.dict.type_array[subtypes[1]].ntt_base_type != fif_i32) {
 			env.report_error("attempted to instantiate an array with a non-integral size");
 			env.mode = fif_mode::error;
 			return type_match{ -1, mt_end };
-		} else if(it->second == fif_array) {
-			if(auto m = find_existing_type_match(it->second, subtypes, env); m != -1)
+		} else if(ftype == fif_array) {
+			if(auto m = find_existing_type_match(ftype, subtypes, env); m != -1)
 				return type_match{ m, mt_end };
 			auto array_size = std::max(int64_t(0), env.dict.type_array[subtypes[1]].ntt_data);
 			return type_match{ make_array_type(subtypes[0], size_t(array_size), subtypes[1], env), mt_end };
-		} else if(it->second == fif_ptr) {
-			if(auto m = find_existing_type_match(it->second, subtypes, env); m != -1)
+		} else if(ftype == fif_ptr) {
+			if(auto m = find_existing_type_match(ftype, subtypes, env); m != -1)
 				return type_match{ m, mt_end };
 			return type_match{ make_pointer_type(subtypes[0], env), mt_end };
 		} else {
@@ -1307,16 +1348,16 @@ inline type_span_gen_result internal_generate_type(std::string_view text, enviro
 			return r;
 		}
 	}
-	if(auto it = env.dict.types.find(std::string(text.substr(0, mt_end))); it != env.dict.types.end()) {
-		r.type_array.push_back(it->second);
-		if(mt_end >= text.size() || text[mt_end] == ',' || text[mt_end] == ')') {	// case: plain type
-			r.end_match_pos = mt_end;
-			return r;
-		}
+	if(mt_end >= text.size() || text[mt_end] == ',' || text[mt_end] == ')') { // plain type
+		r.type_array.push_back(resolve_type(text.substr(0, mt_end), env, nullptr));
+		r.end_match_pos = mt_end;
+		return r;
+	} else if(auto ftype = find_type_by_name(text.substr(0, mt_end), env); ftype != -1) {
+		r.type_array.push_back(ftype);
 		//followed by type list
 		++mt_end;
 		r.type_array.push_back(std::numeric_limits<int32_t>::max());
-		if((env.dict.type_array[it->second].flags & type::FLAG_TEMPLATE) != 0) {
+		if((env.dict.type_array[ftype].flags & type::FLAG_TEMPLATE) != 0) {
 			std::vector<type_span_gen_result> sub_matches;
 			while(mt_end < text.size() && text[mt_end] != ')') {
 				auto sub_match = internal_generate_type(text.substr(mt_end), env);
@@ -1326,7 +1367,7 @@ inline type_span_gen_result internal_generate_type(std::string_view text, enviro
 				if(mt_end < text.size() && text[mt_end] == ',')
 					++mt_end;
 			}
-			auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + env.dict.type_array[it->second].decomposed_types_start, size_t(env.dict.type_array[it->second].decomposed_types_count));
+			auto desc = std::span<int32_t const>(env.dict.all_stack_types.data() + env.dict.type_array[ftype].decomposed_types_start, size_t(env.dict.type_array[ftype].decomposed_types_count));
 			for(auto v : desc) {
 				if(v < -1) {
 					auto index = -(v + 2);
@@ -1339,7 +1380,6 @@ inline type_span_gen_result internal_generate_type(std::string_view text, enviro
 					r.type_array.push_back(v);
 				}
 			}
-
 		} else {
 			while(mt_end < text.size() && text[mt_end] != ')') {
 				auto sub_match = internal_generate_type(text.substr(mt_end), env);
@@ -1567,7 +1607,86 @@ inline word_match_result match_word(word const& w, state_stack& ts, std::vector<
 	return word_match_result{ false, 0, 0, 0, 0 };
 }
 
-inline word_match_result get_basic_type_match(int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations, bool ignore_tc_results = false);
+inline word_match_result get_basic_type_match(std::string_view word_name, int32_t word_index, state_stack& current_type_state, environment& env, std::vector<int32_t>& specialize_t_subs, bool ignore_specializations, bool ignore_tc_results = false);
+
+inline std::string_view get_base_name(std::string_view full_name) {
+	if(full_name.size() == 0)
+		return full_name;
+
+	int32_t item_name_start = 0;
+	do {
+		if(full_name[item_name_start] == '.')
+			break;
+		if(full_name.substr(item_name_start).find_first_of('.') == std::string::npos)
+			break;
+		while(full_name[item_name_start] != '.') {
+			++item_name_start;
+		}
+		++item_name_start;
+		if(size_t(item_name_start) >= full_name.size())
+			return std::string_view{ };
+	} while(true);
+
+	// item_name_start == index of first character in item name
+	return full_name.substr(item_name_start);
+}
+
+inline bool name_reachable(std::string_view full_name, int32_t search_module_context, int32_t name_context, environment& env) {
+	if(full_name.size() == 0)
+		return false;
+
+	if(name_context == -1) // everything in global is accessible
+		return true;
+
+	int32_t item_name_start = 0;
+	do {
+		if(full_name[item_name_start] == '.')
+			break;
+		if(full_name.substr(item_name_start).find_first_of('.') == std::string::npos)
+			break;
+		while(full_name[item_name_start] != '.') {
+			++item_name_start;
+		}
+		++item_name_start;
+		if(size_t(item_name_start) >= full_name.size()) {
+			break;
+		}
+	} while(true);
+	
+	// item_name_start == index of first character in item name
+	item_name_start--;
+
+	while(item_name_start > 0) {
+		int32_t dot_pos = item_name_start - 1;
+		while(dot_pos > 0 && full_name[dot_pos] != '.') {
+			--dot_pos;
+		}
+		auto parent_mod_string = (full_name[dot_pos] == '.' ? full_name.substr(dot_pos + 1, item_name_start - (dot_pos + 1)) : full_name.substr(dot_pos, item_name_start - dot_pos));
+		if(name_context != -1 && parent_mod_string == "global" && env.dict.modules[name_context].submodule_of == -1) {
+			name_context = -1;
+		} else if(name_context != -1 && env.dict.modules[name_context].name == parent_mod_string) {
+			name_context = env.dict.modules[name_context].submodule_of;
+		} else {
+			return false;
+		}
+		item_name_start = dot_pos;
+	}
+
+	if(name_context == -1)
+		return true;
+
+	while(search_module_context != -1) {
+		if(name_context == search_module_context)
+			return true;
+		for(auto mimports : env.dict.modules[search_module_context].module_search_path) {
+			if(mimports == name_context)
+				return true;
+		}
+		search_module_context = env.dict.modules[search_module_context].submodule_of;
+	}
+	
+	return false;
+}
 
 
 }

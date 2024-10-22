@@ -818,6 +818,7 @@ struct word {
 	std::vector<int32_t> instances;
 	std::string source;
 	int32_t specialization_of = -1;
+	int32_t in_module = -1;
 	int32_t stack_types_start = 0;
 	int16_t stack_types_count = 0;
 	bool treat_as_base = false;
@@ -835,6 +836,9 @@ struct type {
 
 	int64_t ntt_data = 0;
 	int32_t ntt_base_type = -1;
+
+	int32_t in_module = -1;
+	int32_t next_type_with_name = -1;
 
 	int32_t type_slots = 0;
 	int32_t non_member_types = 0;
@@ -887,15 +891,25 @@ constexpr inline int32_t fif_memory_struct = 19;
 
 class environment;
 
+
+struct module {
+	std::string name;
+	std::vector<int32_t> module_search_path;
+	int32_t submodule_of = -1;
+};
+
+
 class dictionary {
 private:
 	static constexpr int32_t max_builtins = 300;
 public:
 	ankerl::unordered_dense::map<std::string, int32_t> words;
 	ankerl::unordered_dense::map<std::string, int32_t> types;
+	ankerl::unordered_dense::map<std::string, int32_t> module_index;
 	ankerl::unordered_dense::map<fif_call, uint16_t> builtins;
 	std::vector<word> word_array;
 	std::vector<type> type_array;
+	std::vector<module> modules;
 	std::vector<word_types> all_instances;
 	std::vector<int32_t> all_compiled;
 	std::vector<int32_t> all_stack_types;
@@ -1089,7 +1103,6 @@ struct function_call {
 	int32_t return_local_size = 0;
 };
 
-
 enum class fif_mode : uint16_t {
 	primary_fn_mask = 0x007,
 	interpreting = 0x001,
@@ -1169,6 +1182,7 @@ public:
 	size_t locals_size_position = 0;
 	int32_t for_word = -1;
 	int32_t for_instance = -1;
+	int32_t for_module = -1;
 	int32_t max_locals_size = 0;
 	int32_t entry_lex_depth = 0;
 	int32_t entry_control_stack_depth = 0;
@@ -1176,7 +1190,7 @@ public:
 	fif_mode condition_mode = fif_mode(0);
 	bool intepreter_skip_body = false;
 
-	inline function_compilation(environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance);
+	inline function_compilation(environment& env, state_stack& entry_state, int32_t for_word, int32_t for_instance, int32_t module_context);
 	inline void increase_frame_size(int32_t sz);
 	inline void add_return(environment& env);
 	inline LLVMValueRef build_alloca(LLVMTypeRef type, environment& env);
@@ -1214,6 +1228,7 @@ public:
 	std::vector<std::unique_ptr<opaque_compiler_data>> compiler_stack;
 	std::vector<function_compilation> function_compilation_stack;
 	std::vector<std::string_view> source_stack;
+	std::vector<int32_t> module_stack;
 	std::vector<lexical_scope> lexical_stack;
 	std::vector<int64_t> tc_local_variables;
 	struct {

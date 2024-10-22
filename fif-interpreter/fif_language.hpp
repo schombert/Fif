@@ -3,6 +3,146 @@
 
 namespace fif {
 
+inline std::string full_module_name(std::string_view name, fif::environment& env) {
+	std::string name_sum(name);
+	for(size_t i = env.module_stack.size(); i-- > 0; ) {
+		name_sum = env.dict.modules[env.module_stack[i]].name + "." + name_sum;
+	}
+	return name_sum;
+}
+inline uint16_t* new_module(fif::state_stack&, uint16_t* p, fif::environment* e) {
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to use a module function inside a definition");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to use a module function without a source");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	if(name_token.content.size() == 0 || name_token.content.find_first_of('.') != std::string::npos) {
+		e->report_error("invalid module name");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+	auto fullname = full_module_name(name_token.content, *e);
+	if(e->dict.module_index.find(fullname) != e->dict.module_index.end()) {
+		e->report_error("attempted to redefine a module");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+
+	auto new_id = int32_t(e->dict.modules.size());
+	e->dict.modules.emplace_back();
+	e->dict.modules.back().submodule_of = e->module_stack.empty() ? -1 : e->module_stack.back();
+	e->dict.modules.back().name = std::string(name_token.content);
+	e->module_stack.push_back(new_id);
+	e->dict.module_index.insert_or_assign(fullname, new_id);
+	return p;
+}
+inline uint16_t* open_module(fif::state_stack&, uint16_t* p, fif::environment* e) {
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to use a module function inside a definition");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to use a module function without a source");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	if(name_token.content.size() == 0 || name_token.content.find_first_of('.') != std::string::npos) {
+		e->report_error("invalid module name");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+	auto fullname = full_module_name(name_token.content, *e);
+	auto it = e->dict.module_index.find(fullname);
+
+	if(it != e->dict.module_index.end()) {
+		e->report_error("attempted to open a non-existent module");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	e->module_stack.push_back(it->second);
+	return p;
+}
+inline uint16_t* end_module(fif::state_stack&, uint16_t* p, fif::environment* e) {
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to use a module function inside a definition");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to use a module function without a source");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	if(e->module_stack.empty() || e->dict.modules[e->module_stack.back()].name != name_token.content) {
+		e->report_error("attempted to close a module that was not open");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+	e->module_stack.pop_back();
+	return p;
+}
+inline uint16_t* using_module(fif::state_stack&, uint16_t* p, fif::environment* e) {
+	if(e->mode != fif::fif_mode::interpreting) {
+		e->report_error("attempted to use a module function inside a definition");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	if(e->source_stack.empty()) {
+		e->report_error("attempted to use a module function without a source");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	auto in_module_path = [&](std::string_view item) {
+		size_t start_pos = start_pos = name_token.content.find(item);
+		while(start_pos < name_token.content.size()) {
+			if(start_pos != 0 && name_token.content[start_pos - 1] != '.') {
+				// not a match
+			} else if(start_pos + item.size() + 1 < name_token.content.size() && name_token.content[start_pos + item.size() + 1] != '.') {
+				// not a match
+			} else {
+				return true;
+			}
+			start_pos = name_token.content.find(item, start_pos + 1);
+		}
+		return false;
+	};
+
+	if(in_module_path("unsafe") || in_module_path("unstable") || in_module_path("unsafe-unstable")  || in_module_path("unstable-unsafe") ) {
+		e->report_error("this module name cannot be automatically used");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	auto it = e->dict.module_index.find(std::string(name_token.content));
+
+	if(it == e->dict.module_index.end()) {
+		e->report_error("attempted to use a non-existent module");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+	if(e->module_stack.empty()) {
+		e->report_error("cannot use a module in the global scope");
+		e->mode = fif::fif_mode::error;
+		return p;
+	}
+
+	e->dict.modules[e->module_stack.back()].module_search_path.push_back(it->second);
+	return p;
+}
+
 inline uint16_t* colon_definition(fif::state_stack&, uint16_t* p, fif::environment* e) {
 	if(fif::typechecking_mode(e->mode))
 		return p;
@@ -20,6 +160,12 @@ inline uint16_t* colon_definition(fif::state_stack&, uint16_t* p, fif::environme
 
 	auto name_token = fif::read_token(e->source_stack.back(), *e);
 
+	if(name_token.content.size() == 0 || (name_token.content.find_first_of('.') != std::string::npos && name_token.content[0] != '.')) {
+		e->report_error("invalid function name");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
+
 	auto string_start = e->source_stack.back().data();
 	while(e->source_stack.back().length() > 0) {
 		auto t = fif::read_token(e->source_stack.back(), *e);
@@ -27,15 +173,17 @@ inline uint16_t* colon_definition(fif::state_stack&, uint16_t* p, fif::environme
 			auto string_end = t.content.data();
 
 			auto nstr = std::string(name_token.content);
-			if(e->dict.words.find(nstr) != e->dict.words.end()) {
-				e->report_error("illegal word redefinition");
-				e->mode = fif_mode::error;
-				return p;
+			int32_t old_word = -1;
+			if(auto it = e->dict.words.find(nstr); it != e->dict.words.end()) {
+				old_word = it->second;
 			}
 
 			e->dict.words.insert_or_assign(nstr, int32_t(e->dict.word_array.size()));
 			e->dict.word_array.emplace_back();
 			e->dict.word_array.back().source = std::string(string_start, string_end);
+			e->dict.word_array.back().in_module = e->module_stack.empty() ? -1 : e->module_stack.back();
+			e->dict.word_array.back().treat_as_base = true;
+			e->dict.word_array.back().specialization_of = old_word;
 
 			return p;
 		}
@@ -62,6 +210,12 @@ inline uint16_t* colon_specialization(fif::state_stack&, uint16_t* p, fif::envir
 	}
 
 	auto name_token = fif::read_token(e->source_stack.back(), *e);
+
+	if(name_token.content.size() == 0 || (name_token.content.find_first_of('.') != std::string::npos && name_token.content[0] != '.')) {
+		e->report_error("invalid function name");
+		e->mode = fif::fif_mode::error;
+		return nullptr;
+	}
 
 	std::vector<std::string_view> stack_types;
 	while(true) {
@@ -105,6 +259,7 @@ inline uint16_t* colon_specialization(fif::state_stack&, uint16_t* p, fif::envir
 			e->dict.word_array.back().specialization_of = old_word;
 			e->dict.word_array.back().stack_types_start = start_types;
 			e->dict.word_array.back().stack_types_count = count_types;
+			e->dict.word_array.back().in_module = e->module_stack.empty() ? -1 : e->module_stack.back();
 
 			return p;
 		}
@@ -2887,7 +3042,7 @@ inline uint16_t* do_make(state_stack& s, uint16_t* p, environment* env) {
 	if(skip_compilation(env->mode))
 		return p;
 
-	auto resolved_type = resolve_type(type.content, *env, &env->function_compilation_stack.back().type_subs);
+	auto resolved_type = resolve_type(type.content, *env, env->function_compilation_stack.empty() ? nullptr : &env->function_compilation_stack.back().type_subs);
 
 	if(resolved_type == -1) {
 		env->report_error("make was unable to resolve the type");
@@ -2978,8 +3133,8 @@ inline uint16_t* struct_definition(fif::state_stack&, uint16_t* p, fif::environm
 
 	auto name_token = fif::read_token(e->source_stack.back(), *e);
 
-	if(e->dict.types.find(std::string(name_token.content)) != e->dict.types.end()) {
-		e->report_error("attempted to redefine an existing type");
+	if(name_token.content.size() == 0 || name_token.content.find_first_of('(') != std::string::npos || name_token.content.find_first_of(')') != std::string::npos ||name_token.content.find_first_of(',') != std::string::npos || (name_token.content.find_first_of('.') != std::string::npos && name_token.content[0] != '.')) {
+		e->report_error("invalid type name");
 		e->mode = fif::fif_mode::error;
 		return nullptr;
 	}
@@ -3050,8 +3205,8 @@ inline uint16_t* memory_struct_definition(fif::state_stack&, uint16_t* p, fif::e
 
 	auto name_token = fif::read_token(e->source_stack.back(), *e);
 
-	if(e->dict.types.find(std::string(name_token.content)) != e->dict.types.end()) {
-		e->report_error("attempted to redefine an existing type");
+	if(name_token.content.size() == 0 || name_token.content.find_first_of('(') != std::string::npos || name_token.content.find_first_of(')') != std::string::npos || name_token.content.find_first_of(',') != std::string::npos || (name_token.content.find_first_of('.') != std::string::npos && name_token.content[0] != '.')) {
+		e->report_error("invalid type name");
 		e->mode = fif::fif_mode::error;
 		return nullptr;
 	}
@@ -6024,6 +6179,11 @@ inline uint16_t* forth_m_gep(fif::state_stack& s, uint16_t* p, fif::environment*
 }
 
 inline void initialize_standard_vocab(environment& fif_env) {
+	auto forth_module_id = int32_t(fif_env.dict.modules.size());
+	fif_env.dict.modules.emplace_back();
+	fif_env.dict.modules.back().name = "forth";
+	fif_env.dict.module_index.insert_or_assign("forth", forth_module_id);
+
 	add_precompiled(fif_env, ":", colon_definition, { });
 	add_precompiled(fif_env, ":s", colon_specialization, { });
 	add_precompiled(fif_env, "((", long_comment, { }, true);
@@ -6395,10 +6555,18 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "(", create_params, { }, true);
 	add_precompiled(fif_env, "global", create_global_impl, { fif_type });
 
-	add_precompiled(fif_env, "forth.insert", forth_insert, { }, true);
-	add_precompiled(fif_env, "forth.extract", forth_extract, { }, true);
-	add_precompiled(fif_env, "forth.extract-copy", forth_extract_copy, { }, true);
-	add_precompiled(fif_env, "forth.gep", forth_gep, { }, true);
+	add_precompiled(fif_env, "insert", forth_insert, { }, true);
+	fif_env.dict.word_array.back().in_module = forth_module_id;
+
+	add_precompiled(fif_env, "extract", forth_extract, { }, true);
+	fif_env.dict.word_array.back().in_module = forth_module_id;
+
+	add_precompiled(fif_env, "extract-copy", forth_extract_copy, { }, true);
+	fif_env.dict.word_array.back().in_module = forth_module_id;
+
+	add_precompiled(fif_env, "gep", forth_gep, { }, true);
+	fif_env.dict.word_array.back().in_module = forth_module_id;
+
 	add_precompiled(fif_env, "struct-map2", forth_struct_map_two, { }, true);
 	add_precompiled(fif_env, "struct-map1", forth_struct_map_one, { }, true);
 	add_precompiled(fif_env, "struct-map0", forth_struct_map_zero, { }, true);
@@ -6411,15 +6579,23 @@ inline void initialize_standard_vocab(environment& fif_env) {
 	add_precompiled(fif_env, "}struct", structify, { }, true);
 	add_precompiled(fif_env, "de-struct", de_struct, { }, true);
 	add_precompiled(fif_env, "}array", arrayify, { }, true);
-	add_precompiled(fif_env, "forth.array-gep", forth_array_gep, { }, true);
+	add_precompiled(fif_env, "array-gep", forth_array_gep, { }, true);
+	fif_env.dict.word_array.back().in_module = forth_module_id;
+
 	add_precompiled(fif_env, "array-map1", forth_array_map_one, { }, true);
 	add_precompiled(fif_env, "array-map0", forth_array_map_zero, { }, true);
 	add_precompiled(fif_env, "array-mapC", forth_array_map_copy, { }, true);
 	add_precompiled(fif_env, "m-struct-mapC", forth_m_struct_map_copy, { }, true);
 	add_precompiled(fif_env, "m-struct-map1", forth_m_struct_map_one, { }, true);
 	add_precompiled(fif_env, "m-struct-map0", forth_m_struct_map_zero, { }, true);
-	add_precompiled(fif_env, "forth.m-gep", forth_m_gep, { }, true);
+	add_precompiled(fif_env, "m-gep", forth_m_gep, { }, true);
+	fif_env.dict.word_array.back().in_module = forth_module_id;
+
 	add_precompiled(fif_env, "finish", nop1, { -2 });
+	add_precompiled(fif_env, "new-module", new_module, { }, true);
+	add_precompiled(fif_env, "open-module", open_module, { }, true);
+	add_precompiled(fif_env, "end-module", end_module, { }, true);
+	add_precompiled(fif_env, "using-module", using_module, { }, true);
 
 	add_precompiled(fif_env, "select", f_select, { }, true);
 
