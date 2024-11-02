@@ -4139,6 +4139,34 @@ TEST_CASE("modules tests", "fif combined tests") {
 		CHECK(values.main_type(0) == fif::fif_i32);
 		CHECK(values.popr_main().as<int32_t>() == 5);
 	}
+	SECTION("nested module 2") {
+		fif::environment fif_env;
+		fif::initialize_standard_vocab(fif_env);
+
+		int32_t error_count = 0;
+		std::string error_list;
+		fif_env.report_error = [&](std::string_view s) {
+			++error_count; error_list += std::string(s) + "\n";
+		};
+
+		fif::interpreter_stack values{ };
+		fif::run_fif_interpreter(fif_env,
+			"new-module testA "
+			": c 5 ; "
+			"new-module testB "
+			": t c ; "
+			"end-module testB "
+			"end-module testA "
+			"testA.testB.t ",
+			values);
+
+		CHECK(error_count == 0);
+		CHECK(error_list == "");
+		REQUIRE(values.main_size() == 1);
+		CHECK(values.return_size() == 0);
+		CHECK(values.main_type(0) == fif::fif_i32);
+		CHECK(values.popr_main().as<int32_t>() == 5);
+	}
 	SECTION("name ambiguity") {
 		fif::environment fif_env;
 		fif::initialize_standard_vocab(fif_env);
