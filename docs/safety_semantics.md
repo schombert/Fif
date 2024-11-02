@@ -1,6 +1,6 @@
 # A Safe Semantics for C++
 
-Schombert: 2011-11-1 draft
+Schombert: 2024-11-2 draft
 
 This document is a sketch of a relatively low-level language that a safe extension of C++ could be compiled into. The low-level nature of this language makes it easier to define and express the rules that make the language safe. The point of this is twofold. First, it can help clarify the details of the Safe C++ proposal and any future proposals in the same vein, as we can explain their rules and constructions by explaining how they would translate into this simpler language. Secondly, it helps illustrate how the implementation of the checks required by a safe extension to C++ could be done, which helps show the feasibility of such an extension (in addition to the existence of a safe extension in the Circle compiler).
 
