@@ -1,6 +1,6 @@
 # A Safe Semantics for C++
 
-Schombert: 2024-11-2 draft ver. 2
+Schombert: 2024-11-3 draft ver. 3
 
 This document is a sketch of a relatively low-level language that a safe extension of C++ could be compiled into. The low-level nature of this language makes it easier to define and express the rules that make the language safe. The point of this is twofold. First, it can help clarify the details of the Safe C++ proposal and any future proposals in the same vein, as we can explain their rules and constructions by explaining how they would translate into this simpler language. Secondly, it helps illustrate how the implementation of the checks required by a safe extension to C++ could be done, which helps show the feasibility of such an extension (in addition to the existence of a safe extension in the Circle compiler).
 
@@ -38,7 +38,7 @@ None of the new pointer types may hold the `nullptr` value. In terms of lowering
 
 ### Returning "by value"
 
-To represent returning a structure "by value" in the pseudo-language, the function nominally returns void and takes a 𝒹ptr⟪...⟫ as a parameter. By the rules of 𝒹ptr consumption (not described in this section), the function is responsible for constructing a value in the location pointed to and starting the lifetime of the object. In the calling context, the compiler would convert the 𝒹ptr⟪...⟫ used in the function call into an 𝓁ptr⟪...⟫, thereby making the returned value available after the call has completed.
+To represent returning a structure "by value" in the pseudo-language, the function nominally returns void and takes a 𝒹ptr⟪...⟫ as a parameter. By the rules of 𝒹ptr consumption (not described in this section), the function is responsible for constructing a value in the location pointed to and starting the lifetime of the object. In the calling context, the compiler would convert the 𝒹ptr⟪...⟫ used in the function call into an 𝓁ptr⟪...⟫, thereby making the returned value available after the call has completed. (This process is usually what returning a structure "by value" is compiled into.) When discussing specific functions in this document, this verbose form of "return by value" is used. However, sometimes it is necessary to speak generally about functions returning what *could* be a structure. In those cases it is left to the reader to transform the function in question into the form described above if necessary.
 
 ### Trivial destruction, moves, and construction
 
@@ -86,6 +86,8 @@ It is possible for a collection of lifetime constraints to require two or more v
 
 In addition to lifetime constraints there is a second category of constraints that we refer to in this document as borrows. There are three kinds of borrow. First, there is the shared borrow. A shared borrow of y by x is written `x⊣y`. A mutable borrow of y by x is written `x⩤y`. Finally, a transitive borrow relation is written `x⫤y`. The borrow is said to be active if it is within the lifetime of the item on the left side of the expression, for generic values, or if the name on the left side remains accessible for 𝓁ptr and 𝒹ptr variables. The item on the left side of the relationship is called the source of the borrow while the object on the right side is called the target of the borrow.
 
+Intuitively, the meaning of these relation is that `x⊣y` indicates x being able to access y, but within the limits of a shared view. `x⩤y` indicates x being able to access y mutably.
+
 ### Syntactic properties
 
 All of the borrow constraints are transitive within their own class. In detail, Whenever a constraint of the form `x⊣y` is added to the analysis, additional constraints of the form `x⊣z` should also be added for each existing constraint of the form `y⊣z` and additional constraints of the form `z⊣y` should also be added for each existing constraint of the form `z⊣x`, and the same goes for ⩤ and ⫤. These constraints are also monotonic, meaning that once a borrow constraint has been added to the analysis, it is never removed. (But remember that a pointer is only suppressed when the values on the left hand side of a borrow constraint are alive.)
@@ -103,7 +105,11 @@ b⩤a and c⊣a is a constraint violation unless b=c or b⊣c or c⊣b or at lea
 
 ### Borrows and members
 
-Borrow constraints may exist between the members of an object on either, or both, sides of the constraint expression. `x⊣z` implies `x.y⊣z` for all members y of x. `a⊣b` implies `a⊣b.c` for all members c of b. The same rules also apply for mutable borrows and the transitive borrow relation. An active mutable borrow targeting an object as a whole is incompatible with a mutable borrow or shared borrow from another source on any member of the object because of the `a⩤b` to `a⩤b.c` implication and the exclusivity of mutable borrows on the same target.
+Borrow constraints may exist between the members of an object on either, or both, sides of the constraint expression. `x.y⊣z` implies `x⊣z` for all members y of x. `a⊣b` implies `a⊣b.c` for all members c of b. The same rules also apply for mutable borrows and the transitive borrow relation. An active mutable borrow targeting an object as a whole is incompatible with a mutable borrow or shared borrow from another source on any member of the object because of the `a⩤b` to `a⩤b.c` implication, which would conflict with a hypothetical `d⩤b.c` borrow.
+
+Interestingly, the `.y` in `x.y` cannot be modeled as a function that takes the pointer x to a pointer to member y (in other words, something like the LLVM GEP operation). To model it in that way, we would have to answer the question of whether the result of the .y function mutably borrows from x or not (as x.y would be a function call, not a name to be related by a borrow). If it does, then no other member could be used to access x while the result of the .y function is available, which is extremely restrictive. If it does not, then x will remain free to be used as the source of a second .y function, producing two mutable borrows to the same item, which is unsafe. Note that in the current form of the language, you cannot write a getter function that works like direct member access using the default function constraints, which will always generate a `⅀⩤x` constraint even if the return value was manually marked `ℛ⩤x.y` (see below).
+
+Could this be fixed? Probably, but it would potentially add a great deal of complexity to the language, and it is already quite complex. The obvious possibility is to annotate some borrows with a "path" of how the borrow was made, and allow borrows from "non-overlapping" paths to exist to the same target without violating exclusivity. For example, the borrow of the .y function would be marked as "via y" in some way, and it would thus not conflict with a borrow "via z". (But don't ask me how transitivity is going to work once there is a chain involving two or more of these.)
 
 ### Borrows and pointers
 
@@ -117,7 +123,7 @@ When a value, y, is loaded from an 𝓈ptr pointer, x, the constraints `y⊣x` a
 
 ### Borrows and function calls
 
-In most ways the rules for borrow constraints and function calls are similar to those for lifetime constraints. Namely: When finishing analysis of a function, any borrow constraints not involving the parameters and/or the return value should be discarded. If they involve a lifetime or variable on the left-hand side of the relationship that does not escape the function, the left hand side of the expression should be replaced with ⅀ (abusing the notation slightly). If they involve a lifetime or variable on the right-hand side that does not escape the function, the constraint should be discarded. All of the remaining borrow constraints must be contained in the constraint list (`⟪ ∥ ... ⟫`) that is part of the declaration of the function, or be generated by one of the expressions contained in that list, or be implied automatically by the function call (for the sake of brevity ⅀⩤x is assumed for all 𝓂ptr, 𝓁ptr, and 𝒹ptr parameters x and ⅀⊣x is assumed for all 𝓈ptr parameters x). If any are missing, compilation fails.
+In most ways the rules for borrow constraints and function calls are similar to those for lifetime constraints. Namely: When finishing analysis of a function, any borrow constraints not involving the parameters and/or the return value (or a member of a struct-type parameter or return value) should be discarded. If they involve a lifetime or variable on the left-hand side of the relationship that does not escape the function, the left hand side of the expression should be replaced with ⅀ (abusing the notation slightly). If they involve a lifetime or variable on the right-hand side that does not escape the function, the constraint should be discarded. All of the remaining borrow constraints must be contained in the constraint list (`⟪ ∥ ... ⟫`) that is part of the declaration of the function, or be generated by one of the expressions contained in that list, or be implied automatically by the function call (for the sake of brevity ⅀⩤x is assumed for all 𝓂ptr, 𝓁ptr, and 𝒹ptr parameters x and ⅀⊣x is assumed for all 𝓈ptr parameters x). If any are missing, compilation fails.
 
 At a call site to the function, all borrow constraints contained in the function's constraint list (`⟪ ∥ ... ⟫`) are added to any existing constraints in the calling function (substituting in the names of the variables passed as parameters and the name that the return value is assigned to as appropriate). Constraints that have ⅀ on the left hand side have it substituted with the lifetime of the function call (which is, in textual terms, the line break after the function call between it and the next expression). This essentially means that no conflicting borrows may be active while the function is executing, but it will not otherwise conflict with borrow constraints. If there are expression within the function's constraint list, any borrow constraints that would be generated by the evaluation of those expressions are also added. At this point if the constraints are inconsistent (by violating exclusivity, for example), compilation fails, with the exception that exclusivity conflicts between constraints that have ⅀ on the left hand side and other constraints generated by the function call are ignored, but they can conflict with each other. (Practically, we can break the call of the function into two stages at the call site. The first stage is what the lifetime of ⅀ covers and it is the point where constraints involving ⅀ on the left-hand side of the relationship are added. Then, at the second stage, the remaining constraints generated by the function are added, but the lifetime ⅀ resolves to does not cover this point.)
 
@@ -137,9 +143,13 @@ The intent of borrow constraints is to express the existence of one or more "vie
 
 ## A fork in the road: do we need lifetime constraints?
 
-There is a plausible rule that can be added to the above section: if `a⊣b` or `a⩤b` and b is not alive, then a is suppressed. This rule exists in the Safe C++ proposal and in Rust (as I understand it). If you admit this rule, then you may not need the ability to express lifetime constraints independently, as you could instead say that `a⊣b` generates `§a≼§b`. And once you have that rule, it is easy to extend the notation to work on lifetimes as well, letting `L⊣M` stand in for `L≼M`. This is very neat and simplifies the language. It also reduces the number of constraints you might have to write, since ⊣ now does the work of ≼ as well.
+There is a plausible rule that can be added to the above section: if `a⊣b` or `a⩤b` then b outlives a (`§a≼§b`) if you also guarantee that the borrow constraints can only be generated targeting a living object. This is because once a borrow exists targeting b, the exclusivity rules would generally prevent b's destructor from running, meaning that it can't be destroyed while a is alive, meaning that it must be alive while a is alive. Of course, this also requires a's lifetime not to have any "holes" such that b could be destroyed while a is not considered alive (not that such a thing would be easy to generate).
 
-However, there is a serious drawback to this rule: it conflates an object being *able* to access something with actually accessing it. This isn't an issue in many cases. When a container or other object contains dead references, usually nothing is lost by disposing of the container at that point, since there isn't much that can be safely done with it. However, it makes the semantics of the destructor in particular almost impossible to express. Since the container borrows its contents, we have container⊣contents, and thus §container≼§contents, and so the container must be destroyed prior to its contents *even if the destructor has no need to read from those contents*.
+If you admit this rule, then you may not need the ability to express lifetime constraints independently, as you could instead let `a⊣b` stand in for `§a≼§b`. And once you have that rule, it is easy to extend/abuse the notation to work on lifetimes as well, letting `L⊣M` stand in for `L≼M`. This is very neat and simplifies the language. It also reduces the number of constraints you might have to write, since ⊣ now does the work of ≼ as well.
+
+I have not chosen to adopt this rule here, however, in order to simplify the rules around borrowing constraints. The borrow constraint is used here not just to mean "a pointer to"; it is also used to track pointer loads. Specifically, loading an 𝓂ptr out of an 𝓂ptr `b` and storing it in `a` generates `a⩤b`. This is not because `a` has a mutable view of `b` (although it may have a transitively mutable view on things that b itself has a mutable view of, which the transitivity rules of the constraint captures), but because adding the borrow constraint prevents that pointer from being loaded out of `b` again (since a load has the `⅀⩤x` constraint as `b` is itself an 𝓂ptr, and it must load *as* an 𝓂ptr (and not via a cast to an 𝓈ptr) since a mutable pointer cannot be loaded from an 𝓈ptr). However, it is fine in this instance for the lifetime of `b` to end while `a` perhaps remains a valid pointer to something that `b` perviously pointed to. This is possible because `b` is a simple value (a pointer) and does not need to have a destructor function called on it. 
+
+Adding such a rule also conflates an object being *able* to access something with actually accessing it. This isn't an issue in many cases. When a container or other object contains dead references, usually nothing is lost by disposing of the container at that point, since there isn't much that can be safely done with it. However, it makes the semantics of the destructor in particular almost impossible to express. Since the container may borrow its contents, we may have container⊣contents, and thus §container≼§contents, and so the container must be destroyed prior to its contents *even if the destructor has no need to read from those contents*.
 
 The rest of this document *does not* follow this fork. Instead it explores what the pseudo-language would look like without this compromise and what can be done to simplify it without adding the additional rule.
 
@@ -166,7 +176,7 @@ Note on 𝓂ptr and 𝓁ptr to 𝓈ptr casts: if these casts are modeled as a fu
 
 An 𝓂ptr cannot be loaded from an 𝓈ptr (and an 𝓁ptr definitely can't be, since they can't be stored at all). I emphasize this to start with because it is an important rule to remember when writing unsafe code that is "pointer like" in allowing the retrieval of some stored object: you should not be able to get an 𝓂ptr out without putting an 𝓂ptr to the containing object in (unless aliasing is being prevented at runtime via a mutex, for example). Secondly, remember that only simple values are *values* in this pseudo-language, so you cannot load a struct from a pointer; only loads from pointers to the struct's simple members are possible.
 
-With those caveats, the general signature for `load` is `auto load⟪T, L ∥ ⅀≼L, ℛ⊣x, x⫤ℛ ⟫(𝓈ptr⟪T, L⟫ x) -> T` and `auto load⟪T, L ∥ ⅀≼L, ℛ⩤x, x⫤ℛ ⟫(𝓂ptr⟪T, L⟫ x) -> T`; the general signature for `store` is `void store⟪T, L ∥ ⅀≼L, x⩤v ⟫(𝓂ptr⟪T, L⟫ x, T v)`. If T is not a simple value, then it must be hidden behind a pointer, and thus there are no loads and stores for it directly. If the pseudo-language were a real language, the role would be filled with automatically generated copy constructor, copy assignment, and destructive move functions.
+With those caveats, the general signature for `load` is `auto load⟪T, L ∥ ⅀≼L, ℛ⊣x, x⫤ℛ ⟫(𝓈ptr⟪T, L⟫ x) -> T` and `auto load⟪T, L ∥ ⅀≼L, ℛ⩤x, x⫤ℛ ⟫(𝓂ptr⟪T, L⟫ x) -> T` (although the borrows for the return value should only be generated when loading a pointer; loading integers, booleans, and enums doesn't generate borrows); the general signature for `store` is `void store⟪T, L ∥ ⅀≼L, x⩤v ⟫(𝓂ptr⟪T, L⟫ x, T v)`. If T is not a simple value, then it must be hidden behind a pointer, and thus there are no loads and stores for it directly. If the pseudo-language were a real language, the role would be filled with automatically generated copy constructor, copy assignment, and destructive move functions.
 
 ### 𝓁ptr and 𝒹ptr rules
 
@@ -174,7 +184,7 @@ The 𝓁ptr and 𝒹ptr types have some additional rules, beyond those already n
 
 𝓁ptr and 𝒹ptr types are passed as parameters to express the semantics of constructors, destructors, and destructive moves. A 𝒹ptr is passed to a constructor and the object becomes live within it, while an 𝓁ptr is passed to a destructor to manage ending the object's lifetime. A destructive move takes both an 𝓁ptr and a 𝒹ptr parameter and simultaneously ends the lifetime of one object while starting that of the other.
 
-Of course, this ultimately leaves us with the question of how 𝓁ptr and 𝒹ptr types are changed within such a function. And to answer that question we have to do away with a simplification that has been useful so far: for structs there are no 𝓁ptr and 𝒹ptr types as such. Rather, what we have been calling an 𝓁ptr or 𝒹ptr to a struct is really an aggregate of liveness tracking data tracking the liveness of each member individually (or, you could think of it as an aggregate of 𝓁ptr and 𝒹ptrs to the members of the struct -- but please don't implement it that way). What we have been calling an 𝓁ptr is really one of these types where all the members are marked as alive, and a 𝒹ptr is one where all the members are marked as dead. So, the solution to how an 𝓁ptr switches its type for a struct is: recursively. Each member's 𝒹ptr must be turned into an 𝓁ptr by calling a function consuming a 𝒹ptr (i.e. a constructor or value assignment) for each of its members. (And I assume that the compiler provides constructors, destructors, and destructive moves for the simple types that all structs must eventually reduce to).
+Of course, this ultimately leaves us with the question of how 𝓁ptr and 𝒹ptr types are changed within such a function. And to answer that question we have to do away with a simplification that has been useful so far: for structs there are no 𝓁ptr and 𝒹ptr types as such. Rather, what we have been calling an 𝓁ptr or 𝒹ptr to a struct is really an aggregate of liveness tracking data tracking the liveness of each member individually (or, you could think of it as an aggregate of 𝓁ptr and 𝒹ptrs to the members of the struct -- but please don't implement it that way). What we have been calling an 𝓁ptr is really one of these types where all the members are marked as alive, and a 𝒹ptr is one where all the members are marked as dead. So, the solution to how an 𝓁ptr switches its type for a struct is: recursively. Each member's 𝒹ptr must be turned into an 𝓁ptr by calling a function consuming a 𝒹ptr (i.e. a constructor or value assignment) for each of its members. (And I assume that the compiler provides constructors, destructors, and destructive moves for the simple types that all structs must eventually reduce to.) 
 
 I am unable to come up with a non-hideous syntax for a pointer to a struct that is partly alive and partly dead, and so have only provided the ability to talk about structs that are all alive or all dead in the pseudo-language, but this is not an intrinsic limitation of the semantics.
 
@@ -191,6 +201,16 @@ The pseudo-language is loudly silent on the matter of exceptions, which is becau
 ### Function types
 
 A function type must include the safety constraints it generates, because it is only safe to cast from a function type that generates a strict superset of those constraints (a function that requires/generates more constraints cannot be called in place of one that requires/generates fewer). Without this limitation you get the famous Rust bug (still unsolved as of writing this document) https://github.com/rust-lang/rust/issues/25860 that arises because of not tracking the constraints (at least, according to the author of the report; I am not a Rust expert). Further notes on when it is safe to cast from one function to another are also found in the *Conversion between types differing only in lifetimes* section below.
+
+This may mean that it will become necessary to name the set of constraints a function generates in order to propagate them. The notation to do that could clearly become quite hairy quite quickly. In some situations we could propagate the constraints implicitly. For example:
+```
+auto map⟪U, F ∥ f(ε(𝓈ptr⟪T⟫)) ⟫(𝓈ptr⟪some_container_of⟪T⟫⟫ self, F&& f) -> some_container_of⟪U⟫;
+```
+Here we don't have to name the constraints that the function/function-like-object passed in as f generates in order to make map share them because we can indirectly forward those constraints by putting the expression `f(ε(𝓈ptr⟪T⟫))` in map's list of constraints. But what if we did need to name them? Until something better comes along, I will assume that we have a generic type that represents a function called `func` that takes the constraints as its first parameter (modeling the set of constraints, collectively, as a single compile-time constant value) and the function return type and parameter types as the remaining parameters. And, to make this work, we must assume that the name of the constraints may be inserted into a list of constraints with the meaning that all the constraints bound by that name are to be added to the other constraints in that list. Then we could define a function such as:
+```
+auto map⟪T, U, C ∥ C⟫(𝓈ptr⟪some_container_of⟪T⟫⟫ self, func⟪C, U, 𝓈ptr⟪T⟫⟫ f) -> some_container_of⟪U⟫;
+```
+This function takes a func⟪C, U, 𝓈ptr⟪T⟫⟫, a function returning a U with an 𝓈ptr⟪T⟫ argument and generating constraints C, and itself has those constraints in its constraint list. Ugly, but functional.
 
 ### Type instantiation and implementations 
 
@@ -230,6 +250,7 @@ It would be useful to sometimes allow memory allocated during compilation as par
 
 ## Further reading:
 
+Ferdowsi, Kasra 2023 *The Usability of Advanced Type Systems: Rust as a Case Study*
 Weiss, Aaron, Olek Gierczak, Daniel Patterson, and Amal Ahmed 2019 *Oxide: The Essence of Rust*
 Karl Naden, Robert Bocchino, Jonathan Aldrich, Kevin Bierhoff 2012 *A type system for borrowing permissions*
 Robert DeLine and Manuel Fähndrich 2004 *Typestates for Objects*
@@ -312,6 +333,12 @@ push_back(v, sptr_a);									  // lifetime of sptr_a is greater than ∅, so th
 	push_back(v, sptr_b);                                  // Now this line should compile because the lifetime of sptr_b
 	                                                       // is also greater than ∅
 														   // creates v⊣sptr_b, v⊣string_value
+														   
+	~string(string_value);                                 // compilation fails here, because the call implicitly
+	                                                       // generates ⅀⩤string_value, which violates exclusivity
+														   // But let us assume that it didn't for the moment, and that
+														   // ~string doesn't mutably borrow from string_value (which it must
+														   // to change the liveness of its contents)
 }
 
 for(auto s : v) {                                          // because I don't want to write out iterator details again ...
@@ -382,7 +409,8 @@ auto as_str(int x) -> 𝓈ptr⟪string, ⅀⟫ {
 										// thus, it is converted to an 𝓈ptr⟪string, §as_str⟫
 										// this creates the borrow constraint: ret_value⊣s
 										
-	~string(s);							// This fails because ret_value⊣s is active and suppresses s, so s is not available
+	~string(s);							// This fails because ret_value⊣s is active:
+                                        //~string generates ⅀⩤s which conflicts with ret_value⊣s
 	return ret_value;					// And if ret_value was not alive for the previous line, it could not be returned here
 }
 ```
@@ -399,7 +427,7 @@ auto as_str⟪L⟫(𝓂ptr⟪𝓈ptr⟪string, L⟫, ⅀⟫ i, int x) -> void {
 	ret_value = s;				// This cast generates the L≼§s constraint
 	                            // it also generates ret_value⊣s
 	store(i, ret_value);		
-	~string(s);					// s cannot be destroyed here because it is suppressed, but even ignoring that ...
+	~string(s);					// s cannot be destroyed here because ⅀⩤s and ret_value⊣s, but even ignoring that ...
 }                               // at the end of compilation L≼§s is widened to L≼§as_str
                                 // since this is not in the function's list of constraints, compilation would fail
 ```
@@ -413,7 +441,7 @@ auto as_str⟪L ∥ L≼⅀⟫(𝓂ptr⟪𝓈ptr⟪string, L⟫, ⅀⟫ i, int x
 	𝓈ptr⟪string, L⟫ ret_value;	// we want to store this in i
 	ret_value = s;				// generates the L≼§s constraint and ret_value⊣s
 	store(i, ret_value);		// this propagates the borrow constraint ret_value⊣s resulting in i⊣s
-	~string(s);					// thus s is suppressed and not be able to be used here in the destructor call
+	~string(s);					// so ⅀⩤s conflicts with i⊣s
 								// i must live as along as §as_str because it is a parameter, so compilation fails
 }
 ```
@@ -427,7 +455,7 @@ But what if the type in this function didn't need a destructor call; if it were 
 array⟪int, 3⟫(data, 1, 2, 3); 						// constructor
 𝓈ptr⟪array⟪int, 3⟫, ⅀⟫ view = data;       			// creates view⊣data
 auto element_view = array⟪int, 3⟫.index(view, 0);	// creates element_view⊣view, element_view⊣data
-array⟪int, 3⟫.push(data, 4);							// data is suppressed, compilation fails
+array⟪int, 3⟫.push(data, 4);							// ⅀⩤data conflicts with view⊣data; compilation fails
 return load(element_view);							// if the lifetimes of element_view and view had been
                                                     // ended to make the previous line compile, element_view
 													// could not then be loaded
@@ -439,6 +467,57 @@ auto array⟪T, size⟫.index⟪L ∥ ℛ⊣a⟫(𝓈ptr⟪array⟪T, size⟫, L
 auto array⟪T, size⟫.index⟪L ∥ ℛ⩤a, a⫤ℛ⟫(𝓂ptr⟪array⟪T, size⟫, L⟫ a, int i) -> 𝓂ptr⟪T, L⟫;
 ```
 Note that ℛ⊣a in the first prototype doesn't do anything by itself; an 𝓈ptr doesn't do anything when it suppresses another 𝓈ptr, nor does being suppressed block the usage of an 𝓈ptr. However, this propagates transitively, and is what ultimately generates the element_view⊣data constraint in the analysis above.
+
+### Building a better Iterator
+
+This is a sketch for how unsafe code can be safely wrapped in an iterator interface to allow simultaneous mutable access to different elements of an array-like type even though the direct indexing functions that return 𝓂ptrs must borrow from the array-like object, and hence cannot be used to get at different elements in the array at the same time.
+
+Specifically, 
+```
+auto vector⟪T⟫.at⟪L ∥ ℛ⩤v, ⅀≼L⟫(𝓂ptr⟪vector⟪T⟫, L⟫ v, size_t index) -> optional⟪𝓂ptr⟪T, L⟫⟫;
+```
+The `ℛ⩤v` constraint means that this function cannot be called twice without discarding the return value of the first call prior to the second, as it would create two mutable borrows to the vector.
+
+However, an iterator *should* be able to get around this. If we can make sure that the pointer to an element can only be retrieved once per position, then multiple values gotten out of the same iterator should be able to co-exist, as long as we take the appropriate precautions.
+
+First, the iterator type itself.
+
+```
+struct mut_vector_iterator⟪T⟫ {
+	𝓂ptr⟪vector⟪T⟫, ⅀⟫ vec;
+	size_t position;
+};
+```
+
+Its constructor:
+```
+auto mut_vector_iterator⟪T ∥ self⩤v ⟫(𝒹ptr⟪mut_vector_iterator⟪T⟫⟫ self, 𝓂ptr⟪vector⟪T⟫, §self⟫ v) -> void {
+	store(self.vec, v);
+	store(self.position, 0);
+}
+```
+Note that the lifetime of the pointed-to vector is constrained by this constructor. If someone uses this as say:
+```
+vec = ...;
+𝒹ptr⟪mut_vector_iterator⟪T⟫⟫ it;
+mut_vector_iterator(it, vec);
+```
+The necessary cast of the second parameter ensures that the lifetime of the vector pointed to by `vec` must outlive that of `it`. This is more than just the `self⩤v` borrow constraint by itself does.
+
+Now we can write the iterator's `next` function:
+```
+auto mut_vector_iterator⟪T⟫.next⟪M ∥ ⅀≼M ⟫(𝓂ptr⟪mut_vector_iterator⟪T⟫, M⟫ self) -> optional⟪𝓂ptr⟪T, M⟫⟫ {
+	auto old_position = load(self.position);  // ⅀≼M from the load (further generation of this constraint not noted)
+	store(self.position, old_position + 1);
+	
+	auto vec = load(self.vec);
+	auto ret_value = vector⟪T⟫.at(vec, old_position); // ret_value⩤vec, vec⩤self.vec
+	unsafe.break_borrows(ret_value);
+	return ret_value;
+}
+```
+
+So, using `unsafe.break_borrows` we have discarded the borrows that the returned value would normally have. But how can we know that it is safe to do that? Well, first we have guaranteed that the vector outlives the iterator object. The iterator object holds a mutable borrow of the vector, so no more iterators or other access functions can get at elements in the vector without going through the iterator (nor can the vector reallocate or otherwise invalidate its elements). Assuming that we provide no other functions that could "back up" the iterator, the iterator itself can only provide access to each element once. And by ensuring that the returned value's pointer has a lifetime equal to the iterator itself, which is necessarily outlived by the vector, we know that the vector backing the element remains alive and in place while that pointer is usable. 
 
 ### One way to consume the contents of a box
 
